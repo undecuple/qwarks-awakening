@@ -1,0 +1,33 @@
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index cb6d3f1..14b9187 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -4478,3 +4478,16 @@ s32 cellSpursLFQueueAttachLv2EventQueue(u64 queue_ea)
+     if (_n++ < 8) printf("[cellSpurs] LFQueueAttachLv2EventQueue(q=0x%08X)\n", (u32)queue_ea);
+     return CELL_OK;
+ }
++
++/* cellSpursLFQueueDetachLv2EventQueue(CellSpursLFQueue*)
++ * The counterpart of the attach above: no lv2 queue was bound, so there is
++ * nothing to unbind. Ratchet & Clank Future: Tools of Destruction calls it from
++ * Edge zlib's shutdown (wrapper @0x007e3ef8, from its destructors @0x006175d0 and
++ * @0x00617748) and only checks the result; unhandled, the import already fakes
++ * CELL_OK, so this only makes that explicit and logged. */
++s32 cellSpursLFQueueDetachLv2EventQueue(u64 queue_ea)
++{
++    static int _n = 0;
++    if (_n++ < 8) printf("[cellSpurs] LFQueueDetachLv2EventQueue(q=0x%08X)\n", (u32)queue_ea);
++    return CELL_OK;
++}
+diff --git a/libs/spurs/cellSpurs.h b/libs/spurs/cellSpurs.h
+index fd480dd..52a4e17 100644
+--- a/libs/spurs/cellSpurs.h
++++ b/libs/spurs/cellSpurs.h
+@@ -306,6 +306,7 @@ s32 cellSpursQueueAttachLv2EventQueue(u64 queue_ea);
+ s32 _cellSpursLFQueueInitialize(u64 owner_ea, u64 queue_ea, u64 buffer_ea,
+                                 u32 size, u32 depth, u32 direction);
+ s32 cellSpursLFQueueAttachLv2EventQueue(u64 queue_ea);
++s32 cellSpursLFQueueDetachLv2EventQueue(u64 queue_ea);
+ 
+ s32 cellSpursEventFlagSet(CellSpursEventFlag* eventFlag, u16 bits);
+ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,

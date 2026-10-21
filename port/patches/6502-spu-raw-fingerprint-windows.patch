@@ -1,0 +1,241 @@
+Patch 6502 (rc-SPU pass 2): raw SPU programs whose image the guest patches before streaming resolve by an LS window.
+
+A program the PPU streams into a raw SPU's local store with proxy GETs is resolved in raw_spu_start by the FNV-1a-64
+fingerprint of each contiguous GET run. Ratchet & Clank: Tools of Destruction's loader (@0x005AB460, the caller
+@0x0049DAF0) first writes a 0x50-byte parameter block INTO the program image in main memory (image + 0x6D50:
+pointers, sizes, a float of the current scene), then GETs the whole image; the run's bytes match no offline image and
+change with the scene (igCollBroadSpu, run fp 0x1A15E9D257A033D8 in tods-ng-us/tods-ng-7002c, clean image
+0x99E8B2BAC2B91330). Now a port can declare LS windows (spu_raw_add_fp_window(lo, len), header-only, table
+g_spu_raw_fp_windows in spu_raw.c); after the whole run misses, every declared window inside the run is looked up by
+its own fingerprint (spu_raw_run_fp_ranges gives the order), and logged as "[spu-raw] spuN   window LS lo..hi fp=..".
+No window declared = the old behaviour, one lookup per run, same log line.
+Test: runtime/spu/tests/test_spu_raw_fp_window.c (host, CI linux gcc/clang + macos). General; upstream only with the
+PM's OK.
+
+diff --git a/.github/workflows/linux.yml b/.github/workflows/linux.yml
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -109,6 +109,11 @@
+             -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
+             -o /tmp/test_spu_wws_code_slot runtime/spu/tests/test_spu_wws_code_slot.c
+           /tmp/test_spu_wws_code_slot
++          # Raw SPU fingerprint windows (patch 6502).
++          ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} \
++            -std=gnu17 -Wall -Wextra -I include -I runtime/spu \
++            -o /tmp/test_spu_raw_fp_window runtime/spu/tests/test_spu_raw_fp_window.c
++          /tmp/test_spu_raw_fp_window
+ 
+       # The AVX2 single-precision fast path must match the exact scalar path bit for bit.
+       - name: Run the SPU float fast-path test (AVX2)
+diff --git a/.github/workflows/macos.yml b/.github/workflows/macos.yml
+--- a/.github/workflows/macos.yml
++++ b/.github/workflows/macos.yml
+@@ -84,6 +84,10 @@
+           clang -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
+                 -o /tmp/test_spu_wws_code_slot runtime/spu/tests/test_spu_wws_code_slot.c
+           /tmp/test_spu_wws_code_slot
++          # Raw SPU fingerprint windows (patch 6502).
++          clang -std=gnu17 -Wall -Wextra -I include -I runtime/spu \
++                -o /tmp/test_spu_raw_fp_window runtime/spu/tests/test_spu_raw_fp_window.c
++          /tmp/test_spu_raw_fp_window
+ 
+       # libnet over host sockets (PS3_NET_ONLINE), end to end on loopback: every
+       # handler is called through the NID it registered under.
+diff --git a/runtime/spu/spu_raw.c b/runtime/spu/spu_raw.c
+--- a/runtime/spu/spu_raw.c
++++ b/runtime/spu/spu_raw.c
+@@ -97,6 +97,10 @@
+ 
+ static raw_spu s_spu[SPU_RAW_COUNT];
+ 
++/* Fingerprint windows declared by the port (spu_raw.h, spu_raw_add_fp_window). */
++spu_raw_fp_window g_spu_raw_fp_windows[SPU_RAW_FP_WINDOW_MAX];
++unsigned          g_spu_raw_fp_window_count;
++
+ static int dbg(void)
+ {
+     static int v = -1;
+@@ -276,13 +280,24 @@
+     /* No image was imported: the PPU streamed the program in by proxy DMA.
+      * Ports register each image's executable segment too (build_spu_workloads
+      * .text fingerprint), so one of the GET runs matches it. */
++    /* The whole run first, then each declared fingerprint window inside it
++     * (spu_raw.h: programs whose image the guest patches before streaming). */
+     for (int r = 0; !s_pending_entry && r < s->get_runs; r++) {
+-        uint64_t fp = spu_workload_fingerprint(vm_base + s->base + s->get_lo[r],
+-                                               s->get_hi[r] - s->get_lo[r]);
+-        s_pending_entry = spu_workload_find_img(fp, &s_pending_image_id);
+-        fprintf(stderr, "[spu-raw] spu%u proxy-loaded LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
+-                n, s->get_lo[r], s->get_hi[r], (unsigned long long)fp,
+-                s_pending_entry ? "lifted entry registered" : "no match");
++        spu_raw_fp_window rng[1 + SPU_RAW_FP_WINDOW_MAX];
++        unsigned nr = spu_raw_run_fp_ranges(s->get_lo[r], s->get_hi[r], rng,
++                                            1 + SPU_RAW_FP_WINDOW_MAX);
++        for (unsigned k = 0; !s_pending_entry && k < nr; k++) {
++            uint64_t fp = spu_workload_fingerprint(vm_base + s->base + rng[k].lo, rng[k].len);
++            s_pending_entry = spu_workload_find_img(fp, &s_pending_image_id);
++            if (k == 0)
++                fprintf(stderr, "[spu-raw] spu%u proxy-loaded LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
++                        n, s->get_lo[r], s->get_hi[r], (unsigned long long)fp,
++                        s_pending_entry ? "lifted entry registered" : "no match");
++            else
++                fprintf(stderr, "[spu-raw] spu%u   window LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
++                        n, rng[k].lo, rng[k].lo + rng[k].len, (unsigned long long)fp,
++                        s_pending_entry ? "lifted entry registered" : "no match");
++        }
+     }
+     s->get_runs = 0;
+     if (!s_pending_entry) {
+diff --git a/runtime/spu/spu_raw.h b/runtime/spu/spu_raw.h
+--- a/runtime/spu/spu_raw.h
++++ b/runtime/spu/spu_raw.h
+@@ -64,6 +64,57 @@
+     return off < SPU_RAW_SPAN && (off & (SPU_RAW_STRIDE - 1)) >= SPU_RAW_PROB_OFF;
+ }
+ 
++/* Fingerprint windows for programs streamed in by proxy DMA.
++ *
++ * A program the PPU streams into local store with proxy GETs (no
++ * _sys_spu_image_import) is resolved at run time by fingerprinting each
++ * contiguous GET run (raw_spu_start). That fails when the guest writes into the
++ * IMAGE in main memory before it streams it: a loader that fills a parameter
++ * block inside the program's own data (pointers, sizes, floats of the current
++ * scene) makes the run's bytes differ from any offline image, and from scene to
++ * scene. A port then registers the program under the fingerprint of a WINDOW of
++ * local store that holds only bytes the guest never patches, and declares that
++ * window here; each GET run containing a declared window is also looked up by
++ * the window's fingerprint, after the whole run missed.
++ *
++ * Windows are LS ranges [lo, lo+len). Declaring one twice is a no-op. Returns 1
++ * if the window is (now) declared, 0 if it is invalid or the table is full. */
++#define SPU_RAW_FP_WINDOW_MAX 16u
++typedef struct { uint32_t lo, len; } spu_raw_fp_window;
++extern spu_raw_fp_window g_spu_raw_fp_windows[SPU_RAW_FP_WINDOW_MAX];
++extern unsigned          g_spu_raw_fp_window_count;
++
++static inline int spu_raw_add_fp_window(uint32_t lo, uint32_t len)
++{
++    if (!len || lo >= SPU_RAW_PROB_OFF || len > SPU_RAW_PROB_OFF - lo) return 0;
++    for (unsigned i = 0; i < g_spu_raw_fp_window_count; i++)
++        if (g_spu_raw_fp_windows[i].lo == lo && g_spu_raw_fp_windows[i].len == len) return 1;
++    if (g_spu_raw_fp_window_count >= SPU_RAW_FP_WINDOW_MAX) return 0;
++    g_spu_raw_fp_windows[g_spu_raw_fp_window_count].lo  = lo;
++    g_spu_raw_fp_windows[g_spu_raw_fp_window_count].len = len;
++    g_spu_raw_fp_window_count++;
++    return 1;
++}
++
++/* The LS ranges to fingerprint for one GET run [run_lo, run_hi), in lookup
++ * order: the whole run first (the behaviour without windows), then every
++ * declared window that lies inside the run and is not the whole run. Returns the
++ * count written to out (at most max). */
++static inline unsigned spu_raw_run_fp_ranges(uint32_t run_lo, uint32_t run_hi,
++                                             spu_raw_fp_window* out, unsigned max)
++{
++    unsigned n = 0;
++    if (!max || run_hi <= run_lo) return 0;
++    out[n].lo = run_lo; out[n].len = run_hi - run_lo; n++;
++    for (unsigned i = 0; i < g_spu_raw_fp_window_count && n < max; i++) {
++        const spu_raw_fp_window w = g_spu_raw_fp_windows[i];
++        if (w.lo >= run_lo && w.lo < run_hi && w.len <= run_hi - w.lo &&
++            !(w.lo == run_lo && w.len == run_hi - run_lo))
++            out[n++] = w;
++    }
++    return n;
++}
++
+ /* Store side effects (run control, mailboxes, proxy DMA). The plain memory store
+  * still happens in vm_write*; this runs after it. */
+ void spu_raw_reg_store(uint32_t ea, uint32_t val, int width);
+diff --git a/runtime/spu/tests/test_spu_raw_fp_window.c b/runtime/spu/tests/test_spu_raw_fp_window.c
+new file mode 100644
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_raw_fp_window.c
+@@ -0,0 +1,87 @@
++/* test_spu_raw_fp_window.c -- fingerprint windows for raw SPU programs streamed in by proxy DMA (spu_raw.h).
++ *
++ * A loader that writes a parameter block into the program image before it streams it makes the GET run's bytes
++ * differ from the offline image; the port registers the program under the fingerprint of an LS window that excludes
++ * the block. This checks the window table and the order raw_spu_start looks ranges up in, and, with a synthetic
++ * image and spu_workload_fingerprint's algorithm, that a window lookup survives any parameter block while the
++ * whole-run lookup does not.
++ *
++ *   gcc -std=gnu17 -Wall -Wextra -I include -I runtime/spu -o t runtime/spu/tests/test_spu_raw_fp_window.c && ./t
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "spu_raw.h"
++
++spu_raw_fp_window g_spu_raw_fp_windows[SPU_RAW_FP_WINDOW_MAX];
++unsigned          g_spu_raw_fp_window_count;
++
++static int g_pass, g_fail;
++#define CHECK(c, what) do { if (c) g_pass++; else { g_fail++; printf("FAIL %s (line %d)\n", what, __LINE__); } } while (0)
++
++/* Same algorithm as spu_workload_fingerprint (FNV-1a-64), kept local so the test links alone. */
++static uint64_t fnv(const uint8_t* p, uint32_t n)
++{
++    uint64_t h = 1469598103934665603ULL;
++    for (uint32_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
++    return h;
++}
++
++static uint8_t ls[0x40000];
++
++int main(void)
++{
++    spu_raw_fp_window r[1 + SPU_RAW_FP_WINDOW_MAX];
++
++    /* no windows: the whole run only (the behaviour before windows) */
++    CHECK(spu_raw_run_fp_ranges(0x60, 0x6E00, r, 17) == 1 && r[0].lo == 0x60 && r[0].len == 0x6DA0, "whole run only");
++    CHECK(spu_raw_run_fp_ranges(0x100, 0x100, r, 17) == 0, "empty run");
++    CHECK(spu_raw_run_fp_ranges(0x60, 0x6E00, r, 0) == 0, "max 0");
++
++    /* invalid windows are refused */
++    CHECK(!spu_raw_add_fp_window(0x60, 0), "len 0");
++    CHECK(!spu_raw_add_fp_window(0x40000, 0x10), "lo past LS");
++    CHECK(!spu_raw_add_fp_window(0x3FFF0, 0x20), "end past LS");
++    CHECK(g_spu_raw_fp_window_count == 0, "nothing stored");
++
++    /* a window, declared twice */
++    CHECK(spu_raw_add_fp_window(0x60, 0x6D50), "add");
++    CHECK(spu_raw_add_fp_window(0x60, 0x6D50), "add again");
++    CHECK(g_spu_raw_fp_window_count == 1, "deduplicated");
++
++    /* run containing it: whole run first, then the window */
++    unsigned n = spu_raw_run_fp_ranges(0x60, 0x6E00, r, 17);
++    CHECK(n == 2 && r[0].lo == 0x60 && r[0].len == 0x6DA0 && r[1].lo == 0x60 && r[1].len == 0x6D50, "run + window");
++    /* runs that do not contain it */
++    CHECK(spu_raw_run_fp_ranges(0x60, 0x6000, r, 17) == 1, "run shorter than the window");
++    CHECK(spu_raw_run_fp_ranges(0x100, 0x7000, r, 17) == 1, "run starting after the window");
++    /* a window equal to the run is not looked up twice */
++    CHECK(spu_raw_add_fp_window(0x200, 0x100), "add second");
++    CHECK(spu_raw_run_fp_ranges(0x200, 0x300, r, 17) == 1, "window == run");
++    /* max is honoured */
++    CHECK(spu_raw_run_fp_ranges(0x60, 0x6E00, r, 1) == 1, "max 1");
++
++    /* table full */
++    for (uint32_t i = 2; i < SPU_RAW_FP_WINDOW_MAX; i++) CHECK(spu_raw_add_fp_window(0x1000 + i * 0x10, 0x10), "fill");
++    CHECK(g_spu_raw_fp_window_count == SPU_RAW_FP_WINDOW_MAX, "full");
++    CHECK(!spu_raw_add_fp_window(0x8000, 0x10), "refused when full");
++    CHECK(spu_raw_add_fp_window(0x60, 0x6D50), "existing one still accepted when full");
++
++    /* a synthetic image with a parameter block at its end: the window resolves it, the whole run does not */
++    for (uint32_t a = 0x60; a < 0x6E00; a++) ls[a] = (uint8_t)(a * 13u + 1u);
++    const uint64_t reg = fnv(ls + 0x60, 0x6D50);          /* what the port registers */
++    const uint64_t clean_run = fnv(ls + 0x60, 0x6DA0);
++    for (int pat = 0; pat < 3; pat++) {
++        for (uint32_t a = 0x6DB0; a < 0x6E00; a++) ls[a] = (uint8_t)(pat == 0 ? 0 : pat == 1 ? 0xFF : a);
++        n = spu_raw_run_fp_ranges(0x60, 0x6E00, r, 17);
++        int hit = -1;
++        for (unsigned k = 0; k < n && hit < 0; k++) if (fnv(ls + r[k].lo, r[k].len) == reg) hit = (int)k;
++        CHECK(hit == 1, "the window lookup hits whatever the parameter block holds");
++        CHECK(fnv(ls + 0x60, 0x6DA0) != reg, "the whole run is not the registered fingerprint");
++    }
++    (void)clean_run;
++
++    printf("%d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}

@@ -1,0 +1,24 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -16042,11 +16042,18 @@
+     u32 target = LD_INVALID_SURFACE;
+     if (buffer_id < 8 && g.display_buffers[buffer_id].valid) {
+         const display_buffer_t* display = &g.display_buffers[buffer_id];
++        /* Patch 6006: several surfaces can sit at a display buffer's offset (R&C ToD registers 1280x720 buffers at 0x0
++         * and 0x438000 and renders 1280x704 targets; the first flip made a 1280x720 fallback surface at 0x0 that nothing
++         * draws into again). Taking the first match presented that blank surface on every flip of buffer 1, so the
++         * window was black on every other frame (rc-RE pass 18). Present the one written last; ties keep the
++         * first match as before. */
++        u32 best_gen = 0;
+         for (u32 i = 0; i < g.n_surfaces; i++) {
+             if (g.surfaces[i].location == display->location &&
+                 g.surfaces[i].offset == display->offset) {
+-                target = i;
+-                break;
++                const u32 gen = g.surfaces[i].last_draw_generation > g.surfaces[i].last_clear_generation
++                                    ? g.surfaces[i].last_draw_generation : g.surfaces[i].last_clear_generation;
++                if (target == LD_INVALID_SURFACE || gen > best_gen) { target = i; best_gen = gen; }
+             }
+         }
+     }

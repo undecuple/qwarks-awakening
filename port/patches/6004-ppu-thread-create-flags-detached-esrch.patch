@@ -1,0 +1,90 @@
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -78,12 +78,20 @@
+ #endif
+ }
+ 
+-/* Find a free slot. Returns index or -1. Must be called under lock. */
++/* Find a free slot. Returns index or -1. Must be called under lock.
++ * Patch 6004: next-fit, not first-fit. The thread id is the slot + 1, and LV2 never hands an exited thread's id to
++ * a new thread; first-fit did at once (R&C ToD: the save-data manager's exited Check Thread, id 16, was taken by
++ * syn_tick_timer_thread, so its get_priority probe kept seeing a live thread). An id now comes back only after the
++ * other 63 slots were used. */
+ static int find_free_slot(void)
+ {
+-    for (int i = 0; i < PPU_THREAD_MAX; i++) {
+-        if (g_ppu_threads[i].state == PPU_THREAD_STATE_FREE)
++    static int s_next = 0;
++    for (int n = 0; n < PPU_THREAD_MAX; n++) {
++        int i = (s_next + n) % PPU_THREAD_MAX;
++        if (g_ppu_threads[i].state == PPU_THREAD_STATE_FREE) {
++            s_next = (i + 1) % PPU_THREAD_MAX;
+             return i;
++        }
+     }
+     return -1;
+ }
+@@ -175,9 +183,11 @@
+     if (info->state == PPU_THREAD_STATE_DETACHED) {
+         /* Detached threads self-clean */
+         info->state = PPU_THREAD_STATE_FREE;
+-    } else {
++    } else if (info->state == PPU_THREAD_STATE_RUNNING) {
+         info->state = PPU_THREAD_STATE_FINISHED;
+     }
++    /* Patch 6004: FINISHED (set by sys_ppu_thread_exit) and FREE (already joined) stay as they are; this used to
++     * turn a freed thread back into FINISHED, so it never looked gone. */
+     table_unlock();
+ 
+     /* Signal anyone waiting for join */
+@@ -352,7 +362,7 @@
+     uint64_t arg          = LV2_ARG_U64(ctx, 2);
+     int32_t  priority     = LV2_ARG_S32(ctx, 3);
+     uint32_t stack_size   = LV2_ARG_U32(ctx, 4);
+-    /* uint64_t flags     = LV2_ARG_U64(ctx, 5); */
++    uint64_t flags        = LV2_ARG_U64(ctx, 5);   /* bit 0 SYS_PPU_THREAD_CREATE_JOINABLE (patch 6004) */
+     uint32_t name_addr    = LV2_ARG_PTR(ctx, 6);
+ 
+     if (stack_size == 0) stack_size = VM_PPU_STACK_SIZE;
+@@ -387,9 +397,13 @@
+     uint64_t thread_id = (uint64_t)(slot + 1);
+     t->ctx.thread_id = thread_id;
+ 
+-    t->state      = PPU_THREAD_STATE_RUNNING;
++    /* Patch 6004: LV2 makes a thread created without SYS_PPU_THREAD_CREATE_JOINABLE detached: it is gone when it
++     * exits, and sys_ppu_thread_get_priority on its id returns ESRCH. Ratchet & Clank ToD's save-data manager
++     * (0x6949d0, pass 15) polls exactly that to see its flags-0 worker finish; with every thread joinable it
++     * waited forever. */
++    t->state      = (flags & 1) ? PPU_THREAD_STATE_RUNNING : PPU_THREAD_STATE_DETACHED;
+     t->priority   = priority;
+-    t->joinable   = 1;
++    t->joinable   = (flags & 1) ? 1 : 0;
+     t->stack_addr = stack_addr;
+     t->stack_size = stack_size;
+     t->entry_addr = entry;
+@@ -543,9 +557,9 @@
+     ppu_thread_info* t = find_thread(tid);
+     if (t) {
+         t->exit_status = (int64_t)status;
+-        if (t->state == PPU_THREAD_STATE_DETACHED) {
+-            t->state = PPU_THREAD_STATE_FREE;
+-        } else {
++        /* Patch 6004: a detached thread stays DETACHED here and the thread proc frees it after the unwind below,
++         * so its slot is not handed to a new thread while this one still finishes in it. */
++        if (t->state != PPU_THREAD_STATE_DETACHED) {
+             t->state = PPU_THREAD_STATE_FINISHED;
+         }
+ 
+@@ -1123,6 +1137,11 @@
+ 
+     table_lock();
+     ppu_thread_info* t = find_thread(tid);
++    if (!t && tid >= 1 && tid <= PPU_THREAD_MAX && g_ppu_threads[tid - 1].entry_addr != 0) {
++        /* Patch 6004: a thread we created that has exited (its slot is FREE again): gone, as on LV2. */
++        table_unlock();
++        return (int64_t)(int32_t)CELL_ESRCH;
++    }
+     if (!t) {
+         /* The main thread (and any thread we didn't spawn via sys_ppu_thread_create)
+          * isn't in our table. Returning ESRCH here is fatal for engines that query

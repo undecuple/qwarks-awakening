@@ -1,0 +1,41 @@
+Upstream PR #387 (open; Toro Lets Party's patch 3009, carried as is): the PPU lifter finds a jump table's bounds compare
+beyond the 30-instruction window, in the function-bounded live window, before the 256-entry fallback. Toro's text:
+PPU lifter: find a jump table's bounds compare beyond the 30-instruction window. General fix (upstream candidate,
+needs the PM's OK). When no `cmp[l]wi rIdx, N` sits in the 30 instructions before the `bctr`, the scan fell back
+to 256 entries; a larger table was cut there. Toro Lets Party func_000A2EC8's script-opcode dispatcher (bctr 0xA2FE0,
+table 0xA2FE4, 292 entries, `cmplwi r29,0x123` at 0xA2F5C = 33 instructions before) lost 27 of its 208 targets
+(indices 258+): index 263 = 0xA3B10 became `[ppu] unresolved indirect call` and the logo scene setup ran on garbage
+(the RE notes s.9). Now the function-bounded live window (win_cand, already used for the table base) is searched
+for the compare before the 256 fallback; the structural and first-hole stops still end the scan. JT_DEBUG prints the
+count found there. Check: JT_DEBUG=0xA2FE0 -> count 291, 208 targets.
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 927fdcc..fc7b619 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -4657,6 +4657,26 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+                             continue
+                         if count is None or _c > count:
+                             count = _c
++            # No compare in the 30-insn window: look through the function-bounded
++            # live window (win_cand) for it. The bounds check can sit further from
++            # the bctr than 30 insns (Toro Lets Party func_000A2EC8: `cmplwi r29,
++            # 0x123` at 0xA2F5C is 33 insns before the bctr at 0xA2FE0), and the
++            # 256 fallback then cut its 292-entry table: 27 opcode handlers
++            # (indices 258+) fell through to an unresolved indirect call
++            # (0xA3B10, index 263) and the script interpreter ran on garbage.
++            if count is None:
++                for w in reversed(win_cand):
++                    if w.mnemonic in ('cmplwi', 'cmpwi'):
++                        a = [x.strip() for x in w.operands.split(',')]
++                        _cmp_reg = a[1] if (a and a[0].startswith('cr')) else (a[0] if a else None)
++                        if _cmp_reg == _raw_idx:
++                            try:
++                                _c = int(a[-1], 0)
++                            except ValueError:
++                                continue
++                            if count is None or _c > count:
++                                count = _c
++                _dbg(all_insns[i].addr, f"count from the live window: {count}")
+             if count is None or count < 0 or count > 4096:
+                 count = 256
+             # The cmp-derived count is a HINT, never a hard cap. It keeps UNDER-

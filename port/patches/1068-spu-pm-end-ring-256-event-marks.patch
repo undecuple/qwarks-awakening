@@ -1,0 +1,506 @@
+KZ3 patch 1068 (SPU pass 52, diagnostic, no behaviour change): the [pm-end] post-mortem (a SPURS policy-module lane run
+that ended anywhere but exitToKernel, which strands the job it had claimed) now keeps 256 drain steps (was 32) and
+marks the control-flow events that bypass the trampoline ring: interrupt taken (I:srr0), iret register restore
+(R:pc), restart dispatch longjmp (X:pc), drain resume at a lifted entry (D:pc), the driver's restart entry (E:pc), each
+with the host depth; the line also gives the wid, image, resident overlay, interrupt enable, event status/mask, srr0,
+the saved-register state (irq_saved, resume pc) and steps, written as one buffer. Found need: KZ3's quit hang, the
+Amadeus mixer job (job_0127a180, wid 5) ends its lane at pc 0x4D70 inside the job with status RUNNING, depth 0, and
+the 32-step ring could not say how.
+--- a/runtime/spu/spu_context.h	2026-10-13 14:20:12.068493541 -0500
++++ b/runtime/spu/spu_context.h	2026-10-13 14:20:12.099973657 -0500
+@@ -38,17 +38,17 @@
+  * Fires from every SPU image's spu_ls_read128/write128. Cheap: one cached
+  * compare on the hot path when disabled.
+  * -----------------------------------------------------------------------*/
+-/* The check sits on every spu_ls_read128/write128, so the disabled case must
+- * be one load and a branch: it was a real call (the function-local statics
+- * kept it out of line) and ~9% of GH3's FMOD mixer task. The list lives in
+- * spu_channels.c; g_spu_ls_watch_n is -1 until the first check reads the env. */
+-extern int g_spu_ls_watch_n;
+-void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr);
+-unsigned* spu_ls_watch_list(int* out_n);   /* the armed lines (n may be 0) */
++/* The check sits on every spu_ls_read128/write128, so the disabled case must
++ * be one load and a branch: it was a real call (the function-local statics
++ * kept it out of line) and ~9% of GH3's FMOD mixer task. The list lives in
++ * spu_channels.c; g_spu_ls_watch_n is -1 until the first check reads the env. */
++extern int g_spu_ls_watch_n;
++void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr);
++unsigned* spu_ls_watch_list(int* out_n);   /* the armed lines (n may be 0) */
+ static inline void spu_ls_watch_hit2(uint32_t lsa, int is_write, const uint8_t* p,
+                                      uint32_t pc, uint32_t lr) {
+-    if (__builtin_expect(g_spu_ls_watch_n == 0, 1)) return;
+-    spu_ls_watch_slow(lsa, is_write, p, pc, lr);
++    if (__builtin_expect(g_spu_ls_watch_n == 0, 1)) return;
++    spu_ls_watch_slow(lsa, is_write, p, pc, lr);
+ }
+ static inline void spu_ls_watch_hit(uint32_t lsa, int is_write, const uint8_t* p) {
+     spu_ls_watch_hit2(lsa, is_write, p, 0, 0);
+@@ -315,7 +315,8 @@
+     void   (*tramp_fn)(struct spu_context*);  /* pending cross-function transfer */
+     uint32_t pch_ring[8];                     /* last trampoline-hop PCs */
+     unsigned pch_n;
+-    uint32_t recent_pc[32];                   /* last drain steps ([pm-end]) */
++    uint32_t recent_pc[256];                  /* last drain steps ([pm-end]); KZ3 patch 1068: 256 (was 32), with
++                                                 event marks (kind << 28 | depth << 20 | pc, spu_recent_mark) */
+     unsigned recent_n;
+     void*    mfc_cache;                       /* this context's MFC engine */
+ 
+@@ -386,22 +387,22 @@
+     uint64_t list_stall_ea_base[32];      /* ea base (hi32 carries), per tag */
+     uint32_t list_stall_cmd[32];          /* base (non-list) MFC command, per tag */
+ 
+-    /* Register file saved when an interrupt is taken, restored at its iret
+-     * (spu_drain.c). Per context: it used to be an 8-slot global table claimed
+-     * without a lock, and two SPU threads taking interrupts at once could take
+-     * the same slot -- one lost its save and returned from the handler with
+-     * the handler's registers. */
+-    int      irq_saved;
+-    uint32_t irq_resume_pc;
+-    u128     irq_gpr[128];
+-
+-    /* Return pc of the innermost spu_drain_call (0 = none). The interpreter
+-     * rejoins there: a return point sits mid-function, so it is no lifted
+-     * entry, and without this the interpreter ran a job's return straight on
+-     * through the caller's code until the next lifted entry -- GH3's job
+-     * manager then ran its buffer loop a second time on the job's registers
+-     * and died in its own assert (the song-freeze). */
+-    uint32_t drain_ret_pc;
++    /* Register file saved when an interrupt is taken, restored at its iret
++     * (spu_drain.c). Per context: it used to be an 8-slot global table claimed
++     * without a lock, and two SPU threads taking interrupts at once could take
++     * the same slot -- one lost its save and returned from the handler with
++     * the handler's registers. */
++    int      irq_saved;
++    uint32_t irq_resume_pc;
++    u128     irq_gpr[128];
++
++    /* Return pc of the innermost spu_drain_call (0 = none). The interpreter
++     * rejoins there: a return point sits mid-function, so it is no lifted
++     * entry, and without this the interpreter ran a job's return straight on
++     * through the caller's code until the next lifted entry -- GH3's job
++     * manager then ran its buffer loop a second time on the job's registers
++     * and died in its own assert (the song-freeze). */
++    uint32_t drain_ret_pc;
+ } spu_context;
+ 
+ /* KZ3 patch 1052: event_status is written by more than one host thread: the
+@@ -520,26 +521,26 @@
+ #define SPU_LS_FAST 1
+ #endif
+ 
+-/* Debug probes of spu_ls_read128, out of line: inlined they kept every LS
+- * load a real call (~10% of GH3's FMOD mixer task). g_spu_ls_probe is -1
+- * until the first call reads SPU_LS_LOWREAD, then 0/1. */
+-
+-/* The diagnostic gates the inline helpers below read. Defined here rather than
+- * in spu_channels.c, as one merged definition per program (selectany / weak),
+- * so every target that includes this header links whether or not it builds
+- * spu_channels.c -- the SPU unit tests and sync_stress do not. */
+-#if defined(_MSC_VER)
+-#  define SPU_GATE __declspec(selectany)
+-#else
+-#  define SPU_GATE __attribute__((weak))
+-#endif
+-SPU_GATE int g_spu_ls_probe   = -1;  /* spu_ls_read_probe (SPU_LS_LOWREAD)      */
+-SPU_GATE int g_spu_smc_watch  = -1;  /* spu_ls_write_probe_smc (SPU_SMC_WATCH)  */
+-SPU_GATE int g_wws_code_probe = 0;   /* WWS code-buffer resolution, capped      */
+-SPU_GATE int g_wws_read_probe = 0;
+-static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context* ctx, uint32_t lsa)
++/* Debug probes of spu_ls_read128, out of line: inlined they kept every LS
++ * load a real call (~10% of GH3's FMOD mixer task). g_spu_ls_probe is -1
++ * until the first call reads SPU_LS_LOWREAD, then 0/1. */
++
++/* The diagnostic gates the inline helpers below read. Defined here rather than
++ * in spu_channels.c, as one merged definition per program (selectany / weak),
++ * so every target that includes this header links whether or not it builds
++ * spu_channels.c -- the SPU unit tests and sync_stress do not. */
++#if defined(_MSC_VER)
++#  define SPU_GATE __declspec(selectany)
++#else
++#  define SPU_GATE __attribute__((weak))
++#endif
++SPU_GATE int g_spu_ls_probe   = -1;  /* spu_ls_read_probe (SPU_LS_LOWREAD)      */
++SPU_GATE int g_spu_smc_watch  = -1;  /* spu_ls_write_probe_smc (SPU_SMC_WATCH)  */
++SPU_GATE int g_wws_code_probe = 0;   /* WWS code-buffer resolution, capped      */
++SPU_GATE int g_wws_read_probe = 0;
++static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context* ctx, uint32_t lsa)
+ {
+-    if (g_spu_ls_probe < 0) g_spu_ls_probe = getenv("SPU_LS_LOWREAD") ? 1 : 0;
++    if (g_spu_ls_probe < 0) g_spu_ls_probe = getenv("SPU_LS_LOWREAD") ? 1 : 0;
+     /* SPU_LS_LOWREAD=1: a job that reads its OWN first bytes as data is
+      * dereferencing a null base -- the job binary loads at LS 0, so [NULL+off]
+      * returns its own instruction words. Report each distinct low address once,
+@@ -573,27 +574,27 @@
+                     off >> 6, (off >> 2) & 0xF, off);
+         }
+     }
+-}
+-
+-/* KZ3 patch 1035: the hot LS accessors and SPU helpers are forced inline. Plain `static inline` was not
+- * enough: in the large lifted functions GCC's growth limits left out-of-line copies (SPU pass 21 profile:
+- * spu_ls_read128 1.2 %, spu_shufb 5.3 % of the level's SPURS thread samples). */
+-#if defined(__GNUC__) || defined(__clang__)
+-#  define SPU_HOT static inline __attribute__((always_inline))
+-#elif defined(_MSC_VER)
+-#  define SPU_HOT static __forceinline
+-#else
+-#  define SPU_HOT static inline
+-#endif
+-SPU_HOT u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
+-{
+-    u128 v;
+-    /* KZ3 patch 1035: the WWS probe below only acts on raw lsa 0xDF0..0xEAF, so test that range first:
+-     * jobs run in the policy-mode context of image 2, where the old test made every LS load a call.
+-     * Same calls for every address the probe acts on (the SPU_LS_LOWREAD part needs !policy_mode). */
+-    if (__builtin_expect(g_spu_ls_probe != 0, 0) ||
+-        __builtin_expect((uint32_t)(lsa - 0xDF0u) < 0xC0u && ctx->image_id == 2 && ctx->policy_mode, 0))
+-        spu_ls_read_probe(ctx, lsa);
++}
++
++/* KZ3 patch 1035: the hot LS accessors and SPU helpers are forced inline. Plain `static inline` was not
++ * enough: in the large lifted functions GCC's growth limits left out-of-line copies (SPU pass 21 profile:
++ * spu_ls_read128 1.2 %, spu_shufb 5.3 % of the level's SPURS thread samples). */
++#if defined(__GNUC__) || defined(__clang__)
++#  define SPU_HOT static inline __attribute__((always_inline))
++#elif defined(_MSC_VER)
++#  define SPU_HOT static __forceinline
++#else
++#  define SPU_HOT static inline
++#endif
++SPU_HOT u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
++{
++    u128 v;
++    /* KZ3 patch 1035: the WWS probe below only acts on raw lsa 0xDF0..0xEAF, so test that range first:
++     * jobs run in the policy-mode context of image 2, where the old test made every LS load a call.
++     * Same calls for every address the probe acts on (the SPU_LS_LOWREAD part needs !policy_mode). */
++    if (__builtin_expect(g_spu_ls_probe != 0, 0) ||
++        __builtin_expect((uint32_t)(lsa - 0xDF0u) < 0xC0u && ctx->image_id == 2 && ctx->policy_mode, 0))
++        spu_ls_read_probe(ctx, lsa);
+     lsa &= SPU_LS_MASK & ~0xFu;
+     const uint8_t* p = &ctx->ls[lsa];
+     spu_ls_watch_hit2(lsa, 0, p, (uint32_t)ctx->pc & SPU_LS_MASK,
+@@ -615,7 +616,7 @@
+     return v;
+ }
+ 
+-static __attribute__((noinline, cold)) void spu_ls_write_probe_pre(spu_context* ctx, uint32_t lsa, u128 val)
++static __attribute__((noinline, cold)) void spu_ls_write_probe_pre(spu_context* ctx, uint32_t lsa, u128 val)
+ {
+     if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode) {
+         extern int g_wws_code_probe;   /* defined in spu_channels.c, capped */
+@@ -643,12 +644,12 @@
+             #undef _RD32
+         }
+     }
+-}
+-/* SPU_SMC_WATCH, out of line: g_spu_smc_watch is -1 until read, then 0/1. */
+-extern int g_spu_smc_watch;
+-static __attribute__((noinline, cold)) void spu_ls_write_probe_smc(spu_context* ctx, uint32_t lsa, const uint8_t* p)
+-{
+-    if (g_spu_smc_watch < 0) g_spu_smc_watch = getenv("SPU_SMC_WATCH") ? 1 : 0;
++}
++/* SPU_SMC_WATCH, out of line: g_spu_smc_watch is -1 until read, then 0/1. */
++extern int g_spu_smc_watch;
++static __attribute__((noinline, cold)) void spu_ls_write_probe_smc(spu_context* ctx, uint32_t lsa, const uint8_t* p)
++{
++    if (g_spu_smc_watch < 0) g_spu_smc_watch = getenv("SPU_SMC_WATCH") ? 1 : 0;
+     /* SPU_SMC_WATCH=<img>: self-modification detector. Log any store whose
+      * target LS line falls inside that image's CODE segment (the segment
+      * bounds come from SPU_SMC_LO/HI, default the pm_wwsjob range 0xA00..
+@@ -668,38 +669,38 @@
+       } }
+ }
+ 
+-SPU_HOT void spu_ls_write128(spu_context* ctx, uint32_t lsa, u128 val)
+-{
+-    lsa &= SPU_LS_MASK & ~0xFu;
+-    uint8_t* p = &ctx->ls[lsa];
+-    /* WWS code-buffer probe: LBP's ChangeLoadToRunJob dispatches to LS[0x1320]
+-     * (= lsaJobCodeBuffer in LBP's layout) + entryOffset. When TecRunJob writes
+-     * that code-buffer LS address, dump the RunJob decision inputs so we can see
+-     * why it resolves to an empty buffer: the resolved address, the whole
+-     * bufferSetArray (0xDF0), and the live loadCommands (0xC00) whose RunJob
+-     * command (commandNum==5) names the code buffer set. */
+-    if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode)
+-        spu_ls_write_probe_pre(ctx, lsa, val);
+-#if SPU_LS_FAST
+-    uint32_t w0 = SPU_BSWAP32(val._u32[0]), w1 = SPU_BSWAP32(val._u32[1]);
+-    uint32_t w2 = SPU_BSWAP32(val._u32[2]), w3 = SPU_BSWAP32(val._u32[3]);
+-    memcpy(p,      &w0, 4); memcpy(p + 4,  &w1, 4);
+-    memcpy(p + 8,  &w2, 4); memcpy(p + 12, &w3, 4);
+-#else
+-    for (int i = 0; i < 4; i++) {
+-        uint32_t w = val._u32[i];
+-        p[i*4]     = (uint8_t)(w >> 24);
+-        p[i*4 + 1] = (uint8_t)(w >> 16);
+-        p[i*4 + 2] = (uint8_t)(w >>  8);
+-        p[i*4 + 3] = (uint8_t)w;
+-    }
+-#endif
+-    spu_ls_watch_hit2(lsa, 1, p, (uint32_t)ctx->pc & SPU_LS_MASK,
+-                      ctx->gpr[0]._u32[0] & SPU_LS_MASK);
+-    if (__builtin_expect(g_spu_smc_watch != 0, 0))
+-        spu_ls_write_probe_smc(ctx, lsa, p);
+-}
+-
++SPU_HOT void spu_ls_write128(spu_context* ctx, uint32_t lsa, u128 val)
++{
++    lsa &= SPU_LS_MASK & ~0xFu;
++    uint8_t* p = &ctx->ls[lsa];
++    /* WWS code-buffer probe: LBP's ChangeLoadToRunJob dispatches to LS[0x1320]
++     * (= lsaJobCodeBuffer in LBP's layout) + entryOffset. When TecRunJob writes
++     * that code-buffer LS address, dump the RunJob decision inputs so we can see
++     * why it resolves to an empty buffer: the resolved address, the whole
++     * bufferSetArray (0xDF0), and the live loadCommands (0xC00) whose RunJob
++     * command (commandNum==5) names the code buffer set. */
++    if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode)
++        spu_ls_write_probe_pre(ctx, lsa, val);
++#if SPU_LS_FAST
++    uint32_t w0 = SPU_BSWAP32(val._u32[0]), w1 = SPU_BSWAP32(val._u32[1]);
++    uint32_t w2 = SPU_BSWAP32(val._u32[2]), w3 = SPU_BSWAP32(val._u32[3]);
++    memcpy(p,      &w0, 4); memcpy(p + 4,  &w1, 4);
++    memcpy(p + 8,  &w2, 4); memcpy(p + 12, &w3, 4);
++#else
++    for (int i = 0; i < 4; i++) {
++        uint32_t w = val._u32[i];
++        p[i*4]     = (uint8_t)(w >> 24);
++        p[i*4 + 1] = (uint8_t)(w >> 16);
++        p[i*4 + 2] = (uint8_t)(w >>  8);
++        p[i*4 + 3] = (uint8_t)w;
++    }
++#endif
++    spu_ls_watch_hit2(lsa, 1, p, (uint32_t)ctx->pc & SPU_LS_MASK,
++                      ctx->gpr[0]._u32[0] & SPU_LS_MASK);
++    if (__builtin_expect(g_spu_smc_watch != 0, 0))
++        spu_ls_write_probe_smc(ctx, lsa, p);
++}
++
+ /* ---------------------------------------------------------------------------
+  * Preferred slot extraction
+  *
+@@ -843,6 +844,12 @@
+  * pm flow capture targets this context, or KZ3_SPU_FASTCG is below 1039 (then g_spu_launch_diag = 1 and
+  * g_spu_depth_max stays 0, so both inline tests fail without a flag of their own: no extra load per hook). */
+ void spu_task_launch_check_full(spu_context* ctx, void* fn); /* SPURS task-launch */
++/* KZ3 patch 1068: an event mark in the [pm-end] ring: kind 1 interrupt taken (pc = srr0), 2 iret register restore
++ * (pc = resume pc), 3 restart dispatch (longjmp to the driver), 4 drain resume at a lifted entry, 5 driver restart
++ * entry (case 2); bits 20-27 = host depth. */
++#define spu_recent_mark(ctx, kind, pcv) \
++    ((ctx)->recent_pc[(ctx)->recent_n++ & 255] = ((uint32_t)(kind) << 28) | (((uint32_t)(ctx)->host_depth & 0xFFu) << 20) | \
++                                                 ((uint32_t)(pcv) & 0x3FFFFu))
+ void spu_check_stack_reset(spu_context* ctx, void (*fn)(spu_context*));
+ void spu_launch_ls0_end(spu_context* ctx);
+ extern int g_spu_launch_diag;              /* 1: always the full hook (diagnostics or KZ3_SPU_FASTCG < 1039) */
+@@ -858,7 +865,7 @@
+         return;
+     }
+     const uint32_t pc = (uint32_t)ctx->pc & SPU_LS_MASK;
+-    ctx->recent_pc[ctx->recent_n++ & 31] = pc;
++    ctx->recent_pc[ctx->recent_n++ & 255] = pc;
+     if (__builtin_expect(g_spu_stack_reset_n != 0, 0) && ctx->host_depth && !ctx->policy_mode)
+         spu_check_stack_reset(ctx, (void (*)(spu_context*))fn);
+     /* same test as the full hook: a job branching to LS 0 (not on the first step) is complete */
+--- a/runtime/spu/spu_drain.c	2026-10-13 14:20:12.070493586 -0500
++++ b/runtime/spu/spu_drain.c	2026-10-13 14:20:12.101621889 -0500
+@@ -93,15 +93,15 @@
+  * set the done bit on the pending records -- the faithful sync equivalent of
+  * the completion interrupt. Env SPU_JOBDRAIN (default off while validating). */
+ extern void spu_halt(spu_context*);
+-/* Last 32 drain steps on this host thread (pc), for post-mortems of a run that
+- * ended where it should not have (spurs_policy.c, [pm-end]). */
+-unsigned spu_recent_pcs(const spu_context* ctx, uint32_t* out, unsigned max)
+-{   /* KZ3 patch 1017: per context (was a thread-local ring, emulated TLS on MinGW) */
+-    unsigned n = ctx->recent_n < 32 ? ctx->recent_n : 32, k = n < max ? n : max;
+-    for (unsigned i = 0; i < k; i++) out[i] = ctx->recent_pc[(ctx->recent_n - k + i) & 31];
+-    return k;
+-}
+-
++/* Last 32 drain steps on this host thread (pc), for post-mortems of a run that
++ * ended where it should not have (spurs_policy.c, [pm-end]). */
++unsigned spu_recent_pcs(const spu_context* ctx, uint32_t* out, unsigned max)
++{   /* KZ3 patch 1017: per context (was a thread-local ring, emulated TLS on MinGW) */
++    unsigned n = ctx->recent_n < 256 ? ctx->recent_n : 256, k = n < max ? n : max;   /* KZ3 patch 1068: 256 */
++    for (unsigned i = 0; i < k; i++) out[i] = ctx->recent_pc[(ctx->recent_n - k + i) & 255];
++    return k;
++}
++
+ /* KZ3 patch 1039: the LS-0 job end of the inline spu_task_launch_check (spu_context.h). */
+ void spu_launch_ls0_end(spu_context* ctx)
+ {
+@@ -113,7 +113,7 @@
+ 
+ void spu_task_launch_check_full(spu_context* ctx, void* fn)
+ {
+-    ctx->recent_pc[ctx->recent_n++ & 31] = (uint32_t)ctx->pc & SPU_LS_MASK;
++    ctx->recent_pc[ctx->recent_n++ & 255] = (uint32_t)ctx->pc & SPU_LS_MASK;
+     extern void spu_check_stack_reset(spu_context*, void (*)(spu_context*));
+     spu_check_stack_reset(ctx, (void (*)(spu_context*))fn);
+     /* A SPURS job returning to LS 0 is finished -- its crt tail-jumps to the
+@@ -274,9 +274,9 @@
+  * until iret). */
+ static void spu_irq_regs_save(spu_context* ctx)
+ {
+-    ctx->irq_saved = 1;
+-    ctx->irq_resume_pc = ctx->srr0;
+-    memcpy(ctx->irq_gpr, ctx->gpr, sizeof ctx->irq_gpr);
++    ctx->irq_saved = 1;
++    ctx->irq_resume_pc = ctx->srr0;
++    memcpy(ctx->irq_gpr, ctx->gpr, sizeof ctx->irq_gpr);
+ }
+ 
+ /* Called from spu_indirect_branch on every dispatch. Restores + clears when
+@@ -287,17 +287,18 @@
+  * context's registers wholesale. A fresh run must never do that. */
+ void spu_irq_regs_forget(spu_context* ctx)
+ {
+-    ctx->irq_saved = 0;
++    ctx->irq_saved = 0;
+ }
+ 
+ int spu_irq_regs_maybe_restore(spu_context* ctx)
+ {
+-    {
+-        if (ctx->irq_saved) {
+-            if ((ctx->pc & SPU_LS_MASK) == (ctx->irq_resume_pc & SPU_LS_MASK) &&
++    {
++        if (ctx->irq_saved) {
++            if ((ctx->pc & SPU_LS_MASK) == (ctx->irq_resume_pc & SPU_LS_MASK) &&
+                 ctx->int_enable) {
+-                memcpy(ctx->gpr, ctx->irq_gpr, sizeof ctx->irq_gpr);
+-                ctx->irq_saved = 0;
++                memcpy(ctx->gpr, ctx->irq_gpr, sizeof ctx->irq_gpr);
++                ctx->irq_saved = 0;
++                spu_recent_mark(ctx, 2, ctx->pc);   /* KZ3 patch 1068 */
+                 /* The iret completed below the frame that took the interrupt:
+                  * abandon the handler's host frames and resume there. */
+                 spu_irq_frame* f = (spu_irq_frame*)ctx->irq_frame;
+@@ -357,6 +358,7 @@
+         return tf;
+     }
+     ctx->srr0 = ctx->pc;             /* resume point for iret */
++    spu_recent_mark(ctx, 1, ctx->srr0);   /* KZ3 patch 1068 */
+     ctx->int_enable = 0;
+     spu_irq_regs_save(ctx);          /* hardware contract: handler preserves regs */
+     { static int s_it = -1; if (s_it < 0) s_it = getenv("SPU_IRQTRACE") ? 1 : 0;
+@@ -459,7 +461,7 @@
+      * loop exits, whichever first. */
+     spu_irq_frame f;
+     f.prev = 0; f.depth = 0; f.image_id = 0;
+-#define SPU_DRAIN_POP_IRQ() do { if (ctx->irq_frame == &f) ctx->irq_frame = f.prev; ctx->drain_ret_pc = 0; } while (0)
++#define SPU_DRAIN_POP_IRQ() do { if (ctx->irq_frame == &f) ctx->irq_frame = f.prev; ctx->drain_ret_pc = 0; } while (0)
+     for (;;) {
+         while (g_spu_trampoline_fn) {
+             if (g_spu_trampoline_fn == spu_indirect_branch &&
+@@ -470,7 +472,7 @@
+             }
+             void (*fn)(spu_context*) = g_spu_trampoline_fn;
+             g_spu_trampoline_fn = 0;
+-            ctx->drain_ret_pc = return_pc & SPU_LS_MASK;   /* re-set: a nested drain changed it */
++            ctx->drain_ret_pc = return_pc & SPU_LS_MASK;   /* re-set: a nested drain changed it */
+             if (g_yz_lockstep_on) yz_lockstep_tick(ctx);
+             spu_task_launch_check(ctx, (void*)fn);
+             if (ctx->int_enable && (ctx->event_status & ctx->event_mask)) {
+@@ -512,6 +514,7 @@
+                             (unsigned)(return_pc & SPU_LS_MASK), pc, ctx->image_id, ctx->host_depth,
+                             (int)ctx->resident_ovl); }
+                 g_spu_trampoline_fn = spu_indirect_branch;
++                spu_recent_mark(ctx, 4, pc);   /* KZ3 patch 1068 */
+                 continue;
+             }
+         }
+--- a/runtime/spu/spu_channels.c	2026-10-13 14:20:12.073493655 -0500
++++ b/runtime/spu/spu_channels.c	2026-10-13 14:57:27.973638898 -0500
+@@ -117,6 +117,7 @@
+ void spu_restart_dispatch(spu_context* ctx)
+ {
+     g_spu_trampoline_fn = 0;
++    spu_recent_mark(ctx, 3, ctx->pc);   /* KZ3 patch 1068 */
+     if (s_spu_halt_armed) longjmp(s_spu_halt_env, 2);
+     fprintf(stderr, "[spu] non-local return outside execution driver at 0x%05X\n", ctx->pc);
+     ctx->status = SPU_STATUS_STOPPED_BY_HALT;
+@@ -281,6 +282,7 @@
+          * Re-enter its target with the same guest state on the driver stack. */
+         ctx->host_depth = 0;
+         g_spu_trampoline_fn = 0;
++        spu_recent_mark(ctx, 5, ctx->pc);   /* KZ3 patch 1068 */
+         spu_indirect_branch(ctx);
+         SPU_DRAIN(ctx);
+         break;
+@@ -2166,7 +2168,16 @@
+  * the small instruction set such stubs use, and exit back into lifted code at
+  * the first branch (trampoline re-dispatch). Returns 1 if it executed to a
+  * branch, 0 on an unknown opcode (caller falls through to BRANCH-TO-0). */
+-static int spu_smc_microstep(spu_context* ctx)
++extern int g_kz3_pmend_ib;
++static int spu_smc_microstep_body(spu_context* ctx);
++static int spu_smc_microstep(spu_context* ctx)   /* KZ3 patch 1068: marks around the body */
++{
++    if (g_kz3_pmend_ib > 0) spu_recent_mark(ctx, 8, ctx->pc);
++    const int r = spu_smc_microstep_body(ctx);
++    if (!r && g_kz3_pmend_ib > 0) spu_recent_mark(ctx, 9, ctx->pc);
++    return r;
++}
++static int spu_smc_microstep_body(spu_context* ctx)
+ {
+     uint32_t pc = ctx->pc & SPU_LS_MASK & ~3u;
+     for (int steps = 0; steps < 4096; steps++) {
+@@ -2340,8 +2351,15 @@
+     return 0;
+ }
+ 
++/* KZ3 patch 1068: KZ3_PMEND_IB=1 also marks every indirect-branch entry in the [pm-end] ring (B:pc, then L:link
++ * register) and the SMC microstep (M:pc entry, F:pc when it gives up). Off by default (one global test). */
++int g_kz3_pmend_ib = -1;
+ void spu_indirect_branch(spu_context* ctx)
+ {
++    if (__builtin_expect(g_kz3_pmend_ib != 0, 0)) {
++        if (g_kz3_pmend_ib < 0) { const char* e = getenv("KZ3_PMEND_IB"); g_kz3_pmend_ib = (e && *e == '1') ? 1 : 0; }
++        if (g_kz3_pmend_ib) { spu_recent_mark(ctx, 6, ctx->pc); spu_recent_mark(ctx, 7, ctx->gpr[0]._u32[0]); }
++    }
+     if (g_kz3_trace_ctx == (void*)ctx) kz3_trace(ctx, "ib", 0, ctx->gpr[0]._u32[0]);
+     if (__builtin_expect(g_spu_ovl_skip_any, 0) && ctx->resident_ovl > 0)
+         spu_overlay_skip_entry(ctx, ctx->resident_ovl);   /* KZ3 patch 1043 */
+--- a/runtime/spu/spurs_policy.c	2026-10-13 14:20:12.075493700 -0500
++++ b/runtime/spu/spurs_policy.c	2026-10-13 14:57:27.974057977 -0500
+@@ -459,13 +459,35 @@
+      * the jobs it had claimed (GH3's once-per-~10-songs freeze): say how. */
+     if (((uint32_t)ctx->pc & SPU_LS_MASK) != SPURS_PM_EXIT_TO_KERNEL_LS) {
+         extern unsigned spu_recent_pcs(const spu_context*, uint32_t*, unsigned);
+-        uint32_t r[32]; unsigned n = spu_recent_pcs(ctx, r, 32);
++        uint32_t r[256]; unsigned n = spu_recent_pcs(ctx, r, 256);
+         static volatile long s_pe; if (__atomic_add_fetch(&s_pe, 1, __ATOMIC_RELAXED) <= 64) {
+-            fprintf(stderr, "[pm-end] lane %u ctx=%p halted=%d status=0x%X pc=0x%05X lr=0x%05X r3=0x%08X depth=%u recent:",
+-                    spu_num, (void*)ctx, pm_halted, ctx->status, (uint32_t)ctx->pc & SPU_LS_MASK,
+-                    ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[3]._u32[0], ctx->host_depth);
+-            for (unsigned k = 0; k < n; k++) fprintf(stderr, " %05X", r[k]);
+-            fprintf(stderr, "\n"); fflush(stderr); } }
++            /* KZ3 patch 1068: one buffer (other threads print too), 256 steps, event marks (I = interrupt taken at srr0,
++             * R = iret register restore, X = restart dispatch, D = drain resume, E = driver restart entry; /depth),
++             * and the interrupt state. */
++            static char buf[8192]; static volatile long s_bl;
++            while (__atomic_exchange_n(&s_bl, 1, __ATOMIC_ACQUIRE)) { }
++            int p = snprintf(buf, sizeof buf, "[pm-end] lane %u wid %u ctx=%p halted=%d status=0x%X pc=0x%05X lr=0x%05X r3=0x%08X depth=%u "
++                    "img=%d ovl=%d int=%u evst=0x%X evmask=0x%X srr0=0x%05X irq_saved=%d resume=0x%05X steps=%u recent:",
++                    spu_num, wid, (void*)ctx, pm_halted, ctx->status, (uint32_t)ctx->pc & SPU_LS_MASK,
++                    ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[3]._u32[0], ctx->host_depth, ctx->image_id,
++                    ctx->resident_ovl, ctx->int_enable, ctx->event_status, ctx->event_mask, ctx->srr0 & SPU_LS_MASK,
++                    ctx->irq_saved, ctx->irq_resume_pc & SPU_LS_MASK, (unsigned)ctx->steps);
++            for (unsigned k = 0; k < n && p < (int)sizeof buf - 40; k++) {
++                const uint32_t v = r[k], kind = v >> 28;
++                if (k && k % 40 == 0) p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   +%u:", k);   /* log lines are cut near 1 KB */
++                if (kind) p += snprintf(buf + p, sizeof buf - p, " %c:%05X/%u", "?IRXDEBLMF"[kind < 10 ? kind : 0], v & 0x3FFFF, (v >> 20) & 0xFF);
++                else p += snprintf(buf + p, sizeof buf - p, " %05X", v & 0x3FFFF);
++            }
++            { const uint8_t* L = ctx->ls;   /* registers a call through a pointer uses, and the LS around pc and lr */
++              p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   r2=%08X r80=%08X r95=%08X r126=%08X LS1320=%02X%02X%02X%02X LS[pc&~0xF]:",
++                            ctx->gpr[2]._u32[0], ctx->gpr[80]._u32[0], ctx->gpr[95]._u32[0], ctx->gpr[126]._u32[0],
++                            L[0x1320], L[0x1321], L[0x1322], L[0x1323]);
++              const uint32_t a0 = ((uint32_t)ctx->pc & SPU_LS_MASK & ~0xFu), a1 = ((ctx->gpr[0]._u32[0] & SPU_LS_MASK & ~0xFu) - 0x40) & SPU_LS_MASK;
++              for (uint32_t o = 0; o < 32 && a0 + o + 3 < 0x40000; o += 4) p += snprintf(buf + p, sizeof buf - p, " %02X%02X%02X%02X", L[a0+o], L[a0+o+1], L[a0+o+2], L[a0+o+3]);
++              p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   LS[lr-0x40 = 0x%05X..]:", a1);
++              for (uint32_t o = 0; o < 0x60 && a1 + o + 3 < 0x40000; o += 4) p += snprintf(buf + p, sizeof buf - p, " %02X%02X%02X%02X", L[a1+o], L[a1+o+1], L[a1+o+2], L[a1+o+3]); }
++            fprintf(stderr, "%s\n", buf); fflush(stderr);
++            __atomic_store_n(&s_bl, 0, __ATOMIC_RELEASE); } }
+ 
+     if (s_claimlog) {
+         unsigned claims = g_spu_putllc_sync_hit - claim_before;

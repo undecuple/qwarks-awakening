@@ -1,0 +1,23 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Ratchet & Clank Future: Tools of Destruction",
+  "system": "PS3",
+  "type": "recomp",
+  "original": {
+    "region": "US",
+    "serial": "BCUS98127",
+    "revision": "disc, no update"
+  },
+  "project": "Qwark's Awakening",
+  "status": "in-progress",
+  "targets": ["PC (Windows)"],
+  "toolchain": ["ps3recomp"],
+  "approach": "Static recompilation of the PPU and SPU code to C with ps3recomp, HLE system libraries, Direct3D 12 RSX backend",
+  "maintainers": [{"name": "undecuple", "link": "https://github.com/undecuple"}],
+  "links": [
+    {"label": "Repository", "url": "https://github.com/undecuple/qwarks-awakening"}
+  ],
+  "help": ["Testing on real Windows with NVIDIA GPUs"],
+  "tags": ["cell", "spurs", "d3d12"],
+  "notes": "Early work: starts, reaches the title menu and plays the opening cutscene, with known graphics bugs; not playable yet. Needs your own copy of the game (disc dump and its decrypted EBOOT); the build happens on your PC."
+}

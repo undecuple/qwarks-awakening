@@ -1,0 +1,617 @@
+Patch 6008: immediate-mode (register-based) vertices reach the live renderer (rc-RE pass 19-20, found with patch
+6007's RSX_BE_LOG on run tods-be-log). Tools of Destruction's main menu draws its Bink movie background as BEGIN QUADS,
+one DATA4UB colour (attr2), then per vertex DATA2F attr1, DATA2F attr3 and DATA2F attr0 (position) last; the live
+renderer drew nothing for these groups.
+rsx_dispatch.c: vtx_attr0_completes(): the last word of ATTR0 in every SET_VERTEX_DATA* format completes a vertex
+(DATA1F 0x1E40, DATA2F 0x1884, DATA3F 0x1508, DATA4F 0x1C0C, DATA2S 0x1900, DATA4UB 0x1940, DATA4S 0x1984,
+DATA_SCALED4S 0x0A84), not only DATA3F z and DATA4F w. RPCS3 [rsx_vertex_data.cpp get_vertex_id] counts a vertex once
+ATTR0 has all the dwords of its format.
+rsx_live_draw.c: sink.immediate_vertex: one ATTR0..15 snapshot per vertex (growable, 4096 cap: a larger group is
+logged and not drawn, never a truncated prefix), drawn at END through the ordinary path (compact or legacy payload,
+same topology rebuild, PSO and textures); not in the vertex payload cache, never GPU-fetched. A group that also has
+array/index/inline batches draws the batches as before and leaves the immediate vertices out (logged; RPCS3 uses the
+push-buffer count only when no draw command was set). Tests: test_rsx_immediate_vertex (host, CI), a DATA2F quad in
+test_rsx_draw_engine, test_live_draw_immediate_quads (Windows D3D12). General; upstream only with the PM's OK.
+
+diff --git a/.github/workflows/linux.yml b/.github/workflows/linux.yml
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -308,6 +308,10 @@
+           # walk they are now computed without.
+           ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} -std=gnu17 -O2 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -o /tmp/test_vertex_fetch_plan libs/video/tests/test_vertex_fetch_plan.c libs/video/rsx_vertex_compact.c libs/video/rsx_dispatch.c
+           /tmp/test_vertex_fetch_plan
++          # Immediate-mode vertices: the last word of ATTR0 in every
++          # SET_VERTEX_DATA* format completes one (patch 6008).
++          ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -o /tmp/test_rsx_immediate_vertex libs/video/tests/test_rsx_immediate_vertex.c libs/video/rsx_dispatch.c
++          /tmp/test_rsx_immediate_vertex
+           ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -I libs/video/tests -o /tmp/test_color_feedback_engine libs/video/tests/test_color_feedback_engine.c libs/video/rsx_dispatch.c libs/video/rsx_vertex_compact.c libs/video/rsx_texture_layout.c libs/video/rsx_vp_decompiler.c libs/video/rsx_fp_decompiler.c
+           /tmp/test_color_feedback_engine
+           # The NV4097 method decoder on its own: the vertex-constant window is
+diff --git a/.github/workflows/macos.yml b/.github/workflows/macos.yml
+--- a/.github/workflows/macos.yml
++++ b/.github/workflows/macos.yml
+@@ -346,6 +346,10 @@
+           # walk they are now computed without.
+           clang -std=gnu17 -O2 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -o /tmp/test_vertex_fetch_plan libs/video/tests/test_vertex_fetch_plan.c libs/video/rsx_vertex_compact.c libs/video/rsx_dispatch.c
+           /tmp/test_vertex_fetch_plan
++          # Immediate-mode vertices: the last word of ATTR0 in every
++          # SET_VERTEX_DATA* format completes one (patch 6008).
++          clang -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -o /tmp/test_rsx_immediate_vertex libs/video/tests/test_rsx_immediate_vertex.c libs/video/rsx_dispatch.c
++          /tmp/test_rsx_immediate_vertex
+           clang -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video -I libs/video/tests -o /tmp/test_color_feedback_engine libs/video/tests/test_color_feedback_engine.c libs/video/rsx_dispatch.c libs/video/rsx_vertex_compact.c libs/video/rsx_texture_layout.c libs/video/rsx_vp_decompiler.c libs/video/rsx_fp_decompiler.c
+           /tmp/test_color_feedback_engine
+           # The NV4097 method decoder on its own: the vertex-constant window is
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -304,6 +304,28 @@
+     }
+ }
+ 
++/* Patch 6008: the last word of ATTR0 (position) in every SET_VERTEX_DATA* format completes an immediate vertex,
++ * not only DATA3F z and DATA4F w. R&C ToD's main menu draws its movie background as QUADS whose position is
++ * DATA2F (0x1880/0x1884), and none of its vertices reached the renderer. RPCS3 counts a vertex once ATTR0 has
++ * received all the dwords of its format (rsx_vertex_data.cpp get_vertex_id: dword count / vertex size in dwords),
++ * which is the word that completes it here. Bases: gcm_enums.h NV4097_SET_VERTEX_DATA*_M. */
++static int vtx_attr0_completes(u32 m)
++{
++    switch (m) {
++    case 0x1E40:   /* DATA1F x */
++    case 0x1884:   /* DATA2F y */
++    case 0x1508:   /* DATA3F z */
++    case 0x1C0C:   /* DATA4F w */
++    case 0x1900:   /* DATA2S xy (one word) */
++    case 0x1940:   /* DATA4UB xyzw (one word) */
++    case 0x1984:   /* DATA4S zw (second word) */
++    case 0x0A84:   /* DATA_SCALED4S zw (second word) */
++        return 1;
++    default:
++        return 0;
++    }
++}
++
+ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
+ {
+     method &= 0xFFFFC;
+@@ -362,10 +384,10 @@
+         (method >= 0x0A80 && method < 0x0B00))
+         vtx_const_fold(rsx, method, arg);
+ 
+-    /* Completing a floating-point position emits a register-based vertex.
++    /* Completing a position emits a register-based vertex.
+      * Other attributes update the current values copied with that position.
+      * Keep these writes as ordinary constant state outside BEGIN/END. */
+-    if (rsx->in_begin_end && (method == 0x1508 || method == 0x1C0C) &&
++    if (rsx->in_begin_end && vtx_attr0_completes(method) &&
+         rsx->sink.immediate_vertex)
+         rsx->sink.immediate_vertex(rsx->sink.user, rsx);
+ 
+diff --git a/libs/video/rsx_dispatch.h b/libs/video/rsx_dispatch.h
+--- a/libs/video/rsx_dispatch.h
++++ b/libs/video/rsx_dispatch.h
+@@ -107,7 +107,8 @@
+     void (*inline_array)(void* user, const rsx_dispatch* rsx,
+                          const u8* data, u32 bytes);
+     void (*flip)(void* user, const rsx_dispatch* rsx, u32 arg);
+-    /* A completed ATTR0 DATA3F/DATA4F inside BEGIN emits one vertex.
++    /* A completed ATTR0 inside BEGIN emits one vertex: the last word of any
++     * SET_VERTEX_DATA* format (patch 6008; was DATA3F/DATA4F only).
+      * Snapshot the current attributes now; later register writes replace them.
+      * Array formats, offsets and frequencies do not describe this stream. */
+     void (*immediate_vertex)(void* user, const rsx_dispatch* rsx);
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -9503,6 +9503,13 @@
+      * the n_verts position at each one and the STRIP/FAN expansion must
+      * not bridge across a cut. */
+     u32*    cuts; u32 n_cuts, cap_cuts;
++    /* Patch 6008: register-based (immediate) vertices of this group, one ATTR0..15 float4 snapshot per completed
++     * position (rsx_dispatch_sink.immediate_vertex). They replace the array fetch: the array formats, offsets and
++     * frequencies do not describe this stream. imm_refused: the group passed LD_MAX_IMMEDIATE_VERTICES and is not
++     * drawn (never a truncated prefix). inline_dropped_at_begin: the dispatcher's lost-stream count at BEGIN. */
++    float (*imm)[16][4]; u32 n_imm, cap_imm;
++    int     imm_refused;
++    u32     inline_dropped_at_begin;
+     int vg;              /* patch 2076: this draw's vertices are fetched on the GPU (payload = u32 element) */
+     rsx_vg_draw vg_d;    /* patch 2076: its table and raw spans */
+ } draw_ctx;
+@@ -9560,6 +9567,7 @@
+     dc.n_cuts = 0;
+     dc.fetch_ok = 1;
+     dc.inl = NULL; dc.inl_bytes = dc.inl_stride = 0;
++    dc.n_imm = 0; dc.imm_refused = 0;   /* patch 6008 */
+ }
+ static void push_vert(const vtx_t* v)
+ {
+@@ -9744,8 +9752,29 @@
+     push_vert(&v);
+ }
+ 
++/* Patch 6008: an immediate group's payload is its snapshots, in layout order (packed: layout->stride per vertex,
++ * one float4 per slot; legacy: the full vtx_t). One reference per vertex, never remapped, no restart cuts. */
++static void fetch_immediate(const rsx_vertex_layout_plan* layout, int packed_payload)
++{
++    dc.n_refs = dc.n_source_refs = dc.n_imm;
++    dc.refs_remapped = 0;
++    dc.n_cuts = 0;
++    if (packed_payload) {
++        if (!reserve_compact_vertices((u64)dc.n_imm * layout->stride)) { dc.fetch_ok = 0; return; }
++        for (u32 v = 0; v < dc.n_imm; v++)
++            for (u32 slot = 0; slot < layout->count; slot++)
++                memcpy(dc.compact_verts + (u64)v * layout->stride + slot * 16u, dc.imm[v][layout->attrs[slot]], 16u);
++    } else {
++        if (!reserve_legacy_vertices(dc.n_imm)) { dc.fetch_ok = 0; return; }
++        for (u32 v = 0; v < dc.n_imm; v++)
++            memcpy(dc.verts[v].a, dc.imm[v], sizeof(dc.verts[v].a));
++    }
++    dc.n_verts = dc.n_imm;
++}
++
+ static void fetch_batches(void)
+ {
++    if (dc.n_imm) { fetch_immediate(NULL, 0); return; }   /* patch 6008 */
+     const u32 base = rsx_dsp_vertex_data_base_offset(&g.rsx);
+     for (u32 r = 0; r < dc.n_arr && dc.fetch_ok; r++)
+         for (u32 i = 0; i < dc.arr[r].count && dc.fetch_ok; i++)
+@@ -9785,6 +9814,12 @@
+ static void fetch_batches_hoisted(
+     const rsx_vertex_layout_plan* layout, int packed_payload)
+ {
++    if (dc.n_imm) {   /* patch 6008: no guest fetch; the plan supplies only the defaults the diagnostics read */
++        dc.layout = *layout;
++        rsx_vertex_fetch_plan_init(&dc.fetch_plan, &g.rsx, layout, (rsx_vertex_guest_ptr_fn)g.guest_ptr, g.guest_user);
++        fetch_immediate(layout, packed_payload);
++        return;
++    }
+     LDW_T0(refs_t0);   /* patch 2033: vertex-fetch split */
+     for (u32 batch = 0; batch < dc.n_arr && dc.fetch_ok; batch++)
+         for (u32 i = 0; i < dc.arr[batch].count && dc.fetch_ok; i++)
+@@ -10023,6 +10058,7 @@
+ static u32 ld_vc_key(u32 prim, const rsx_vertex_layout_plan* layout)
+ {
+     if (dc.inl || dc.inl_bytes) { g_vc_st.inel_inline++; return 0; }
++    if (dc.n_imm) { g_vc_st.inel_other++; return 0; }   /* patch 6008: the payload is register values, not memory */
+     if (2u * (dc.n_arr + dc.n_idx) + 16u * 10u + 32u > LD_VC_KEY_MAX) { g_vc_st.inel_other++; return 0; }
+     u32 n = 0;
+     u32* k = g_vc_key;
+@@ -10313,6 +10349,8 @@
+         return (const float*)(
+             dc.compact_verts + (u64)vertex * dc.layout.stride +
+             (u32)slot * 16u);
++    if (dc.n_imm && vertex < dc.n_imm)   /* patch 6008: no guest reference behind an immediate vertex */
++        return dc.imm[vertex][attr];
+ 
+     const rsx_vertex_fetch_attr* fetch = &dc.fetch_plan.attr[attr];
+     if (vertex < dc.n_verts && fetch->desc.type && fetch->desc.size &&
+@@ -11131,7 +11169,11 @@
+     ld_movie_reset_rings();
+ }
+ 
+-static void sink_begin(void* u, const rsx_dispatch* r, u32 prim) { (void)u; (void)r; (void)prim; dc_reset(); }
++static void sink_begin(void* u, const rsx_dispatch* r, u32 prim)
++{
++    (void)u; (void)prim; dc_reset();
++    dc.inline_dropped_at_begin = r->inline_dropped;   /* patch 6008 */
++}
+ static void sink_draw_arrays(void* u, const rsx_dispatch* r, u32 first, u32 count)
+ {
+     (void)u; (void)r; g_ld_stats.packets_seen++;
+@@ -11183,6 +11225,52 @@
+     g_ld_stats.packets_queued++;
+ }
+ 
++/* Patch 6008: a completed ATTR0 inside BEGIN/END (rsx_dispatch.c vtx_attr0_completes) is one vertex made of the
++ * current attribute values. Snapshot all sixteen now, as rsx_draw_engine.c's sink_immediate_vertex does; later
++ * writes replace them for the next vertex. A written register is taken as written (W/alpha may be an explicit 0,
++ * which rsx_dsp_vertex_default reads as unwritten); an unwritten one gets the default a disabled array reads,
++ * including the white ATTR3 of rsx_vertex_fetch_plan_init. One packet per vertex in the packet ledger. */
++#define LD_MAX_IMMEDIATE_VERTICES 4096u
++static void sink_immediate_vertex(void* u, const rsx_dispatch* r)
++{
++    (void)u; g_ld_stats.packets_seen++;
++    if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) {
++        g_ld_stats.packets_movie++;
++        return;
++    }
++    dc.n_packets++;
++    if (dc.imm_refused) { g_ld_stats.packets_queue_full++; return; }
++    if (dc.n_imm == LD_MAX_IMMEDIATE_VERTICES) {
++        static u32 logged;
++        if (logged++ < 8)
++            fprintf(stderr, "[live-draw] immediate group passed %u vertices (prim %u): not drawn\n",
++                    LD_MAX_IMMEDIATE_VERTICES, r->current_primitive);
++        dc.imm_refused = 1;
++        g_ld_stats.packets_queue_full++;
++        return;
++    }
++    if (dc.n_imm == dc.cap_imm) {
++        const u32 next = dc.cap_imm ? dc.cap_imm * 2u : 64u;
++        void* p = realloc(dc.imm, (size_t)next * sizeof(*dc.imm));
++        if (!p) { dc.imm_refused = 1; g_ld_stats.packets_queue_full++; return; }
++        dc.imm = (float (*)[16][4])p;
++        dc.cap_imm = next;
++    }
++    for (u32 attr = 0; attr < 16; attr++) {
++        float* value = dc.imm[dc.n_imm][attr];
++        const u32 base = (0x1C00u + attr * 16u) >> 2;
++        if (r->seen[base] || r->seen[base + 1] || r->seen[base + 2] || r->seen[base + 3]) {
++            memcpy(value, &r->regs[base], 16u);
++            continue;
++        }
++        rsx_dsp_vertex_default(r, attr, value);
++        if (attr == 3 && value[0] == 0.0f && value[1] == 0.0f && value[2] == 0.0f && value[3] == 1.0f)
++            value[0] = value[1] = value[2] = 1.0f;
++    }
++    dc.n_imm++;
++    g_ld_stats.packets_queued++;
++}
++
+ void rsx_live_draw_set_a010_camera_matrix(const float* matrix16)
+ {
+     if (!matrix16) {
+@@ -12627,6 +12715,19 @@
+     if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) return;
+     if (!dc.n_packets) { g_ld_stats.groups_empty++; return; }
+     g_ld_stats.groups_seen++;
++    /* Patch 6008: immediate vertices with an array, index or inline batch in the same group have no defined
++     * concatenation. RPCS3 draws the push-buffer (immediate) count only when the group set no draw command
++     * (nv4097 set_begin_end), so the batches are drawn as before and the immediate vertices are left out.
++     * ASSUMPTION: the hardware does the same; rsx_draw_engine.c rejects such a group instead. */
++    if (dc.n_imm && (dc.n_arr || dc.n_idx || dc.inl_bytes || r->inline_dropped != dc.inline_dropped_at_begin)) {
++        static u32 logged;
++        if (logged++ < 8)
++            fprintf(stderr, "[live-draw] group mixes %u immediate vertices with %u array/%u index/%u inline-byte "
++                            "batches (prim %u): immediate vertices left out\n",
++                    dc.n_imm, dc.n_arr, dc.n_idx, dc.inl_bytes, g.rsx.current_primitive);
++        dc.n_imm = 0; dc.imm_refused = 0;
++    }
++    if (dc.imm_refused) { g_ld_stats.group_drop_fetch++; return; }   /* patch 6008: logged at the cap */
+     if (ld_submit_chunk() && ++g_ld_unsubmitted > (u32)ld_submit_chunk())
+         ld_submit_nowait();   /* patch 2029: before this draw records anything */
+     LDW_T0(pre_t0);   /* patch 2045: draw split */
+@@ -14445,6 +14546,7 @@
+     sink.draw_arrays = sink_draw_arrays;
+     sink.inline_array = sink_inline_array;
+     sink.draw_index_array = sink_draw_index;
++    sink.immediate_vertex = sink_immediate_vertex;   /* patch 6008 */
+     sink.flip = sink_flip;
+     sink.report = sink_report;   /* patch 2025 */
+     rsx_dispatch_init(&g.rsx, &sink);
+@@ -17365,6 +17467,7 @@
+     rsx_tex_lru_init(&g_ld_tex_lru);   /* patch 2075: the cache is empty again */
+     if (dc.verts) { free(dc.verts); dc.verts = NULL; dc.cap_verts = 0; }
+     if (dc.refs) { free(dc.refs); dc.refs = NULL; dc.cap_refs = 0; }
++    if (dc.imm) { free(dc.imm); dc.imm = NULL; dc.cap_imm = 0; }   /* patch 6008 */
+     if (dc.compact_verts) {
+         free(dc.compact_verts);
+         dc.compact_verts = NULL;
+diff --git a/libs/video/tests/test_live_draw_immediate_quads.c b/libs/video/tests/test_live_draw_immediate_quads.c
+new file mode 100644
+--- /dev/null
++++ b/libs/video/tests/test_live_draw_immediate_quads.c
+@@ -0,0 +1,91 @@
++/*
++ * D3D12 live-draw test (patch 6008): immediate-mode QUADS reach the screen.
++ *
++ * R&C ToD's main menu draws its movie background with register-based
++ * vertices: BEGIN QUADS, one DATA4UB colour (attr2), then per vertex DATA2F
++ * attr1, DATA2F attr3 and DATA2F attr0 (position) last. Live draw had no
++ * immediate-vertex sink, so these groups drew nothing. Each case clears a
++ * 16x16 target to black and draws one full-target quad whose colour is attr2
++ * (transform program: o[0] = v[0], o[1] = v[2]; fragment: r0 = col0):
++ *   DATA2F position, the menu's sequence   -> 256 pixels lit
++ *   DATA3F position (worked before)        -> 256 pixels lit
++ *   the menu's group outside BEGIN/END     -> 0 pixels lit
++ * Build and run: see live_draw_test_harness.h.
++ */
++#include "live_draw_test_harness.h"
++
++#define T "test_live_draw_immediate_quads"
++
++#define FP_COL  0x00001000u    /* main memory */
++#define ZETA24  0x00102000u    /* local memory */
++
++static const float s_pos[4][2] = { {-1, 1}, {1, 1}, {1, -1}, {-1, -1} };
++
++static void load_vp(void)
++{
++    u8 vp[32];
++    rsx_test_vp_mov_out(vp +  0, 0, RSX_TEST_VP_SWZ_IDENT, 0, 0);
++    rsx_test_vp_mov_out(vp + 16, 2, RSX_TEST_VP_SWZ_IDENT, 1, 1);
++    ldh_m(NV4097_SET_TRANSFORM_PROGRAM_LOAD, 0u);
++    for (u32 k = 0; k < sizeof vp / 4u; k++) {
++        const u8* w = vp + k * 4;
++        ldh_m(NV4097_SET_TRANSFORM_PROGRAM + k * 4,
++              (u32)w[0] | ((u32)w[1] << 8) | ((u32)w[2] << 16) | ((u32)w[3] << 24));
++    }
++    ldh_m(NV4097_SET_TRANSFORM_PROGRAM_START, 0u);
++    for (u32 a = 0; a < 16; a++)                       /* no vertex arrays */
++        ldh_m(NV4097_SET_VERTEX_DATA_ARRAY_FORMAT + a * 4, 2u);
++}
++
++/* 0 = DATA2F menu sequence, 1 = DATA3F position, 2 = menu writes with no BEGIN */
++static void draw_quad(int form)
++{
++    ldh_m(NV4097_SET_DEPTH_TEST_ENABLE, 0u);
++    ldh_m(NV4097_SET_SHADER_CONTROL, 0x40u);
++    ldh_m(NV4097_SET_SHADER_PROGRAM, FP_COL | 2u);
++    if (form != 2) ldh_m(NV4097_SET_BEGIN_END, RSX_PRIMITIVE_QUADS);
++    ldh_m(0x1948, 0xFFFFFFFFu);                        /* attr2 DATA4UB: white */
++    for (u32 i = 0; i < 4; i++) {
++        ldh_mf(0x1888, i & 1 ? 640.0f : 0.0f); ldh_mf(0x188C, i & 2 ? 360.0f : 0.0f);  /* attr1 */
++        ldh_mf(0x1898, i & 1 ? 1.0f : 0.0f);   ldh_mf(0x189C, i & 2 ? 1.0f : 0.0f);    /* attr3 */
++        if (form == 1) {
++            ldh_mf(0x1500, s_pos[i][0]); ldh_mf(0x1504, s_pos[i][1]); ldh_mf(0x1508, 0.0f);
++        } else {
++            ldh_mf(0x1880, s_pos[i][0]); ldh_mf(0x1884, s_pos[i][1]);
++        }
++    }
++    if (form != 2) ldh_m(NV4097_SET_BEGIN_END, 0u);
++}
++
++static void run_case(const char* name, u32 surf, int form, int want_lit)
++{
++    ldh_surface(0x8u | (2u << 5) | (0x1u << 8), surf, 64, ZETA24, 64, 16, 16);
++    ldh_m(NV4097_SET_COLOR_CLEAR_VALUE, 0xFF000000u);
++    ldh_m(NV4097_SET_ZSTENCIL_CLEAR_VALUE, 0xFFFFFF00u);
++    ldh_m(NV4097_CLEAR_SURFACE, 0xF3u);
++    draw_quad(form);
++    static uint8_t rgb[16 * 16 * 3];
++    u32 w = 0, h = 0;
++    char path[64];
++    snprintf(path, sizeof path, "immediate_quads_%08X.ppm", surf);
++    if (ldh_read_rgb(surf, path, rgb, 16, 16, &w, &h) != 0 || w != 16 || h != 16) {
++        printf("[" T "] %s: surface read back failed\n", name);
++        ldh_check(name, 0);
++        return;
++    }
++    int lit = 0;
++    for (u32 i = 0; i < 16u * 16u; i++) lit += rgb[i * 3] > 200 && rgb[i * 3 + 1] > 200 && rgb[i * 3 + 2] > 200;
++    printf("[" T "] %s: %d of 256 pixels drawn (want %d)\n", name, lit, want_lit ? 256 : 0);
++    ldh_check(name, want_lit ? lit == 256 : lit == 0);
++}
++
++int main(void)
++{
++    if (ldh_init(T) != 0) return 2;
++    rsx_test_fp_mov_r0_col0(ldh_main + FP_COL, RSX_TEST_FP_SWZ_IDENT);
++    load_vp();
++    run_case("DATA2F immediate QUADS (menu sequence) draw the quad", 0x00000000u, 0, 1);
++    run_case("DATA3F immediate QUADS still draw the quad",           0x00002000u, 1, 1);
++    run_case("the same writes outside BEGIN/END draw nothing",       0x00004000u, 2, 0);
++    return ldh_done(T);
++}
+diff --git a/libs/video/tests/test_rsx_draw_engine.c b/libs/video/tests/test_rsx_draw_engine.c
+--- a/libs/video/tests/test_rsx_draw_engine.c
++++ b/libs/video/tests/test_rsx_draw_engine.c
+@@ -1544,6 +1544,36 @@
+     engine_down();
+ }
+ 
++/* Patch 6008: R&C ToD's main menu movie background. QUADS of DATA2F
++ * positions, written last after DATA2F attr1 and attr3, one DATA4UB colour
++ * (attr2) per group. A DATA2F position used to complete no vertex. */
++static void test_immediate_data2f_quads(void)
++{
++    engine_up();
++    static const float pos[4][2] = {{-1, 1}, {1, 1}, {1, -1}, {-1, -1}};
++    static const float tc[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
++    m(M_BEGIN_END, 8u);
++    m(0x1948, 0x80FF4000u);                              /* ATTR2 DATA4UB */
++    for (u32 i = 0; i < 4; i++) {
++        m(0x1888, f32_bits(tc[i][0] * 640)); m(0x188C, f32_bits(tc[i][1] * 360));
++        m(0x1898, f32_bits(tc[i][0])); m(0x189C, f32_bits(tc[i][1]));
++        m(0x1880, f32_bits(pos[i][0])); m(0x1884, f32_bits(pos[i][1]));
++    }
++    m(M_BEGIN_END, 0);
++    CHECK(stub.n_draw == 1 && stub.draw_vertices == 4 && stub.draw_indices == 6,
++          "DATA2F immediate quad draws 4 vertices/6 indices, got %u draw(s) %u/%u",
++          stub.n_draw, stub.draw_vertices, stub.draw_indices);
++    for (u32 i = 0; i < 4; i++) {
++        const float* v = stub.captured_vertices[i];
++        CHECK(v[0] == pos[i][0] && v[1] == pos[i][1] && v[2] == 0 && v[3] == 1 &&
++              v[4] == tc[i][0] * 640 && v[5] == tc[i][1] * 360 &&
++              v[12] == tc[i][0] && v[13] == tc[i][1] &&
++              v[8] == 0.0f && v[9] == 0x40 / 255.0f && v[10] == 1.0f && v[11] == 0x80 / 255.0f,
++              "DATA2F quad vertex %u: position, attr1, attr3 and DATA4UB colour", i);
++    }
++    engine_down();
++}
++
+ static void test_immediate_packed_zero_and_inline(void)
+ {
+     const u32 packed[] = {0x194Cu, 0x1998u, 0x0A98u};
+@@ -1626,6 +1656,7 @@
+     test_depth_read_as_color();
+     test_color_read_as_float();
+     test_immediate_compositor();
++    test_immediate_data2f_quads();
+     test_immediate_packed_zero_and_inline();
+ 
+     free(vm_base);
+diff --git a/libs/video/tests/test_rsx_immediate_vertex.c b/libs/video/tests/test_rsx_immediate_vertex.c
+new file mode 100644
+--- /dev/null
++++ b/libs/video/tests/test_rsx_immediate_vertex.c
+@@ -0,0 +1,180 @@
++/*
++ * ps3recomp - immediate-mode (register-based) vertices out of the dispatcher
++ *
++ * Patch 6008. Inside BEGIN/END, the last word of ATTR0 written in any
++ * SET_VERTEX_DATA* format completes one vertex: the dispatcher calls
++ * sink.immediate_vertex with the attribute registers holding that vertex.
++ * Only DATA3F z and DATA4F w did so before; R&C ToD's main menu draws its
++ * movie background as QUADS whose position is DATA2F, and none of those
++ * vertices reached a renderer. The menu's exact sequence per group is
++ *   BEGIN QUADS, DATA4UB attr2 (colour),
++ *   4 x (DATA2F attr1, DATA2F attr3, DATA2F attr0), END.
++ *
++ * Dispatcher only: no GPU, no host graphics API.
++ *   gcc -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video \
++ *       -o /tmp/test_rsx_immediate_vertex libs/video/tests/test_rsx_immediate_vertex.c \
++ *       libs/video/rsx_dispatch.c
++ */
++#include "rsx_dispatch.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static int g_failures;
++
++#define CHECK(cond, ...)                                                      \
++    do {                                                                      \
++        if (cond) {                                                           \
++            printf("[PASS] " __VA_ARGS__); printf("\n");                      \
++        } else {                                                              \
++            printf("[FAIL] " __VA_ARGS__);                                    \
++            printf("   (%s:%d)\n", __FILE__, __LINE__);                       \
++            g_failures++;                                                     \
++        }                                                                     \
++    } while (0)
++
++#define M_BEGIN_END 0x1808u
++#define M_DRAW_ARRAYS 0x1814u
++
++/* What the sink saw: ATTR0..3 current values at each completed position. */
++static struct {
++    u32 n_vertices, n_begin, n_end;
++    float v[16][4][4];
++} rec;
++
++static void rec_begin(void* user, const rsx_dispatch* rsx, u32 prim) { rec.n_begin++; }
++static void rec_end(void* user, const rsx_dispatch* rsx) { rec.n_end++; }
++static void rec_immediate(void* user, const rsx_dispatch* rsx)
++{
++    if (rec.n_vertices < 16)
++        for (u32 a = 0; a < 4; a++)
++            rsx_dsp_vertex_default(rsx, a, rec.v[rec.n_vertices][a]);
++    rec.n_vertices++;
++}
++
++static rsx_dispatch* g_rsx;
++
++static void m(u32 method, u32 arg) { rsx_dispatch_method(g_rsx, method, arg); }
++static void mf(u32 method, float f) { u32 w; memcpy(&w, &f, 4); m(method, w); }
++
++static void reset(void)
++{
++    rsx_dispatch_sink sink;
++    memset(&sink, 0, sizeof sink);
++    sink.begin = rec_begin;
++    sink.end = rec_end;
++    sink.immediate_vertex = rec_immediate;
++    rsx_dispatch_init(g_rsx, &sink);
++    memset(&rec, 0, sizeof rec);
++}
++
++static int near(float a, float b) { return a - b < 1e-6f && b - a < 1e-6f; }
++
++static int vec_is(const float* v, float x, float y, float z, float w)
++{
++    return near(v[0], x) && near(v[1], y) && near(v[2], z) && near(v[3], w);
++}
++
++/* The menu's group, values chosen so every component is distinguishable. */
++static void test_menu_quads(void)
++{
++    reset();
++    static const float pos[4][2] = { {-1, 1}, {1, 1}, {1, -1}, {-1, -1} };
++    static const float tc1[4][2] = { {0, 0}, {640, 0}, {640, 360}, {0, 360} };
++    static const float tc3[4][2] = { {0.25f, 0.5f}, {0.75f, 0.5f}, {0.75f, 1}, {0.25f, 1} };
++    m(M_BEGIN_END, 8u);                      /* QUADS */
++    m(0x1948, 0x80FF4000u);                  /* DATA4UB attr2: x is the low byte */
++    for (u32 i = 0; i < 4; i++) {
++        mf(0x1888, tc1[i][0]); mf(0x188C, tc1[i][1]);   /* DATA2F attr1 */
++        mf(0x1898, tc3[i][0]); mf(0x189C, tc3[i][1]);   /* DATA2F attr3 */
++        mf(0x1880, pos[i][0]);
++        CHECK(rec.n_vertices == i, "menu vertex %u: DATA2F attr0 x alone does not complete it", i);
++        mf(0x1884, pos[i][1]);                          /* DATA2F attr0 y: completes */
++    }
++    m(M_BEGIN_END, 0u);
++    CHECK(rec.n_vertices == 4, "menu QUADS group: 4 immediate vertices reach the sink (got %u)", rec.n_vertices);
++    CHECK(rec.n_begin == 1 && rec.n_end == 1, "menu group: one BEGIN and one END");
++    for (u32 i = 0; i < 4 && i < rec.n_vertices; i++) {
++        CHECK(vec_is(rec.v[i][0], pos[i][0], pos[i][1], 0, 1),
++              "menu vertex %u position (%g,%g,0,1), got (%g,%g,%g,%g)", i, pos[i][0], pos[i][1],
++              rec.v[i][0][0], rec.v[i][0][1], rec.v[i][0][2], rec.v[i][0][3]);
++        CHECK(vec_is(rec.v[i][1], tc1[i][0], tc1[i][1], 0, 1), "menu vertex %u attr1 (%g,%g,0,1)", i,
++              tc1[i][0], tc1[i][1]);
++        CHECK(vec_is(rec.v[i][3], tc3[i][0], tc3[i][1], 0, 1), "menu vertex %u attr3 (%g,%g,0,1)", i,
++              tc3[i][0], tc3[i][1]);
++        CHECK(vec_is(rec.v[i][2], 0x00 / 255.0f, 0x40 / 255.0f, 0xFF / 255.0f, 0x80 / 255.0f),
++              "menu vertex %u colour attr2 from DATA4UB 0x80FF4000 (0,0.251,1,0.502)", i);
++    }
++    /* The same writes outside BEGIN/END only set current values. */
++    const u32 before = rec.n_vertices;
++    mf(0x1880, 5); mf(0x1884, 6);
++    CHECK(rec.n_vertices == before, "DATA2F attr0 outside BEGIN/END emits nothing");
++}
++
++/* Each format emits exactly once per ATTR0, on its last word, and its
++ * non-ATTR0 forms never emit. */
++static void test_formats(void)
++{
++    struct { const char* name; u32 words[4]; u32 n; } f[] = {
++        { "DATA3F (z completes)",        { 0x1500, 0x1504, 0x1508 }, 3 },
++        { "DATA4F (w completes)",        { 0x1C00, 0x1C04, 0x1C08, 0x1C0C }, 4 },
++        { "DATA1F",                      { 0x1E40 }, 1 },
++        { "DATA2F (y completes)",        { 0x1880, 0x1884 }, 2 },
++        { "DATA2S",                      { 0x1900 }, 1 },
++        { "DATA4UB",                     { 0x1940 }, 1 },
++        { "DATA4S (second word)",        { 0x1980, 0x1984 }, 2 },
++        { "DATA_SCALED4S (second word)", { 0x0A80, 0x0A84 }, 2 },
++    };
++    for (u32 k = 0; k < sizeof f / sizeof f[0]; k++) {
++        reset();
++        m(M_BEGIN_END, 5u);
++        for (u32 v = 0; v < 3; v++)
++            for (u32 w = 0; w < f[k].n; w++) {
++                m(f[k].words[w], 0x3F800000u);   /* 1.0f, or packed 0x3F80/0x0000 halves, 0x00,0x00,0x80,0x3F bytes */
++                if (w + 1 < f[k].n && rec.n_vertices != v) {
++                    CHECK(0, "%s: word %u of vertex %u emitted early", f[k].name, w, v);
++                }
++            }
++        m(M_BEGIN_END, 0u);
++        CHECK(rec.n_vertices == 3, "%s: 3 positions emit 3 vertices (got %u)", f[k].name, rec.n_vertices);
++    }
++    /* DATA3F and DATA4F values, the forms that already worked. */
++    reset();
++    m(M_BEGIN_END, 5u);
++    mf(0x1500, 1); mf(0x1504, 2); mf(0x1508, 3);
++    mf(0x1C00, 4); mf(0x1C04, 5); mf(0x1C08, 6); mf(0x1C0C, 7);
++    m(M_BEGIN_END, 0u);
++    CHECK(rec.n_vertices == 2 && vec_is(rec.v[0][0], 1, 2, 3, 1) && vec_is(rec.v[1][0], 4, 5, 6, 7),
++          "DATA3F (1,2,3,1) then DATA4F (4,5,6,7) positions unchanged");
++    /* Packed attr0 forms decode as before. */
++    reset();
++    m(M_BEGIN_END, 5u);
++    m(0x1900, 0xFFFE0003u);                  /* DATA2S: x = 3, y = -2 */
++    m(0x1940, 0xFF000080u);                  /* DATA4UB */
++    m(M_BEGIN_END, 0u);
++    CHECK(rec.n_vertices == 2 && vec_is(rec.v[0][0], 3, -2, 0, 1) &&
++          vec_is(rec.v[1][0], 128 / 255.0f, 0, 0, 1),
++          "DATA2S (3,-2,0,1) and DATA4UB (0.502,0,0,1) positions");
++
++    /* Non-ATTR0 writes of every format never emit. */
++    reset();
++    m(M_BEGIN_END, 5u);
++    static const u32 others[] = { 0x1510, 0x1514, 0x1518, 0x1C10, 0x1C14, 0x1C18, 0x1C1C, 0x1E44,
++                                  0x1888, 0x188C, 0x1904, 0x1944, 0x1988, 0x198C, 0x0A88, 0x0A8C };
++    for (u32 i = 0; i < sizeof others / sizeof others[0]; i++) m(others[i], 0x3F800000u);
++    m(M_DRAW_ARRAYS, 0u);
++    m(M_BEGIN_END, 0u);
++    CHECK(rec.n_vertices == 0, "writes to ATTR1+ in every format emit no vertex");
++}
++
++int main(void)
++{
++    g_rsx = (rsx_dispatch*)calloc(1, sizeof(rsx_dispatch));
++    if (!g_rsx) { printf("[FAIL] alloc\n"); return 1; }
++    test_menu_quads();
++    test_formats();
++    free(g_rsx);
++    printf(g_failures ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failures);
++    return g_failures ? 1 : 0;
++}
