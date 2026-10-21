@@ -1,0 +1,17 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2805,6 +2805,13 @@
+                     if (m == 0x64u)      s_sema_offset = v;
+                     else if (m == 0x6Cu) {   /* patch 2017: RSX output in main memory first */
+                         if (rsx_live_draw_enabled()) rsx_live_draw_before_guest_sync();
++                        /* Patch 6005: the RSX has fetched past a RELEASE before its semaphore write lands, so a guest
++                         * that sees the label must also see `get` past the command. `get` used to be published only at
++                         * a JUMP and at the end of the pass: Ratchet & Clank ToD (0x5057b0) waits for label 0x41, then
++                         * reads `get` once and spins until its own `put` equals it; a lagging snapshot never does
++                         * (rc-RE pass 17; stalls in 4 of 6 boots). GCM_GET_EQ_PUT keeps its own value. */
++                        if (!gcm_get_eq_put()) vm_write32(GCM_CONTROL_GUEST_ADDR + 4, s_fifo_getoff + 4 + count * 4);
++                        __atomic_thread_fence(__ATOMIC_RELEASE);
+                         vm_write32(la, v);
+                     }
+                     else if (m == 0x68u && vm_read32(la) != v) {

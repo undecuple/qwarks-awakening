@@ -1,0 +1,267 @@
+KZ3 patch 2040 (RSX pass 40): attribute-major vertex fetch (RSX_VTX_BATCH).
+rsx_vertex_compact.c/.h: rsx_vertex_fetch_many(plan, refs, count, out, out_stride) converts a draw's unique
+vertices in blocks of 128, one layout slot at a time, with the element type and component count resolved once
+per block and slot (specialised loops per type x components); a vertex outside the attribute's contiguous
+mapping, a frequency-divided attribute, CMP32 and unmapped attributes take the per-vertex path, which is the
+slot body of rsx_vertex_fetch_one (now shared as rsx_vertex_fetch_attr_one). The per-component arithmetic is
+the same expression as rsx_vertex_decode_fast, so the payload bytes are identical; host test
+tools/smoke/test_vtx_batch.sh compares both paths byte for byte (every type, defaults, dividers, fallbacks,
+inline streams, counts around the block size) and times them.
+rsx_live_draw.c: the compact-payload fetch loop calls it when RSX_VTX_BATCH is on (default in
+LD_VTX_BATCH_DEFAULT = 1 since pass 41; RSX_VTX_BATCH=0 keeps the per-vertex loop). Log: [vtx-batch] once at the first draw.
+Upstream candidate (pure refactor of the fetch loop, no KZ3-specific behaviour).
+
+--- a/libs/video/rsx_live_draw.c	2026-10-12 11:17:48.537888129 -0500
++++ b/libs/video/rsx_live_draw.c	2026-10-12 12:22:11.717358623 -0500
+@@ -473,6 +473,20 @@
+     return (g.vertex_features & LD_VERTEX_COMPACT_PAYLOAD) != 0;
+ }
+ 
++/* KZ3 patch 2040: RSX_VTX_BATCH=0|1, the attribute-major vertex fetch
++ * (rsx_vertex_fetch_many) for the compact payload. */
++#define LD_VTX_BATCH_DEFAULT 1
++static int ld_vtx_batch_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("RSX_VTX_BATCH");
++        on = e ? (atoi(e) != 0) : LD_VTX_BATCH_DEFAULT;
++        fprintf(stderr, "[vtx-batch] %s (RSX_VTX_BATCH=%s)\n", on ? "on" : "off", e ? e : "unset");
++    }
++    return on;
++}
++
+ static const char* ld_vertex_mode_name(void)
+ {
+     switch (g.vertex_mode) {
+@@ -7341,6 +7355,14 @@
+             dc.fetch_ok = 0;
+             return;
+         }
++        if (ld_vtx_batch_on() && layout->stride) {   /* KZ3 patch 2040 */
++            if (!rsx_vertex_fetch_many(
++                    &dc.fetch_plan, dc.refs, dc.n_refs, dc.compact_verts,
++                    layout->stride)) {
++                dc.fetch_ok = 0;
++                return;
++            }
++        } else
+         for (u32 i = 0; i < dc.n_refs; i++) {
+             u8* destination = layout->stride
+                 ? dc.compact_verts + (u64)i * layout->stride : NULL;
+--- a/libs/video/rsx_vertex_compact.c	2026-10-11 20:07:55.985866127 -0500
++++ b/libs/video/rsx_vertex_compact.c	2026-10-12 11:57:57.305076422 -0500
+@@ -297,6 +297,51 @@
+     }
+ }
+ 
++/* KZ3 patch 2040: one attribute of one vertex, the slot body of
++ * rsx_vertex_fetch_one (shared with rsx_vertex_fetch_many's fallbacks).
++ * Returns 0 only where fetch_one did: an enabled ATTR0 that cannot be read. */
++static inline int rsx_vertex_fetch_attr_one(
++    const rsx_vertex_fetch_plan* plan, const rsx_vertex_fetch_attr* fetch,
++    u32 attr, const rsx_vertex_ref* ref, float* value)
++{
++    if (!fetch->desc.type || !fetch->desc.size) {
++        memcpy(value, fetch->default_value, 16);
++        return 1;
++    }
++
++    const u32 element = rsx_vertex_element_index(
++        ref->vertex_id, ref->base_index, fetch->desc.frequency,
++        (plan->divider_mask >> attr) & 1u);
++    const u8* source = NULL;
++    if (fetch->stable_base &&
++        element >= fetch->stable_first && element <= fetch->stable_last) {
++        source = fetch->stable_base +
++            (u64)(element - fetch->stable_first) * fetch->stride;
++    } else if (plan->inline_data) {
++        /* An inline draw has no vertex array to fall back to: the array
++         * offsets still hold whatever the last ordinary draw bound, and
++         * reading them would feed this draw another mesh's vertices.
++         * An attribute the stream does not supply gets its default,
++         * which is what the hardware feeds. */
++        source = NULL;
++    } else if (plan->guest_ptr) {
++        const u32 offset =
++            plan->base_offset + fetch->desc.offset +
++            element * fetch->stride;
++        source = plan->guest_ptr(
++            plan->guest_user, fetch->desc.location, offset,
++            fetch->elem_size);
++    }
++
++    if (source && rsx_vertex_decode_fast(
++            fetch->desc.type, fetch->desc.size, source, value))
++        return 1;
++    if (attr == 0)
++        return 0;
++    memcpy(value, fetch->default_value, 16);
++    return 1;
++}
++
+ int rsx_vertex_fetch_one(
+     const rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* ref, u8* out)
+ {
+@@ -304,43 +349,109 @@
+         return 0;
+     for (u32 slot = 0; slot < plan->layout.count; slot++) {
+         const u32 attr = plan->layout.attrs[slot];
+-        const rsx_vertex_fetch_attr* fetch = &plan->attr[attr];
+-        float* value = (float*)(out + slot * 16u);
+-        if (!fetch->desc.type || !fetch->desc.size) {
+-            memcpy(value, fetch->default_value, 16);
+-            continue;
+-        }
++        if (!rsx_vertex_fetch_attr_one(
++                plan, &plan->attr[attr], attr, ref, (float*)(out + slot * 16u)))
++            return 0;
++    }
++    return 1;
++}
+ 
+-        const u32 element = rsx_vertex_element_index(
+-            ref->vertex_id, ref->base_index, fetch->desc.frequency,
+-            (plan->divider_mask >> attr) & 1u);
+-        const u8* source = NULL;
+-        if (fetch->stable_base &&
+-            element >= fetch->stable_first && element <= fetch->stable_last) {
+-            source = fetch->stable_base +
+-                (u64)(element - fetch->stable_first) * fetch->stride;
+-        } else if (plan->inline_data) {
+-            /* An inline draw has no vertex array to fall back to: the array
+-             * offsets still hold whatever the last ordinary draw bound, and
+-             * reading them would feed this draw another mesh's vertices.
+-             * An attribute the stream does not supply gets its default,
+-             * which is what the hardware feeds. */
+-            source = NULL;
+-        } else if (plan->guest_ptr) {
+-            const u32 offset =
+-                plan->base_offset + fetch->desc.offset +
+-                element * fetch->stride;
+-            source = plan->guest_ptr(
+-                plan->guest_user, fetch->desc.location, offset,
+-                fetch->elem_size);
+-        }
++/* KZ3 patch 2040: attribute-major fetch. For each block of RSX_VTX_BLOCK
++ * vertices (the block's output stays in L1/L2) and each layout slot, the
++ * element type and component count are resolved once and a specialised loop
++ * converts the block; a vertex outside the attribute's contiguous mapping, a
++ * frequency-divided attribute, or an attribute with no mapping takes the
++ * per-vertex path of rsx_vertex_fetch_one. The arithmetic per component is
++ * the same expression as rsx_vertex_decode_fast, so the output bytes are
++ * identical (tools/smoke/test_vtx_batch.sh checks this bit for bit). */
++#define RSX_VTX_BLOCK 128u
+ 
+-        if (source && rsx_vertex_decode_fast(
+-                fetch->desc.type, fetch->desc.size, source, value))
+-            continue;
+-        if (attr == 0)
+-            return 0;
+-        memcpy(value, fetch->default_value, 16);
++#define RSX_VTX_BATCH_LOOP(NC, EXPR)                                        \
++    for (u32 i = 0; i < n; i++) {                                           \
++        const u32 el = (rb[i].vertex_id + rb[i].base_index) & 0x000FFFFFu; \
++        float* v = (float*)(ob + (u64)i * out_stride + slot * 16u);         \
++        if (el - first > range) {                                           \
++            if (!rsx_vertex_fetch_attr_one(plan, fetch, attr, &rb[i], v))   \
++                return 0;                                                   \
++            continue;                                                       \
++        }                                                                   \
++        const u8* source = base + (u64)(el - first) * stride;               \
++        v[0] = 0.0f; v[1] = 0.0f; v[2] = 0.0f; v[3] = 1.0f;                 \
++        for (u32 c = 0; c < (NC); c++)                                      \
++            v[c] = (EXPR);                                                  \
++    }
++
++#define RSX_VTX_BATCH_DISPATCH(EXPR)                                        \
++    switch (ncomp) {                                                        \
++    case 1: RSX_VTX_BATCH_LOOP(1u, EXPR) break;                             \
++    case 2: RSX_VTX_BATCH_LOOP(2u, EXPR) break;                             \
++    case 3: RSX_VTX_BATCH_LOOP(3u, EXPR) break;                             \
++    default: RSX_VTX_BATCH_LOOP(4u, EXPR) break;                            \
++    }
++
++int rsx_vertex_fetch_many(
++    const rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* refs, u32 count,
++    u8* out, u32 out_stride)
++{
++    if (!plan || (!refs && count) || (!out && plan->layout.stride && count))
++        return 0;
++    for (u32 b0 = 0; b0 < count; b0 += RSX_VTX_BLOCK) {
++        const u32 n = count - b0 < RSX_VTX_BLOCK ? count - b0 : RSX_VTX_BLOCK;
++        const rsx_vertex_ref* rb = refs + b0;
++        u8* ob = out + (u64)b0 * out_stride;
++        for (u32 slot = 0; slot < plan->layout.count; slot++) {
++            const u32 attr = plan->layout.attrs[slot];
++            const rsx_vertex_fetch_attr* fetch = &plan->attr[attr];
++            if (!fetch->desc.type || !fetch->desc.size) {
++                for (u32 i = 0; i < n; i++)
++                    memcpy(ob + (u64)i * out_stride + slot * 16u,
++                           fetch->default_value, 16);
++                continue;
++            }
++            if (!fetch->stable_base || fetch->desc.frequency > 1 ||
++                fetch->desc.type == RSX_VTX_TYPE_CMP32) {
++                for (u32 i = 0; i < n; i++)
++                    if (!rsx_vertex_fetch_attr_one(
++                            plan, fetch, attr, &rb[i],
++                            (float*)(ob + (u64)i * out_stride + slot * 16u)))
++                        return 0;
++                continue;
++            }
++            const u8* base = fetch->stable_base;
++            const u32 first = fetch->stable_first;
++            const u32 range = fetch->stable_last - fetch->stable_first;
++            const u32 stride = fetch->stride;
++            const u32 ncomp = fetch->desc.size < 4u ? fetch->desc.size : 4u;
++            switch (fetch->desc.type) {
++            case RSX_VTX_TYPE_FLOAT:
++                RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f32(source + c * 4))
++                break;
++            case RSX_VTX_TYPE_HALF:
++                RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f16(source + c * 2))
++                break;
++            case RSX_VTX_TYPE_UNORM8:
++                RSX_VTX_BATCH_DISPATCH(source[c] / 255.0f)
++                break;
++            case RSX_VTX_TYPE_UINT8:
++                RSX_VTX_BATCH_DISPATCH((float)source[c])
++                break;
++            case RSX_VTX_TYPE_SNORM16:
++                RSX_VTX_BATCH_DISPATCH(
++                    (s16)((source[c * 2] << 8) | source[c * 2 + 1]) / 32767.0f)
++                break;
++            case RSX_VTX_TYPE_SINT16:
++                RSX_VTX_BATCH_DISPATCH(
++                    (float)(s16)((source[c * 2] << 8) | source[c * 2 + 1]))
++                break;
++            default:   /* unknown type: fetch_one's per-vertex outcome (default or fatal ATTR0) */
++                for (u32 i = 0; i < n; i++)
++                    if (!rsx_vertex_fetch_attr_one(
++                            plan, fetch, attr, &rb[i],
++                            (float*)(ob + (u64)i * out_stride + slot * 16u)))
++                        return 0;
++                break;
++            }
++        }
+     }
+     return 1;
+ }
+--- a/libs/video/rsx_vertex_compact.h	2026-10-09 15:00:00.000000000 -0500
++++ b/libs/video/rsx_vertex_compact.h	2026-10-12 11:57:57.305365196 -0500
+@@ -116,6 +116,14 @@
+ int rsx_vertex_fetch_one(
+     const rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* ref, u8* out);
+ 
++/* KZ3 patch 2040: `count` compact vertices, attribute-major in blocks, each
++ * `out_stride` bytes apart (layout.stride for the compact payload).  Byte for
++ * byte the output of `count` rsx_vertex_fetch_one calls, and 0 where one of
++ * them would have returned 0 (the output is then partial, as before). */
++int rsx_vertex_fetch_many(
++    const rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* refs, u32 count,
++    u8* out, u32 out_stride);
++
+ /* Collapse repeated (vertex_id, base_index) references in first-use order.
+  * refs is rewritten in place with the unique prefix.  The occurrence map
+  * remains valid until the next call using the same remap object. */

@@ -1,0 +1,127 @@
+KZ3 patch 1073 (SPU pass 57, default on; KZ3_TS_CREATE_OLD=1 = the old updates): cellSpursCreateTask updates the
+taskset's enabled and ready bitsets atomically. They share one 128-byte line with the SPU task library
+(GETLLAR/PUTLLC) and with the host task exit (spu_taskset_task_exited, under the lock-line lock since patch 1030),
+but CreateTask set them with a plain word read-modify-write (spurs_bitset_set). A task exit clearing its enabled bit
+between that read and write was undone: the task's enabled bit came back with no task behind it (ready 0, exit entry
+state 2), so cellSpursJoinTask2 on that id never returned. KZ3: Havok task 0 of the physics pool, reused ids 1-4 for
+every later step, and the pool destructor at quit-to-menu (T7) waited for task 0 forever. Real libsre updates the
+bitsets in a lock-line reservation loop. Now the free-id search sets the enabled bit (reserving the id) and the ready
+bit is set after task_info is written, each under the line's stripe lock with raw byte access, followed by the
+reservation kill (spu_coh_notify_write). spurs_taskset_write_task_info writes task_info without touching the bitsets.
+Host test tools/spu/test_ts_create_race.sh.
+
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -1181,6 +1181,54 @@
+  * from an EA computed out of r3 = that argument (spu_0003 task main @0x17e70:
+  * `wrch $ch18, f(r3.word3)`), so a zero argument makes it GET from EA 0 and
+  * stall. lsPattern/argument arrive as guest EAs (generic adapter forwards r3..r10). */
++/* KZ3 patch 1073: cellSpursCreateTask's bitset updates as atomic line updates. The taskset's ready/pending/enabled
++ * bitsets (+0x10/+0x20/+0x30) share one 128-byte line with the SPU-side task library (GETLLAR/PUTLLC) and with the
++ * task exit (spu_taskset_task_exited, under the lock-line lock since patch 1030). CreateTask used a plain word
++ * read-modify-write (spurs_bitset_set: vm_read32 | mask, vm_write32): a task exit clearing its enabled bit between
++ * the read and the write was undone. KZ3 T7: Havok task 0 exited (exit entry state 2, ready 0) while the PPU created
++ * the next step's tasks 1-4 in the same byte; its enabled bit came back, no thread owned it, every later step used ids
++ * 1-4, and the pool destructor's cellSpursJoinTask2(ts, 0) waited for it forever (SPU pass 57, KZ3_JOIN2_PROBE dump).
++ * Real libsre updates the bitsets with a lock-line reservation loop, so a concurrent change is never lost and SPU
++ * reservations on the line are broken. Here: the free-id search and the enabled bit (reserving the id), then the ready
++ * bit after task_info is written, each under the line's stripe lock with raw byte access (vm_write32 would take the
++ * same non-recursive lock), ending with the reservation kill. KZ3_TS_CREATE_OLD=1 = the old unlocked updates. */
++/* kz3-ts-create begin (tools/spu/test_ts_create_race.sh compiles this block) */
++static int kz3_ts_create_old(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("KZ3_TS_CREATE_OLD"); v = (e && *e == '1'); }
++    return v;
++}
++/* Find the first clear enabled bit and set it, atomically; CELL_SPURS_MAX_TASK when all 128 are taken. */
++static u32 kz3_ts_take_slot(uint32_t ts)
++{
++    u32 slot = CELL_SPURS_MAX_TASK;
++    if (kz3_ts_create_old()) {
++        for (u32 t = 0; t < CELL_SPURS_MAX_TASK; t++)
++            if (!(vm_read8(ts + 0x30 + t / 8) & (0x80u >> (t % 8)))) { slot = t; break; }
++        return slot;
++    }
++    const uint64_t m = spu_ll_mask(ts + 0x30, 16);
++    spu_ll_lock_mask(m);
++    uint8_t* en = vm_base + ts + 0x30;
++    for (u32 t = 0; t < CELL_SPURS_MAX_TASK; t++)
++        if (!(en[t / 8] & (0x80u >> (t % 8)))) { en[t / 8] |= (uint8_t)(0x80u >> (t % 8)); slot = t; break; }
++    if (slot < CELL_SPURS_MAX_TASK) spu_coh_notify_write(ts + 0x30);
++    spu_ll_unlock_mask(m);
++    return slot;
++}
++/* Set bit id of the bitset at ts+off (0x10 ready, 0x30 enabled), atomically. */
++static void kz3_ts_set_bit(uint32_t ts, uint32_t off, u32 id)
++{
++    if (kz3_ts_create_old()) { spurs_bitset_set(ts + off, id); return; }
++    const uint64_t m = spu_ll_mask(ts + off, 16);
++    spu_ll_lock_mask(m);
++    vm_base[ts + off + id / 8] |= (uint8_t)(0x80u >> (id % 8));
++    spu_coh_notify_write(ts + off);
++    spu_ll_unlock_mask(m);
++}
++/* kz3-ts-create end */
++
+ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+                         void* elf, void* context, u32 sizeContext,
+                         u32 lsPattern_ea, u32 argument_ea)
+@@ -1225,9 +1273,7 @@
+      * ponytail: s_tasks[] is shared by every taskset and now only records the
+      * last task per slot id -- enough for JoinTask2's lookup; key it by
+      * (taskset, id) if a title joins tasks in two tasksets at once. */
+-    u32 free_slot = CELL_SPURS_MAX_TASK;
+-    for (u32 t = 0; t < CELL_SPURS_MAX_TASK; t++)
+-        if (!(vm_read8(taskset_ea + 0x30 + t / 8) & (0x80u >> (t % 8)))) { free_slot = t; break; }
++    u32 free_slot = kz3_ts_take_slot(taskset_ea);   /* KZ3 patch 1073: sets the enabled bit (atomic) */
+     if (free_slot < CELL_SPURS_MAX_TASK) {
+         u32 i = free_slot;
+         {
+@@ -1259,8 +1305,11 @@
+             /* Claim the slot before its enabled+ready bits become visible to the taskset scan
+              * (KZ3 patch 1023, spu_taskset_claim in spu_workload.c). */
+             { extern int spu_taskset_claim(uint32_t, uint32_t, int); spu_taskset_claim(taskset_ea, i, 1); }
+-            spurs_taskset_add_task(taskset_ea, i, (uint64_t)elf_ea,
+-                                   (uint64_t)context_ea, task_arg, task_lsp);
++            /* KZ3 patch 1073: task_info, then the enabled (old path; taken above otherwise) and ready bits as
++             * atomic line updates. */
++            spurs_taskset_write_task_info(taskset_ea, i, (uint64_t)elf_ea, (uint64_t)context_ea, task_arg, task_lsp);
++            if (kz3_ts_create_old()) kz3_ts_set_bit(taskset_ea, 0x30, i);
++            kz3_ts_set_bit(taskset_ea, 0x10, i);
+             /* Bridge to the image-22 dispatch so build_context uses this taskset+task. */
+             g_ydkj_real_taskset_ea = taskset_ea;
+             g_ydkj_real_taskid     = i;
+--- a/libs/spurs/spurs_taskset.c
++++ b/libs/spurs/spurs_taskset.c
+@@ -32,6 +32,19 @@
+ 
+ /* Register a task: write task_info[taskId] (args/elf/context/ls_pattern) and mark the
+  * task enabled + ready so the PM's SELECT_TASK picks it. arg/ls_pattern may be NULL. */
++/* task_info[taskId] only (args/elf/context/ls_pattern), no bitset change: cellSpursCreateTask sets the enabled and
++ * ready bits itself with an atomic line update (KZ3 patch 1073). */
++void spurs_taskset_write_task_info(uint32_t taskset_ea, uint32_t taskId, uint64_t elf_ea, uint64_t context,
++                                   const uint32_t arg[4], const uint32_t ls_pattern[4])
++{
++    uint32_t ti = spurs_taskset_taskinfo_ea(taskset_ea, taskId);
++    for (int i = 0; i < 4; i++) vm_write32(ti + TI_ARGS + i * 4, arg ? arg[i] : 0);
++    vm_write64(ti + TI_ELF, elf_ea);
++    vm_write64(ti + TI_CONTEXT, context);
++    for (int i = 0; i < 4; i++)
++        vm_write32(ti + TI_LS_PATTERN + i * 4, ls_pattern ? ls_pattern[i] : 0);
++}
++
+ void spurs_taskset_add_task(uint32_t taskset_ea, uint32_t taskId, uint64_t elf_ea,
+                             uint64_t context, const uint32_t arg[4],
+                             const uint32_t ls_pattern[4])
+--- a/libs/spurs/spurs_taskset.h
++++ b/libs/spurs/spurs_taskset.h
+@@ -143,6 +143,8 @@
+ /* ---- create-path layout builders (spurs_taskset.c, phase B2) ------------- */
+ void spurs_taskset_init(uint32_t taskset_ea, uint32_t spurs_ea, uint64_t args,
+                         uint32_t wid, uint32_t size, uint32_t evf1, uint32_t evf2);
++void spurs_taskset_write_task_info(uint32_t taskset_ea, uint32_t taskId, uint64_t elf_ea, uint64_t context,
++                                   const uint32_t arg[4], const uint32_t ls_pattern[4]);   /* KZ3 patch 1073 */
+ void spurs_taskset_add_task(uint32_t taskset_ea, uint32_t taskId, uint64_t elf_ea,
+                             uint64_t context, const uint32_t arg[4],
+                             const uint32_t ls_pattern[4]);

@@ -1,0 +1,68 @@
+KZ3 patch 2074 (RSX pass 69): branch-free HALF decode in rsx_vertex_fetch_many's block loop, the RE notes "Pass 69".
+HALF slots were the second vertex-fetch cost on K4 (31.8 ms per second, 5.37 M slot-vertices at 5.9 ns,
+coord-fullclk-k4 `[perf-vtxtype]`); rsx_compact_be_f16 branches on the exponent per component. The block loop now
+uses rsx_compact_be_f16_nb: (h & 0x7FFF) << 13 plus a rebias selected by the exponent (112 << 23 normal, 224 << 23
+for Inf/NaN), the sign alone for exponent 0 (zero and denormals flush, as before). Same bits for all 65,536 inputs
+(tools/smoke/test_vtx_batch.sh checks every one). LD_VTX_F16=0 = the old decode (default on).
+
+--- a/libs/video/rsx_vertex_compact.h
++++ b/libs/video/rsx_vertex_compact.h
+@@ -129,6 +129,10 @@
+  * Off = patch 2040's per-vertex path for CMP32. */
+ #define RSX_VTX_PATCH_2073 1
+ extern int rsx_vtx_cmp32_batch;
++/* KZ3 patch 2074: branch-free HALF decode in the block loop, LD_VTX_F16
++ * (same rule as 2073's switch). */
++#define RSX_VTX_PATCH_2074 1
++extern int rsx_vtx_f16_fast;
+
+ /* Collapse repeated (vertex_id, base_index) references in first-use order.
+  * refs is rewritten in place with the unique prefix.  The occurrence map
+--- a/libs/video/rsx_vertex_compact.c
++++ b/libs/video/rsx_vertex_compact.c
+@@ -46,7 +46,24 @@
+     return f;
+ }
+
++/* KZ3 patch 2074: rsx_compact_be_f16 without branches, same bits for all
++ * 65,536 inputs (tools/smoke/test_vtx_batch.c checks every one): exponents
++ * 1-30 give (h & 0x7FFF) << 13 plus a rebias of 112 << 23, exponent 31
++ * (Inf/NaN) the rebias 224 << 23 (31 + 224 = 255), exponent 0 (zero and
++ * denormals) the sign alone, as before. Selects compile to cmov/blend. */
++static inline float rsx_compact_be_f16_nb(const u8* p)
++{
++    const u32 h = ((u32)p[0] << 8) | p[1];
++    const u32 e = h & 0x7C00u;
++    const u32 mag = ((h & 0x7FFFu) << 13) + (e == 0x7C00u ? (224u << 23) : (112u << 23));
++    const u32 out = ((h & 0x8000u) << 16) | (e ? mag : 0u);
++    float f;
++    memcpy(&f, &out, sizeof(f));
++    return f;
++}
++
+ int rsx_vtx_cmp32_batch = -1;   /* KZ3 patch 2073 */
++int rsx_vtx_f16_fast = -1;      /* KZ3 patch 2074 */
+
+ static int rsx_vtx_switch(int* v, const char* name)
+ {
+@@ -415,6 +432,7 @@
+     if (!plan || (!refs && count) || (!out && plan->layout.stride && count))
+         return 0;
+     const int cmp32_batch = rsx_vtx_switch(&rsx_vtx_cmp32_batch, "LD_VTX_CMP32");   /* patch 2073 */
++    const int f16_fast = rsx_vtx_switch(&rsx_vtx_f16_fast, "LD_VTX_F16");   /* patch 2074 */
+     for (u32 b0 = 0; b0 < count; b0 += RSX_VTX_BLOCK) {
+         const u32 n = count - b0 < RSX_VTX_BLOCK ? count - b0 : RSX_VTX_BLOCK;
+         const rsx_vertex_ref* rb = refs + b0;
+@@ -450,7 +468,11 @@
+                 RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f32(source + c * 4))
+                 break;
+             case RSX_VTX_TYPE_HALF:
+-                RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f16(source + c * 2))
++                if (f16_fast) {   /* patch 2074 */
++                    RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f16_nb(source + c * 2))
++                } else {
++                    RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f16(source + c * 2))
++                }
+                 break;
+             case RSX_VTX_TYPE_CMP32:   /* patch 2073: only reached with cmp32_batch on */
+                 for (u32 i = 0; i < n; i++) {

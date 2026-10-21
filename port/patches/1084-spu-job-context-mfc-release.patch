@@ -1,0 +1,52 @@
+KZ3 patch 1084 (SPU pass 65): stack and freed SPU contexts give their MFC engine back. The engine table (spu_channels.c)
+finds an engine by context address; the job/task runners' stack contexts (spu_run_interp_job, spu_run_lifted_job_opts,
+spurs_job.c) and the freed taskset-policy probe context never released theirs, so every thread and stack depth that
+ever ran a job held a slot for the rest of the program (K2 with patch 1083: 64 slots at the level start, 184 at
+150 s), and the next run at the same address inherited the previous run's tag state. Released next to the existing
+spu_coh_unregister calls (the same "stack local going out of scope" point). Host tests: tools/spu/test_mfc_slots.sh
+(release + reuse), the SPU host-test list.
+
+Rebased on ps3recomp v0.15.0 (SPU pass 81): partly absorbed, PR290 releases the policy context, job and interp-job stack contexts still need it.
+
+diff --git a/runtime/spu/spu_lifted_job.h b/runtime/spu/spu_lifted_job.h
+--- a/runtime/spu/spu_lifted_job.h
++++ b/runtime/spu/spu_lifted_job.h
+@@ -23,6 +23,8 @@
+ typedef void (*spu_lifted_entry_fn)(spu_context*);
+ /* Guest RAM base, for decoding a raw SPU thread's argument block. */
+ extern uint8_t* vm_base;
++/* KZ3 patch 1083: a job/task context gives its MFC engine back when its run ends (spu_channels.c). */
++void spu_mfc_release(spu_context* ctx);
+ 
+ 
+ 
+@@ -106,6 +108,10 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
+      * gone. See spu_coh_unregister. */
+     spu_mfc_release(&ctx);
+     spu_coh_unregister(&ctx);
++    /* KZ3 patch 1083: and give its MFC engine back. The engine table finds an engine by context address, so a
++     * stack context left in it held a slot for as long as the program ran (one per thread and stack depth that
++     * ever ran a job), and the next run at the same address inherited the old run's tag state. */
++    spu_mfc_release(&ctx);
+     return (int32_t)ctx.stop_code;
+ }
+ 
+@@ -341,6 +347,7 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
+      * GH3's Havok task returning is what first hit it. */
+     spu_mfc_release(&ctx);
+     spu_coh_unregister(&ctx);
++    spu_mfc_release(&ctx);   /* KZ3 patch 1083: the engine back too (see spu_run_interp_job) */
+     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
+     return 0;
+ }
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -401,6 +401,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+ 
+     spu_mfc_release(&ctx);
+     spu_coh_unregister(&ctx);   /* stack local: out of the reserver set */
++    { extern void spu_mfc_release(spu_context*); spu_mfc_release(&ctx); }   /* KZ3 patch 1083: and its MFC engine */
+     free(ls);
+     return 0;
+ }

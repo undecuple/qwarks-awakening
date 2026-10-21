@@ -1,0 +1,184 @@
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -803,10 +803,42 @@
+ 
+ /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
+ void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
+-void spu_task_launch_check(spu_context* ctx, void* fn); /* SPURS task-launch    */
++/* KZ3 patch 1039 (SPU pass 28): the per-transfer and per-call hooks below run once per trampoline step and
++ * once per lifted call (~10-12 % of the level's SPU job samples in SPU pass 27, all out-of-line calls into
++ * functions whose work is mostly env-gated diagnostics). Their common case is now inline; the full bodies
++ * (spu_task_launch_check_full, spu_drain_call_full in spu_drain.c) run whenever a diagnostic env is set, a
++ * pm flow capture targets this context, or KZ3_SPU_FASTCG is below 1039 (then g_spu_launch_diag = 1 and
++ * g_spu_depth_max stays 0, so both inline tests fail without a flag of their own: no extra load per hook). */
++void spu_task_launch_check_full(spu_context* ctx, void* fn); /* SPURS task-launch */
++void spu_check_stack_reset(spu_context* ctx, void (*fn)(spu_context*));
++void spu_launch_ls0_end(spu_context* ctx);
++extern int g_spu_launch_diag;              /* 1: always the full hook (diagnostics or KZ3_SPU_FASTCG < 1039) */
++extern uint32_t g_spu_depth_max;           /* spu_depth_guard's limit, 0 until its first call (or always,
++                                              when KZ3_SPU_FASTCG < 1039) */
++extern volatile unsigned g_spu_stack_reset_n; /* registered stack-reset entries (spu_channels.c) */
++extern void* volatile g_pm_flow_ctx;
++extern volatile int g_yz_lockstep_on;
++static inline __attribute__((always_inline)) void spu_task_launch_check(spu_context* ctx, void* fn)
++{
++    if (__builtin_expect(g_spu_launch_diag | (g_pm_flow_ctx == (void*)ctx), 0)) {
++        spu_task_launch_check_full(ctx, fn);
++        return;
++    }
++    const uint32_t pc = (uint32_t)ctx->pc & SPU_LS_MASK;
++    ctx->recent_pc[ctx->recent_n++ & 31] = pc;
++    if (__builtin_expect(g_spu_stack_reset_n != 0, 0) && ctx->host_depth && !ctx->policy_mode)
++        spu_check_stack_reset(ctx, (void (*)(spu_context*))fn);
++    /* same test as the full hook: a job branching to LS 0 (not on the first step) is complete */
++    if (__builtin_expect(ctx->steps++ && pc == 0, 0) && !ctx->policy_mode && ctx->image_id > 0)
++        spu_launch_ls0_end(ctx);
++}
+ /* Restore image_id after a call-bracket (adopt-on-serve); re-applies the
+- * persistent LS-0xA00 workload module if one is set. */
+-void spu_img_restore(spu_context* ctx, int32_t saved_img);
++ * persistent LS-0xA00 workload module if one is set. KZ3 patch 1039: inline (was an out-of-line call per
++ * lifted call). */
++static inline __attribute__((always_inline)) void spu_img_restore(spu_context* ctx, int32_t saved_img)
++{
++    ctx->image_id = ctx->module_img_a00 ? ctx->module_img_a00 : saved_img;
++}
+ /* Wake a host thread blocked in a channel wait (channel-stall milestone). */
+ void spu_ch_wake(spu_context* ctx);
+ /* Runaway lifted-call recursion guard. A lifted brsl/bisl nests a real host
+@@ -825,7 +857,20 @@
+                           void (*tf)(spu_context*)))(spu_context*);
+ 
+ /* Drain a translated call up to its explicit architectural return PC. */
+-void spu_drain_call(spu_context* ctx, uint32_t return_pc);
++void spu_drain_call_full(spu_context* ctx, uint32_t return_pc);
++/* KZ3 patch 1039: the callee returned normally (SPU_RET with host_depth > 0 leaves no pending transfer and pc
++ * at the link) in nearly every call; the full drain then only ran spu_depth_guard (its limit test, plus a ring of
++ * recent drain sites shared by all SPU host threads) and cleared drain_ret_pc. Do that inline. The ring is
++ * diagnostic only: drains that take the full path still record their sites. */
++static inline __attribute__((always_inline)) void spu_drain_call(spu_context* ctx, uint32_t return_pc)
++{
++    if (__builtin_expect(!ctx->tramp_fn &&
++                         !(((uint32_t)ctx->pc ^ return_pc) & SPU_LS_MASK) && ctx->host_depth < g_spu_depth_max, 1)) {
++        ctx->drain_ret_pc = 0;
++        return;
++    }
++    spu_drain_call_full(ctx, return_pc);
++}
+ /* SPU_PCHIST=1: bucket SPU execution by the GPU module's own symbols.
+  *
+  * SPU_VRAMPC showed 3.7M VRAM writes from Host2Local_Body and ZERO from
+@@ -893,7 +938,7 @@
+             }                                                              \
+             void (*_tf)(spu_context*) = g_spu_trampoline_fn;    \
+             g_spu_trampoline_fn = 0;                            \
+-            yz_lockstep_tick(ctx);                             \
++            if (g_yz_lockstep_on) yz_lockstep_tick(ctx);       \
+             spu_task_launch_check((ctx), (void*)_tf);          \
+             if ((ctx)->int_enable &&                            \
+                 ((ctx)->event_status & (ctx)->event_mask))      \
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -12,10 +12,20 @@
+ /* KZ3 patch 1038: A/B switch for the pshufb quadword byte shifts/rotates in spu_helpers.h.
+  * KZ3_SPU_FASTCG=0 keeps the old byte loops (default: the pshufb path). Read once before main. */
+ int g_kz3_spu_slowcg = 0;
++/* KZ3 patch 1039: KZ3_SPU_FASTCG=N turns on the fast paths of patches <= N (unset: all; 0: none; 1038: only
++ * patch 1038's; any other value starting with a digit is the patch number). */
++int g_kz3_spu_fastcg_level = 1 << 30;
++int g_kz3_spu_fastdisp = 1;
++int g_spu_launch_diag = 0;
+ __attribute__((constructor)) static void kz3_spu_fastcg_init(void)
+ {
+     const char* e = getenv("KZ3_SPU_FASTCG");
+-    g_kz3_spu_slowcg = (e && *e == '0') ? 1 : 0;
++    if (e && *e >= '0' && *e <= '9') g_kz3_spu_fastcg_level = atoi(e);
++    if (e && *e == '1' && !e[1]) g_kz3_spu_fastcg_level = 1 << 30;   /* "1" = on (round-27 runs used 0/1) */
++    g_kz3_spu_slowcg = g_kz3_spu_fastcg_level < 1038;
++    g_kz3_spu_fastdisp = g_kz3_spu_fastcg_level >= 1039;
++    g_spu_launch_diag = !g_kz3_spu_fastdisp || getenv("SPU_NO_LS0_END") || getenv("SPU_EXITTRACE") ||
++                        getenv("SPU_STEPTRACE") || getenv("SPU_JOBDRAIN");
+ }
+ 
+ /* See spu_context.h `irq_frame`. */
+@@ -63,7 +73,16 @@
+     return k;
+ }
+ 
+-void spu_task_launch_check(spu_context* ctx, void* fn)
++/* KZ3 patch 1039: the LS-0 job end of the inline spu_task_launch_check (spu_context.h). */
++void spu_launch_ls0_end(spu_context* ctx)
++{
++    static int _n = 0;
++    if (_n++ < 8)
++        fprintf(stderr, "[spurs-job] img=%d branched to LS 0 -- job complete\n", ctx->image_id);
++    spu_halt(ctx);
++}
++
++void spu_task_launch_check_full(spu_context* ctx, void* fn)
+ {
+     ctx->recent_pc[ctx->recent_n++ & 31] = (uint32_t)ctx->pc & SPU_LS_MASK;
+     extern void spu_check_stack_reset(spu_context*, void (*)(spu_context*));
+@@ -160,10 +179,7 @@
+  * adopted inside the callee cannot leak into the caller's continuation. A
+  * persistent LS-0xA00 workload module (module_img_a00) is re-applied since the
+  * plain restore would undo it. */
+-void spu_img_restore(spu_context* ctx, int32_t saved_img)
+-{
+-    ctx->image_id = ctx->module_img_a00 ? ctx->module_img_a00 : saved_img;
+-}
++/* KZ3 patch 1039: spu_img_restore is inline in spu_context.h. */
+ 
+ /* spu_ch_wake now has its real body in spu_channels.c (milestone 3). */
+ 
+@@ -339,12 +355,16 @@
+ }
+ 
+ /* See the declaration in spu_context.h. */
++uint32_t g_spu_depth_max = 0;
+ void spu_depth_guard(spu_context* ctx)
+ {
+     static uint32_t s_max = 0;
+     if (!s_max) {
+         const char* e = getenv("SPU_HOST_DEPTH_MAX");
+         s_max = e ? (uint32_t)strtoul(e, 0, 0) : 2000u;
++        /* KZ3 patch 1039: published for the inline spu_drain_call; left 0 (inline test always fails, every
++         * drain takes this full path) when KZ3_SPU_FASTCG < 1039. */
++        if (g_kz3_spu_fastdisp) g_spu_depth_max = s_max;
+     }
+ 
+     /* Ring of recent drain sites. When the depth trips, the useful question is
+@@ -401,7 +421,7 @@
+ typedef void (*spu_drain_fn)(spu_context*);
+ extern spu_drain_fn spu_lookup(uint32_t addr, int image_id);
+ 
+-void spu_drain_call(spu_context* ctx, uint32_t return_pc)
++void spu_drain_call_full(spu_context* ctx, uint32_t return_pc)
+ {
+     spu_depth_guard(ctx);
+     /* The frame an interrupt taken in THIS loop returns to. It stays armed
+@@ -422,7 +442,7 @@
+             void (*fn)(spu_context*) = g_spu_trampoline_fn;
+             g_spu_trampoline_fn = 0;
+             ctx->drain_ret_pc = return_pc & SPU_LS_MASK;   /* re-set: a nested drain changed it */
+-            yz_lockstep_tick(ctx);
++            if (g_yz_lockstep_on) yz_lockstep_tick(ctx);
+             spu_task_launch_check(ctx, (void*)fn);
+             if (ctx->int_enable && (ctx->event_status & ctx->event_mask)) {
+                 void (*vf)(spu_context*) = spu_take_interrupt(ctx, fn);
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -1597,11 +1597,13 @@
+  * unrelated overlays using the same address. Registration precedes execution. */
+ static struct { uint32_t entry; int image_id; } s_stack_reset[16];
+ static unsigned s_stack_reset_count;
++volatile unsigned g_spu_stack_reset_n = 0;   /* KZ3 patch 1039: the inline launch check skips the call when 0 */
+ void spu_register_stack_reset_entry(uint32_t entry, int image_id)
+ {
+     if (s_stack_reset_count < 16) {
+         s_stack_reset[s_stack_reset_count].entry = entry & SPU_LS_MASK;
+         s_stack_reset[s_stack_reset_count++].image_id = image_id;
++        g_spu_stack_reset_n = s_stack_reset_count;
+     }
+ }
+ 

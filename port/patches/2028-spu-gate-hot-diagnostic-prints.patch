@@ -1,0 +1,31 @@
+SPU runtime: gate two diagnostic prints that ran thousands of times per second in the level.
+
+Symptom: the level window (RSX pass 29 probe, r29a) wrote ~16,700 stderr lines/s (~780 KB/s) from the SPURS host
+threads: "[mfc-list] RESUME-ELEMS" plus its hex line on every MFC list stall resume (~6,000/s, 6 fprintf calls
+each) and "[spurs-pm] poll #1" on almost every policy-module run (~3,000/s). The host sampling profiler (patch
+1033) put 12 % of the SPURS threads' samples in NtWriteFile and 36 % in NtWaitForAlertByThreadId (the wait under
+a contended lock, ASSUMPTION: mostly the CRT stderr lock; msvcrt stderr is unbuffered, one WriteFile per fprintf).
+
+Cause: the RESUME-ELEMS block had no counter gate (the RESUME line above it has one); the poll print's gate
+"n <= 4" uses g_spurs_pm_polls, which spurs_policy.c resets to 0 at every policy-module run, so it fired per run.
+
+Fix: RESUME-ELEMS prints for the first 16 resumes only; the poll print counts its prints process-wide (16).
+Nothing else changes. General ps3recomp fix (upstream candidate).
+
+Rebased on ps3recomp v0.15.0 (SPU pass 81): partly absorbed, PR298 bounds the RESUME-ELEMS dump, the other print gates kept.
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2756,7 +2756,10 @@ SPU_ABI void spu_indirect_branch(spu_context* ctx)
+             /* cellSpursModulePoll: report "no contention — keep running".
+              * (One virtual SPU per workload here, so nothing ever preempts.) */
+             unsigned n = ++g_spurs_pm_polls;
+-            if (n <= 4 || (n % 4096) == 0)
++            /* KZ3 patch 2028: g_spurs_pm_polls restarts at 0 every policy-module run, so "n <= 4" printed on
++             * almost every run (~3,000 lines/s in the level); count prints process-wide instead. */
++            static volatile unsigned s_poll_prints = 0;
++            if (n <= 4 && s_poll_prints < 16 && ++s_poll_prints)
+                 fprintf(stderr, "[spurs-pm] poll #%u (r3=0x%08X) -> continue\n",
+                         n, ctx->gpr[3]._u32[0]);
+             ctx->gpr[3] = spu_make_preferred_u32(0);
