@@ -1,0 +1,321 @@
+Patch 6500 (rc-SPU pass 1): the WWS job code-buffer slot is a property of the policy module, not a runtime constant.
+
+A WWS policy module keeps the LS address of the job code buffer in a fixed local-store slot and enters a job at
+LS[slot] + u32@(job header + 0x10). The slot is 0x1320 in the LBP and Killzone 3 policy modules, hard-coded in nine
+places of the runtime, but 0x1330 in Ratchet & Clank: Tools of Destruction's (policy module EA 0x10053d00:
+`lqa $r2,0x1330` @LS 0x3024, `stqa $r3,0x1330` @LS 0x21AC; it stores an unrelated LS pointer at 0x1320 and never
+reads it back). With the literal 0x1320 the overlay match in spu_indirect_branch reads the wrong word on ToD, never
+marks a lifted job module resident, and every job falls to the interpreter (patch 1069's path).
+Now: g_spu_wws_code_buf_slot[] indexed by the policy module's image id (0 = default 0x1320, so ports that register
+nothing are unchanged), spu_wws_set_code_buffer_slot(pm_image_id, lsa) for a port's SPU registration,
+spu_wws_code_buffer_slot(image_id), spu_wws_code_buffer(ctx) and spu_wws_resident_job_image(ctx, &cb) (also bounds the
+16-byte header read without the u32 wrap of `codeBase + 16 <= SPU_LS_SIZE`). Sites: spu_channels.c overlay match
+(functional), frame trace, two diagnostics; spu_interp.c histogram key; spu_context.h both write-probe gates;
+spurs_policy.c [pm-end]. spu_pm_ctx_describe keeps its raw 0x1320/0x1330 columns (labelled by address).
+Test: runtime/spu/tests/test_spu_wws_code_slot.c (host, CI linux gcc/clang + macos). General; upstream only with the
+PM's OK.
+
+diff --git a/.github/workflows/linux.yml b/.github/workflows/linux.yml
+index a3546a8..8b44f40 100644
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -104,6 +104,11 @@ jobs:
+             -std=gnu17 -I include -I runtime/spu \
+             -o /tmp/test_spu_helpers runtime/spu/tests/test_spu_helpers.c -lm
+           /tmp/test_spu_helpers
++          # The WWS job code-buffer slot is per policy module (patch 6500).
++          ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} \
++            -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++            -o /tmp/test_spu_wws_code_slot runtime/spu/tests/test_spu_wws_code_slot.c
++          /tmp/test_spu_wws_code_slot
+ 
+       # The AVX2 single-precision fast path must match the exact scalar path bit for bit.
+       - name: Run the SPU float fast-path test (AVX2)
+diff --git a/.github/workflows/macos.yml b/.github/workflows/macos.yml
+index f0a9ef4..350c3f7 100644
+--- a/.github/workflows/macos.yml
++++ b/.github/workflows/macos.yml
+@@ -80,6 +80,10 @@ jobs:
+           clang -std=gnu17 -I include -I runtime/spu \
+                 -o /tmp/test_spu_helpers runtime/spu/tests/test_spu_helpers.c -lm
+           /tmp/test_spu_helpers
++          # The WWS job code-buffer slot is per policy module (patch 6500).
++          clang -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++                -o /tmp/test_spu_wws_code_slot runtime/spu/tests/test_spu_wws_code_slot.c
++          /tmp/test_spu_wws_code_slot
+ 
+       # libnet over host sockets (PS3_NET_ONLINE), end to end on loopback: every
+       # handler is called through the NID it registered under.
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 685bd70..8c46d85 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2539,8 +2539,7 @@ static int spu_smc_microstep_body(spu_context* ctx)
+                * buffer (LS[0x1320]) holds, so a miss can be told apart from a
+                * mid-function return or code outside any lifted module. */
+               extern int spu_overlay_match_sig(const uint8_t hdr[16]);
+-              uint32_t cb = (((uint32_t)ctx->ls[0x1320] << 24) | ((uint32_t)ctx->ls[0x1321] << 16) |
+-                             ((uint32_t)ctx->ls[0x1322] << 8) | ctx->ls[0x1323]) & 0x3FFF0;
++              uint32_t cb = spu_wws_code_buffer(ctx) & 0x3FFF0;
+               fprintf(stderr, "[spu-smc] microstep img=%d pc=0x%05X word 0x%08X not in the"
+                       " microstep set -- handing to the interpreter (steps=%d start=0x%05X lr=0x%05X"
+                       " ovl=%d cb=0x%05X sig=%d)\n",
+@@ -3040,16 +3039,15 @@ SPU_ABI void spu_indirect_branch(spu_context* ctx)
+         return;
+     }
+     /* WWS job-code overlay match: the PM (image 2) streams a job module into the
+-     * code buffer (base = LS[0x1320]) and branches to base+entryOffset. Its 16-byte
++     * code buffer (base = LS[slot], 0x1320 unless the port registered another slot
++     * for this policy module, patch 6500) and branches to base+entryOffset. Its 16-byte
+      * ila header identifies which of the 89 lifted job modules it is; match it and
+      * mark that overlay resident so the module's lifted functions dispatch. The
+      * module arrives via a DMA LIST, so the single-GET note_get hook never fired. */
+     if (!fn && ctx->image_id == 2 && ctx->pc >= 0x4000 && ctx->pc < 0x3E000) {
+-        uint32_t codeBase = ((uint32_t)ctx->ls[0x1320] << 24) | ((uint32_t)ctx->ls[0x1321] << 16) |
+-                            ((uint32_t)ctx->ls[0x1322] << 8) | ctx->ls[0x1323];
+-        if (codeBase + 16 <= SPU_LS_SIZE) {
+-            extern int spu_overlay_match_sig(const uint8_t hdr[16]);
+-            int img = spu_overlay_match_sig(&ctx->ls[codeBase]);
++        uint32_t codeBase;
++        {
++            int img = spu_wws_resident_job_image(ctx, &codeBase);   /* the policy module's own slot (patch 6500) */
+             if (img && g_spu_ovl_skip_any && spu_overlay_skip_entry(ctx, img)) {   /* KZ3 patch 1043 */
+                 ctx->resident_ovl = img;
+                 fn = spu_lookup(ctx->pc, ctx->image_id);
+@@ -3223,8 +3221,7 @@ SPU_ABI void spu_indirect_branch(spu_context* ctx)
+          * own code into the job code buffer (LS[0x1320]) opens a record; it closes when control is back at the
+          * PM's link, here (the job returned normally) or in spu_drain_call_full (it ran on as trampolines). */
+         if (__builtin_expect(g_kz3_wtrace != 0, 0) && ctx->image_id == 2) {
+-            const uint32_t cb = ((uint32_t)ctx->ls[0x1320] << 24) | ((uint32_t)ctx->ls[0x1321] << 16) |
+-                                ((uint32_t)ctx->ls[0x1322] << 8) | ctx->ls[0x1323];
++            const uint32_t cb = spu_wws_code_buffer(ctx);
+             const uint32_t lr = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
+             if (cb >= 0x4000 && ctx->pc >= cb && lr < cb) {
+                 kz3_jobcall_open(ctx, lr);
+@@ -3310,10 +3307,10 @@ SPU_ABI void spu_indirect_branch(spu_context* ctx)
+              * entry computed from the wrong slot's base) + the job records
+              * the entry math reads (0x1320 base block, 0x1440 batch record). */
+             { const uint8_t* q = ctx->ls + 0x14400;
+-              const uint8_t* r1 = ctx->ls + 0x1320;
++              const uint8_t* r1 = ctx->ls + spu_wws_code_buffer_slot(ctx->image_id);
+               const uint8_t* r2 = ctx->ls + 0x1440;
+               fprintf(stderr, "[wws-jobentry]   LS14400: %02X%02X%02X%02X %02X%02X%02X%02X"
+-                      "  LS1320: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X"
++                      "  LScodebuf: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X"
+                       "  LS1440: %02X%02X%02X%02X %02X%02X%02X%02X\n",
+                       q[0],q[1],q[2],q[3], q[4],q[5],q[6],q[7],
+                       r1[0],r1[1],r1[2],r1[3], r1[4],r1[5],r1[6],r1[7],
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index a6ec1c3..1175930 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -634,6 +634,44 @@ SPU_GATE SPU_READ_MOSTLY int g_spu_ls_probe   = -1;  /* spu_ls_read_probe (SPU_L
+ SPU_GATE SPU_READ_MOSTLY int g_spu_smc_watch  = -1;  /* spu_ls_write_probe_smc (SPU_SMC_WATCH)  */
+ SPU_GATE SPU_READ_MOSTLY int g_wws_code_probe = 0;   /* WWS code-buffer resolution, capped      */
+ SPU_GATE SPU_READ_MOSTLY int g_wws_read_probe = 0;
++/* WWS job code-buffer slot, per policy module. The WWS policy module keeps the LS address of the job code buffer in a
++ * fixed local-store slot and enters a job at LS[slot] + u32@(job header + 0x10). The slot is part of the policy module
++ * build, not of the runtime: 0x1320 in the LBP and Killzone 3 modules, 0x1330 in Ratchet & Clank: Tools of
++ * Destruction's (policy module EA 0x10053d00: `lqa $r2,0x1330` @LS 0x3024 reads it, `stqa $r3,0x1330` @LS 0x21AC
++ * writes it; that module stores an unrelated LS pointer at 0x1320 and never reads it back). Reading the wrong slot
++ * makes the overlay match in spu_indirect_branch miss every job module, and every job falls to the interpreter.
++ * The table is indexed by the policy module's image id (the id its registration gives the context, ctx->image_id);
++ * 0 = SPU_WWS_CODE_BUF_SLOT_DEFAULT, so a port that registers nothing behaves as before. A port whose policy module
++ * uses another slot calls spu_wws_set_code_buffer_slot(pm_image_id, lsa) from its SPU registration, before any
++ * workload runs. */
++#define SPU_WWS_CODE_BUF_SLOT_DEFAULT 0x1320u
++#define SPU_WWS_SLOT_IMAGES 256
++SPU_GATE SPU_READ_MOSTLY uint32_t g_spu_wws_code_buf_slot[SPU_WWS_SLOT_IMAGES];
++static inline void spu_wws_set_code_buffer_slot(int pm_image_id, uint32_t lsa)
++{
++    if ((unsigned)pm_image_id < SPU_WWS_SLOT_IMAGES)
++        g_spu_wws_code_buf_slot[pm_image_id] = lsa & (SPU_LS_SIZE - 16u);   /* a quadword slot in LS */
++}
++static inline uint32_t spu_wws_code_buffer_slot(int image_id)
++{
++    const uint32_t s = (unsigned)image_id < SPU_WWS_SLOT_IMAGES ? g_spu_wws_code_buf_slot[image_id] : 0u;
++    return s ? s : SPU_WWS_CODE_BUF_SLOT_DEFAULT;
++}
++/* The job code buffer's LS address as the policy module running in ctx stored it (word 0 of its slot, big-endian). */
++static inline uint32_t spu_wws_code_buffer(const spu_context* ctx)
++{
++    const uint8_t* p = &ctx->ls[spu_wws_code_buffer_slot(ctx->image_id)];
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++/* The lifted job module resident in ctx's code buffer: its overlay image id, matched by the 16-byte header signature
++ * registered with spu_overlay_register_sig, or 0 (no buffer address in LS range, or no registered module there). */
++static inline int spu_wws_resident_job_image(const spu_context* ctx, uint32_t* code_base)
++{
++    extern int spu_overlay_match_sig(const uint8_t hdr[16]);
++    const uint32_t cb = spu_wws_code_buffer(ctx);
++    if (code_base) *code_base = cb;
++    return cb <= SPU_LS_SIZE - 16u ? spu_overlay_match_sig(&ctx->ls[cb]) : 0;
++}
+ #define SPU_WWS_READ_CAP 48   /* KZ3 patch 1100: the WWS probes' print caps (their only effect), see spu_ls_dbg_armed */
+ #define SPU_WWS_CODE_CAP 6
+ static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context* ctx, uint32_t lsa)
+@@ -716,7 +754,7 @@ SPU_HOT u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
+ 
+ static __attribute__((noinline, cold)) void spu_ls_write_probe_pre(spu_context* ctx, uint32_t lsa, u128 val)
+ {
+-    if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode) {
++    if (lsa == spu_wws_code_buffer_slot(ctx->image_id) && ctx->image_id == 2 && ctx->policy_mode) {
+         extern int g_wws_code_probe;   /* defined in spu_channels.c, capped */
+         if (g_wws_code_probe < SPU_WWS_CODE_CAP) {
+             g_wws_code_probe++;
+@@ -777,7 +815,7 @@ SPU_HOT void spu_ls_write128(spu_context* ctx, uint32_t lsa, u128 val)
+      * why it resolves to an empty buffer: the resolved address, the whole
+      * bufferSetArray (0xDF0), and the live loadCommands (0xC00) whose RunJob
+      * command (commandNum==5) names the code buffer set. */
+-    if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode)
++    if (ctx->image_id == 2 && ctx->policy_mode && lsa == spu_wws_code_buffer_slot(2))
+         spu_ls_write_probe_pre(ctx, lsa, val);
+ #if SPU_LS_FAST
+     uint32_t w0 = SPU_BSWAP32(val._u32[0]), w1 = SPU_BSWAP32(val._u32[1]);
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+index 7e1883b..cb23502 100644
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -385,7 +385,7 @@ static uint32_t spu_ih_be(const spu_context* c, uint32_t o) { o &= 0x3FFFC;
+ static void spu_ih_note(const spu_context* ctx, uint32_t start, uint64_t steps, uint64_t t0, uint32_t lo, uint32_t hi) {
+     extern int spu_overlay_match_sig(const uint8_t hdr[16]);
+     uint64_t t1 = spu_ih_now(), dt = t1 - t0;
+-    uint32_t cb = spu_ih_be(ctx, 0x1320) & 0x3FFF0;
++    uint32_t cb = spu_ih_be(ctx, spu_wws_code_buffer_slot(ctx->image_id)) & 0x3FFF0;
+     int sig = (cb + 16 <= 0x40000) ? spu_overlay_match_sig(&ctx->ls[cb]) : 0;
+     while (__atomic_exchange_n(&s_ih_lock, 1, __ATOMIC_ACQUIRE)) {}
+     if (!s_ih_t0) { s_ih_t0 = s_ih_last = t0; }
+diff --git a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+index 6b9ed47..3d5ec9c 100644
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -491,9 +491,10 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+                 else p += snprintf(buf + p, sizeof buf - p, " %05X", v & 0x3FFFF);
+             }
+             { const uint8_t* L = ctx->ls;   /* registers a call through a pointer uses, and the LS around pc and lr */
+-              p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   r2=%08X r80=%08X r95=%08X r126=%08X LS1320=%02X%02X%02X%02X LS[pc&~0xF]:",
++              const uint32_t cbs = spu_wws_code_buffer_slot(ctx->image_id);   /* patch 6500: this policy module's code-buffer slot */
++              p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   r2=%08X r80=%08X r95=%08X r126=%08X codebuf(LS%04X)=%08X LS[pc&~0xF]:",
+                             ctx->gpr[2]._u32[0], ctx->gpr[80]._u32[0], ctx->gpr[95]._u32[0], ctx->gpr[126]._u32[0],
+-                            L[0x1320], L[0x1321], L[0x1322], L[0x1323]);
++                            cbs, spu_wws_code_buffer(ctx));
+               const uint32_t a0 = ((uint32_t)ctx->pc & SPU_LS_MASK & ~0xFu), a1 = ((ctx->gpr[0]._u32[0] & SPU_LS_MASK & ~0xFu) - 0x40) & SPU_LS_MASK;
+               for (uint32_t o = 0; o < 32 && a0 + o + 3 < 0x40000; o += 4) p += snprintf(buf + p, sizeof buf - p, " %02X%02X%02X%02X", L[a0+o], L[a0+o+1], L[a0+o+2], L[a0+o+3]);
+               p += snprintf(buf + p, sizeof buf - p, "\n[pm-end]   LS[lr-0x40 = 0x%05X..]:", a1);
+diff --git a/runtime/spu/tests/test_spu_wws_code_slot.c b/runtime/spu/tests/test_spu_wws_code_slot.c
+new file mode 100644
+index 0000000..87f38f6
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_wws_code_slot.c
+@@ -0,0 +1,111 @@
++/*
++ * The WWS job code-buffer slot is a property of the policy module (patch 6500).
++ *
++ * spu_indirect_branch identifies the job module resident in a WWS policy module's code buffer by reading the
++ * buffer's LS address from the module's code-buffer slot and matching the 16-byte header there against the
++ * registered job-module signatures (spu_wws_resident_job_image). The LBP and Killzone 3 policy modules keep that
++ * address at LS 0x1320; Ratchet & Clank: Tools of Destruction's keeps it at 0x1330 and stores an unrelated LS
++ * pointer at 0x1320. This test builds both local-store layouts with synthetic module headers (no title bytes) and
++ * checks that:
++ *   - the default slot is 0x1320 (existing ports unchanged),
++ *   - a policy module registered with slot 0x1330 resolves its resident job module, and before the registration
++ *     the same layout resolves nothing (the bug the patch fixes),
++ *   - the slot is per policy-module image id: registering one leaves another on the default,
++ *   - out-of-range image ids are ignored, a slot is masked to a quadword inside LS, and a buffer address past the
++ *     end of LS matches nothing.
++ * Host only: no SPU threads, no DMA, no guest memory. spu_overlay_match_sig is the runtime's in spu_channels.c;
++ * the test supplies a minimal registry with the same contract (16-byte header -> image id, 0 if none).
++ *
++ * Build and run (gcc or clang):
++ *   cc -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++ *      -o /tmp/test_spu_wws_code_slot runtime/spu/tests/test_spu_wws_code_slot.c && /tmp/test_spu_wws_code_slot
++ */
++#include "spu_context.h"
++#include <stdio.h>
++#include <string.h>
++
++/* Minimal signature registry with spu_overlay_match_sig's contract. */
++static struct { uint8_t sig[16]; int img; } s_sig[8];
++static int s_nsig;
++int spu_overlay_match_sig(const uint8_t hdr[16])
++{
++    for (int i = 0; i < s_nsig; i++)
++        if (memcmp(hdr, s_sig[i].sig, 16) == 0) return s_sig[i].img;
++    return 0;
++}
++static void reg_sig(const uint8_t sig[16], int img) { memcpy(s_sig[s_nsig].sig, sig, 16); s_sig[s_nsig++].img = img; }
++
++static int g_fail, g_pass;
++#define CHECK(cond, ...) do { if (cond) g_pass++; else { g_fail++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
++                              fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
++
++static void put32(spu_context* c, uint32_t lsa, uint32_t v)
++{
++    c->ls[lsa] = (uint8_t)(v >> 24); c->ls[lsa + 1] = (uint8_t)(v >> 16); c->ls[lsa + 2] = (uint8_t)(v >> 8); c->ls[lsa + 3] = (uint8_t)v;
++}
++/* A synthetic job-module header: four `ila` words (opcode 0x21 in the top 7 bits) with distinct immediates. */
++static void make_sig(uint8_t out[16], uint32_t seed)
++{
++    for (int i = 0; i < 4; i++) {
++        const uint32_t w = (0x21u << 25) | (((seed * 4u + (uint32_t)i) & 0x3FFFFu) << 7) | (uint32_t)(2 + i);
++        out[i * 4] = (uint8_t)(w >> 24); out[i * 4 + 1] = (uint8_t)(w >> 16); out[i * 4 + 2] = (uint8_t)(w >> 8); out[i * 4 + 3] = (uint8_t)w;
++    }
++}
++
++static spu_context ctx;   /* 256 KB local store: static, not on the stack */
++
++int main(void)
++{
++    uint8_t sig_a[16], sig_b[16];
++    make_sig(sig_a, 0x1111); make_sig(sig_b, 0x2222);
++    reg_sig(sig_a, 200); reg_sig(sig_b, 201);
++    uint32_t cb = 0xFFFFFFFFu;
++
++    /* Defaults: every image on 0x1320. */
++    CHECK(spu_wws_code_buffer_slot(2) == 0x1320u, "default slot of image 2 = 0x%X", spu_wws_code_buffer_slot(2));
++    CHECK(spu_wws_code_buffer_slot(-1) == 0x1320u && spu_wws_code_buffer_slot(100000) == 0x1320u, "out-of-range ids");
++
++    /* 1. KZ3/LBP layout: LS[0x1320] = code buffer 0x4000 (page 0x10 << 10), module A resident there. */
++    spu_context_init(&ctx, 0); ctx.image_id = 2; ctx.policy_mode = 1;
++    put32(&ctx, 0x1320, 0x10u << 10);
++    memcpy(&ctx.ls[0x4000], sig_a, 16);
++    CHECK(spu_wws_code_buffer(&ctx) == 0x4000u, "KZ3 layout: code buffer 0x%X", spu_wws_code_buffer(&ctx));
++    CHECK(spu_wws_resident_job_image(&ctx, &cb) == 200 && cb == 0x4000u, "KZ3 layout: resident image (cb 0x%X)", cb);
++
++    /* 2. ToD layout: the policy module stores an LS pointer (its r28, the base of `lqd r4,0(r28)`) at 0x1320 and the
++     *    code buffer at 0x1330; module B is resident at 0x8000 (page 0x20). */
++    spu_context_init(&ctx, 0); ctx.image_id = 2; ctx.policy_mode = 1;
++    put32(&ctx, 0x1320, 0x2C80u);                    /* not a code buffer: nothing registered there */
++    put32(&ctx, 0x1330, 0x20u << 10);
++    memcpy(&ctx.ls[0x8000], sig_b, 16);
++    /* Before the policy module's slot is registered the runtime reads 0x1320 and finds no module: every job would
++     * fall to the interpreter. This is the behaviour before patch 6500 (the literal 0x1320). */
++    CHECK(spu_wws_resident_job_image(&ctx, &cb) == 0 && cb == 0x2C80u, "ToD layout, default slot: expected no match (cb 0x%X)", cb);
++    spu_wws_set_code_buffer_slot(2, 0x1330);
++    CHECK(spu_wws_code_buffer_slot(2) == 0x1330u, "registered slot of image 2 = 0x%X", spu_wws_code_buffer_slot(2));
++    CHECK(spu_wws_resident_job_image(&ctx, &cb) == 201 && cb == 0x8000u, "ToD layout, slot 0x1330: resident image (cb 0x%X)", cb);
++
++    /* 3. Per policy module: another policy-module image keeps the default and still resolves the KZ3 layout. */
++    spu_context_init(&ctx, 0); ctx.image_id = 3; ctx.policy_mode = 1;
++    put32(&ctx, 0x1320, 0x10u << 10);
++    put32(&ctx, 0x1330, 0x2C80u);
++    memcpy(&ctx.ls[0x4000], sig_a, 16);
++    CHECK(spu_wws_code_buffer_slot(3) == 0x1320u, "image 3 slot = 0x%X", spu_wws_code_buffer_slot(3));
++    CHECK(spu_wws_resident_job_image(&ctx, &cb) == 200 && cb == 0x4000u, "image 3 on the default slot (cb 0x%X)", cb);
++
++    /* 4. Bounds: an out-of-range id is ignored; a slot is masked to a quadword inside LS; a code-buffer address past
++     *    the end of LS (or one whose 16-byte header would cross it) matches nothing. */
++    spu_wws_set_code_buffer_slot(-1, 0x2000);
++    spu_wws_set_code_buffer_slot(SPU_WWS_SLOT_IMAGES, 0x2000);
++    CHECK(spu_wws_code_buffer_slot(SPU_WWS_SLOT_IMAGES - 1) == 0x1320u, "out-of-range set changed the table");
++    spu_wws_set_code_buffer_slot(5, 0x41337);
++    CHECK(spu_wws_code_buffer_slot(5) == 0x1330u, "masked slot = 0x%X", spu_wws_code_buffer_slot(5));
++    spu_context_init(&ctx, 0); ctx.image_id = 2; ctx.policy_mode = 1;
++    put32(&ctx, 0x1330, SPU_LS_SIZE - 8u);
++    CHECK(spu_wws_resident_job_image(&ctx, NULL) == 0, "header crossing the end of LS");
++    put32(&ctx, 0x1330, 0xFFFFFFF8u);
++    CHECK(spu_wws_resident_job_image(&ctx, NULL) == 0, "code buffer address that wraps");
++
++    printf("test_spu_wws_code_slot: %d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}

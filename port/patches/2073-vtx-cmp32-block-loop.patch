@@ -1,0 +1,91 @@
+KZ3 patch 2073 (RSX pass 69): CMP32 attributes take rsx_vertex_fetch_many's block loop, the RE notes "Pass 69".
+Patch 2040's attribute-major fetch sent every CMP32 (11/11/10 packed normal) slot through the per-vertex path
+(rsx_vertex_fetch_attr_one: element index, mapping test, type switch per vertex). On K4 that path was the largest
+vertex-fetch cost: 54.6 of ~110 timed ms per second, 8.15 M slot-vertices at 6.7 ns (coord-fullclk-k4,
+`[perf-vtxtype]`). CMP32 now has its own block loop over the attribute's contiguous mapping: one big-endian load,
+the fields sign-extended by shifts (the same integers as rsx_vertex_decode_element), the same divisions. Vertices
+outside the mapping still take the per-vertex path. Output bytes identical (tools/smoke/test_vtx_batch.sh).
+LD_VTX_CMP32=0 = the old path (default on).
+
+--- a/libs/video/rsx_vertex_compact.h
++++ b/libs/video/rsx_vertex_compact.h
+@@ -124,6 +124,12 @@
+     const rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* refs, u32 count,
+     u8* out, u32 out_stride);
+
++/* KZ3 patch 2073: rsx_vertex_fetch_many's CMP32 block loop. -1 = read
++ * LD_VTX_CMP32 once (unset or not "0" = on); 0/1 set directly (host tests).
++ * Off = patch 2040's per-vertex path for CMP32. */
++#define RSX_VTX_PATCH_2073 1
++extern int rsx_vtx_cmp32_batch;
++
+ /* Collapse repeated (vertex_id, base_index) references in first-use order.
+  * refs is rewritten in place with the unique prefix.  The occurrence map
+  * remains valid until the next call using the same remap object. */
+--- a/libs/video/rsx_vertex_compact.c
++++ b/libs/video/rsx_vertex_compact.c
+@@ -46,6 +46,17 @@
+     return f;
+ }
+
++int rsx_vtx_cmp32_batch = -1;   /* KZ3 patch 2073 */
++
++static int rsx_vtx_switch(int* v, const char* name)
++{
++    if (*v < 0) {
++        const char* e = getenv(name);
++        *v = !(e && e[0] == '0' && !e[1]);
++    }
++    return *v;
++}
++
+ /* KZ3 patch 2033: the decoder with the type switch hoisted out of the component
+  * loop (the walker runs it once per attribute per vertex, ~10^5 times a frame).
+  * Same results as before, component by component: the per-component bodies and
+@@ -403,6 +414,7 @@
+ {
+     if (!plan || (!refs && count) || (!out && plan->layout.stride && count))
+         return 0;
++    const int cmp32_batch = rsx_vtx_switch(&rsx_vtx_cmp32_batch, "LD_VTX_CMP32");   /* patch 2073 */
+     for (u32 b0 = 0; b0 < count; b0 += RSX_VTX_BLOCK) {
+         const u32 n = count - b0 < RSX_VTX_BLOCK ? count - b0 : RSX_VTX_BLOCK;
+         const rsx_vertex_ref* rb = refs + b0;
+@@ -419,7 +431,7 @@
+                 continue;
+             }
+             if (!fetch->stable_base || fetch->desc.frequency > 1 ||
+-                fetch->desc.type == RSX_VTX_TYPE_CMP32) {
++                (fetch->desc.type == RSX_VTX_TYPE_CMP32 && !cmp32_batch)) {
+                 for (u32 i = 0; i < n; i++)
+                     if (!rsx_vertex_fetch_attr_one(
+                             plan, fetch, attr, &rb[i],
+@@ -440,6 +452,29 @@
+             case RSX_VTX_TYPE_HALF:
+                 RSX_VTX_BATCH_DISPATCH(rsx_compact_be_f16(source + c * 2))
+                 break;
++            case RSX_VTX_TYPE_CMP32:   /* patch 2073: only reached with cmp32_batch on */
++                for (u32 i = 0; i < n; i++) {
++                    const u32 el = (rb[i].vertex_id + rb[i].base_index) & 0x000FFFFFu;
++                    float* v = (float*)(ob + (u64)i * out_stride + slot * 16u);
++                    if (el - first > range) {
++                        if (!rsx_vertex_fetch_attr_one(plan, fetch, attr, &rb[i], v))
++                            return 0;
++                        continue;
++                    }
++                    const u8* source = base + (u64)(el - first) * stride;
++                    const u32 word = ((u32)source[0] << 24) | ((u32)source[1] << 16) |
++                                     ((u32)source[2] << 8) | (u32)source[3];
++                    /* the 11/11/10-bit fields sign-extended by shifts: the same
++                     * integers as rsx_vertex_decode_element's "if (x & 0x400) x -= 0x800" */
++                    const s32 x = (s32)(word << 21) >> 21;
++                    const s32 y = (s32)(word << 10) >> 21;
++                    const s32 z = (s32)word >> 22;
++                    v[0] = (float)x / 1023.0f;
++                    v[1] = (float)y / 1023.0f;
++                    v[2] = (float)z / 511.0f;
++                    v[3] = 1.0f;
++                }
++                break;
+             case RSX_VTX_TYPE_UNORM8:
+                 RSX_VTX_BATCH_DISPATCH(source[c] / 255.0f)
+                 break;

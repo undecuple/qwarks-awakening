@@ -1,0 +1,716 @@
+Two-layer /dev_hdd0: PS3_HDD0_LOWER (a read-only lower, e.g. RPCS3's dev_hdd0 with a game's HDD install data) under
+PS3_HDD0_ROOT (the writable upper). Reads fall through upper -> lower; every write, create, truncate, mkdir, rename and
+delete happens in the upper; opening a lower-only file for writing copies it up (times kept); deletes of lower entries
+leave whiteouts (<dir>/.wh.<name>), a directory re-created over one is opaque (.wh..opq); listings merge both layers. The
+lower is never opened for writing and never renamed, unlinked or created in. Both file layers use it: the cellFs HLE
+(ppu_fs.cpp host_path, cellFsOpen, cellFsOpendir/Readdir/GetDirectoryEntries, cellFsMkdir) and the lv2 syscalls
+(sys_fs.c translate, open, opendir/readdir/closedir, mkdir, rename, unlink, rmdir). New header
+runtime/syscalls/hdd0_overlay.h. Without PS3_HDD0_LOWER nothing changes. Host test: R&C port/rc/tests/run_hdd0_overlay_test.sh.
+
+diff --git a/runtime/syscalls/hdd0_overlay.h b/runtime/syscalls/hdd0_overlay.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/syscalls/hdd0_overlay.h
+@@ -0,0 +1,394 @@
++/*
++ * R&C patch 7014: a two-layer /dev_hdd0 (PS3_HDD0_LOWER under PS3_HDD0_ROOT).
++ *
++ * PS3_HDD0_ROOT is the upper layer (writable; the port's own dev_hdd0). PS3_HDD0_LOWER, when set, is a read-only lower
++ * layer, e.g. RPCS3's dev_hdd0 with a game's HDD install data, used in place. Rules:
++ *  - a read of /dev_hdd0/<rel> takes the upper file if it exists, else the lower one if it exists and is not hidden;
++ *  - every write, create, truncate, mkdir, rename and delete happens in the upper only; opening a lower-only file for
++ *    writing (without truncate) copies it up first, keeping its access and modification times;
++ *  - deleting something that exists in the lower leaves a whiteout in the upper, "<dir>/.wh.<name>"; a directory
++ *    re-created over a whiteout is opaque ("<dir>/.wh..opq"): the lower's old contents stay hidden;
++ *  - directory listings merge both layers, the upper winning, without the markers;
++ *  - the lower is never opened for writing, and no unlink, rename, mkdir or utime ever touches it.
++ * With PS3_HDD0_LOWER unset nothing here is used (hdd0ov_match returns 0). Both file layers use it: the cellFs HLE
++ * (runtime/ppu/ppu_fs.cpp host_path) and the lv2 syscalls (runtime/syscalls/sys_fs.c sys_fs_translate_path).
++ * EDAT plaintext caches go to <upper>/.wh..edatcache (PS3_EDAT_CACHE, when not set), never beside a lower file.
++ * Host test: R&C port/rc/tests/run_hdd0_overlay_test.sh.
++ */
++#ifndef PS3RECOMP_HDD0_OVERLAY_H
++#define PS3RECOMP_HDD0_OVERLAY_H
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include "../platform/win32_dirent.h"
++#ifdef _WIN32
++#  include <direct.h>
++#  include <io.h>
++#  include <sys/utime.h>
++#  define HDD0OV_MKDIR(p)   _mkdir(p)
++#  define HDD0OV_RMDIR(p)   _rmdir(p)
++#  define HDD0OV_UNLINK(p)  _unlink(p)
++typedef struct _stat64 hdd0ov_stat_t;
++#  define HDD0OV_STAT(p, s) _stat64((p), (s))
++#  define HDD0OV_UTIME(p, t) _utime((p), (t))
++typedef struct _utimbuf hdd0ov_utimbuf;
++#else
++#  include <unistd.h>
++#  include <utime.h>
++#  define HDD0OV_MKDIR(p)   mkdir((p), 0777)
++#  define HDD0OV_RMDIR(p)   rmdir(p)
++#  define HDD0OV_UNLINK(p)  unlink(p)
++typedef struct stat hdd0ov_stat_t;
++#  define HDD0OV_STAT(p, s) stat((p), (s))
++#  define HDD0OV_UTIME(p, t) utime((p), (t))
++typedef struct utimbuf hdd0ov_utimbuf;
++#endif
++
++#define HDD0OV_PATH 1100
++#define HDD0OV_WH ".wh."
++#define HDD0OV_OPQ ".wh..opq"
++
++/* The two roots; 1 when the overlay is on (both set). Read once. */
++static inline int hdd0ov_roots(const char** upper, const char** lower)
++{
++    static const char* up = NULL; static const char* lo = NULL; static int init = 0;
++    if (!init) {
++        up = getenv("PS3_HDD0_ROOT"); lo = getenv("PS3_HDD0_LOWER");
++        if (up && !*up) up = NULL;
++        if (lo && !*lo) lo = NULL;
++        if (up && lo && !getenv("PS3_EDAT_CACHE")) {   /* EDAT plaintext beside a lower file would write the lower */
++            static char env[HDD0OV_PATH + 32];
++            snprintf(env, sizeof env, "PS3_EDAT_CACHE=%s/.wh..edatcache", up);
++            putenv(env);
++        }
++        if (up && lo) fprintf(stderr, "[hdd0-overlay] on: upper '%s', lower '%s' (read-only)\n", up, lo);
++        init = 1;
++    }
++    if (upper) *upper = up;
++    if (lower) *lower = lo;
++    return up && lo;
++}
++
++/* 1 when guest is under /dev_hdd0/ and the overlay is on; *rel = the part after "/dev_hdd0/". */
++static inline int hdd0ov_match(const char* guest, const char** rel)
++{
++    if (!guest || strncmp(guest, "/dev_hdd0/", 10) != 0 || !hdd0ov_roots(NULL, NULL)) return 0;
++    if (rel) *rel = guest + 10;
++    return 1;
++}
++
++static inline void hdd0ov_join(char* out, size_t cap, const char* root, const char* rel)
++{
++    while (*rel == '/' || *rel == '\\') rel++;
++    snprintf(out, cap, "%s/%s", root, rel);
++    for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
++    size_t n = strlen(out);
++    while (n > 1 && out[n - 1] == '/') out[--n] = 0;   /* "dir/" -> "dir" (stat on Windows) */
++}
++
++/* 0 = missing, 1 = file, 2 = directory */
++static inline int hdd0ov_kind(const char* p)
++{
++    hdd0ov_stat_t st;
++    if (HDD0OV_STAT(p, &st) != 0) return 0;
++    return (st.st_mode & S_IFMT) == S_IFDIR ? 2 : 1;
++}
++
++/* The whiteout marker of rel (in the upper). */
++static inline void hdd0ov_wh(char* out, size_t cap, const char* rel)
++{
++    const char* up; hdd0ov_roots(&up, NULL);
++    char tmp[HDD0OV_PATH]; hdd0ov_join(tmp, sizeof tmp, up, rel);
++    char* slash = strrchr(tmp, '/');
++    if (!slash) { snprintf(out, cap, "%s", tmp); return; }
++    *slash = 0;
++    snprintf(out, cap, "%s/" HDD0OV_WH "%s", tmp, slash + 1);
++}
++
++/* 1 when the lower's rel is visible: no whiteout for rel or an ancestor, no opaque upper ancestor directory. */
++static inline int hdd0ov_lower_visible(const char* rel)
++{
++    const char* up; hdd0ov_roots(&up, NULL);
++    while (*rel == '/' || *rel == '\\') rel++;
++    char part[HDD0OV_PATH]; size_t n = strlen(rel);
++    if (n >= sizeof part) return 0;
++    for (size_t i = 0; i <= n; i++) {
++        if (i < n && rel[i] != '/' && rel[i] != '\\') continue;
++        memcpy(part, rel, i); part[i] = 0;
++        if (!i) continue;
++        char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, part);
++        if (hdd0ov_kind(wh)) return 0;
++        if (i < n) {   /* a proper ancestor directory: opaque in the upper? */
++            char up_dir[HDD0OV_PATH], opq[HDD0OV_PATH + 16];
++            hdd0ov_join(up_dir, sizeof up_dir, up, part);
++            snprintf(opq, sizeof opq, "%s/" HDD0OV_OPQ, up_dir);
++            if (hdd0ov_kind(opq)) return 0;
++        }
++    }
++    return 1;
++}
++
++/* The host path a read of rel uses: the upper if it exists, else a visible lower, else the (missing) upper path. */
++static inline void hdd0ov_resolve(const char* rel, char* out, size_t cap)
++{
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    hdd0ov_join(out, cap, up, rel);
++    if (hdd0ov_kind(out)) return;
++    char lp[HDD0OV_PATH]; hdd0ov_join(lp, sizeof lp, lo, rel);
++    if (hdd0ov_kind(lp) && hdd0ov_lower_visible(rel)) snprintf(out, cap, "%s", lp);
++}
++
++/* Merged kind of rel (0 missing, 1 file, 2 dir) */
++static inline int hdd0ov_merged_kind(const char* rel)
++{
++    char p[HDD0OV_PATH]; hdd0ov_resolve(rel, p, sizeof p);
++    return hdd0ov_kind(p);
++}
++
++static inline void hdd0ov_parent(const char* rel, char* out, size_t cap)
++{
++    while (*rel == '/' || *rel == '\\') rel++;
++    snprintf(out, cap, "%s", rel);
++    size_t n = strlen(out);
++    while (n && (out[n - 1] == '/' || out[n - 1] == '\\')) out[--n] = 0;
++    char* s = strrchr(out, '/'); char* b = strrchr(out, '\\'); if (b > s) s = b;
++    if (s) *s = 0; else out[0] = 0;
++}
++
++/* Make the upper's copy of directory rel (and its parents) exist; merged view unchanged. 0 = ok. */
++static inline int hdd0ov_upper_dirs(const char* rel)
++{
++    const char* up; hdd0ov_roots(&up, NULL);
++    char p[HDD0OV_PATH]; hdd0ov_join(p, sizeof p, up, rel);
++    size_t root_len = strlen(up);
++    for (char* c = p + root_len + 1; *c; c++)
++        if (*c == '/') { *c = 0; if (!hdd0ov_kind(p)) HDD0OV_MKDIR(p); *c = '/'; }
++    if (!hdd0ov_kind(p)) HDD0OV_MKDIR(p);
++    return hdd0ov_kind(p) == 2 ? 0 : -1;
++}
++
++/* Copy src to dst (new file), keeping src's access and modification times. 0 = ok. */
++static inline int hdd0ov_copy_file(const char* src, const char* dst)
++{
++    FILE* in = fopen(src, "rb");
++    if (!in) return -1;
++    FILE* out = fopen(dst, "wb");
++    if (!out) { fclose(in); return -1; }
++    char buf[65536]; size_t n; int ok = 1;
++    while ((n = fread(buf, 1, sizeof buf, in)) > 0) if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }
++    fclose(in);
++    if (fclose(out) != 0) ok = 0;
++    if (ok) {
++        hdd0ov_stat_t st;
++        if (HDD0OV_STAT(src, &st) == 0) { hdd0ov_utimbuf t; t.actime = st.st_atime; t.modtime = st.st_mtime; HDD0OV_UTIME(dst, &t); }
++    }
++    return ok ? 0 : -1;
++}
++
++/* The upper path to open rel for writing. create: the open may create the file (O_CREAT); trunc: it truncates
++ * (O_TRUNC). A lower-only file is copied up first (its times kept), or created empty in the upper when truncated.
++ * Returns 0 with out set, -1 for ENOENT (no merged parent directory, or no file and no create). */
++static inline int hdd0ov_for_write(const char* rel, char* out, size_t cap, int create, int trunc)
++{
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    char parent[HDD0OV_PATH]; hdd0ov_parent(rel, parent, sizeof parent);
++    if (parent[0] && hdd0ov_merged_kind(parent) != 2) return -1;
++    hdd0ov_join(out, cap, up, rel);
++    if (hdd0ov_kind(out)) return 0;
++    char lp[HDD0OV_PATH]; hdd0ov_join(lp, sizeof lp, lo, rel);
++    const int lower_kind = hdd0ov_lower_visible(rel) ? hdd0ov_kind(lp) : 0;
++    if (lower_kind == 2) return 0;   /* a directory: the caller's open fails as it would */
++    if (!lower_kind && !create) return -1;
++    if (parent[0] && hdd0ov_upper_dirs(parent) != 0) return -1;
++    if (lower_kind == 1) {
++        if (trunc) { FILE* f = fopen(out, "wb"); if (!f) return -1; fclose(f); return 0; }
++        return hdd0ov_copy_file(lp, out);
++    }
++    char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, rel);
++    if (hdd0ov_kind(wh)) HDD0OV_UNLINK(wh);   /* created again: the whiteout goes */
++    return 0;
++}
++
++/* mkdir: 0 ok, 1 already exists (merged), -1 parent missing */
++static inline int hdd0ov_mkdir(const char* rel)
++{
++    if (hdd0ov_merged_kind(rel)) return 1;
++    char parent[HDD0OV_PATH]; hdd0ov_parent(rel, parent, sizeof parent);
++    if (parent[0] && hdd0ov_merged_kind(parent) != 2) return -1;
++    char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, rel);
++    const int was_whited = hdd0ov_kind(wh) != 0;
++    if (hdd0ov_upper_dirs(rel) != 0) return -1;
++    if (was_whited) {   /* a lower directory of this name was deleted: keep its contents hidden */
++        HDD0OV_UNLINK(wh);
++        const char* up; hdd0ov_roots(&up, NULL);
++        char p[HDD0OV_PATH], opq[HDD0OV_PATH + 16]; hdd0ov_join(p, sizeof p, up, rel);
++        snprintf(opq, sizeof opq, "%s/" HDD0OV_OPQ, p);
++        FILE* f = fopen(opq, "wb"); if (f) fclose(f);
++    }
++    return 0;
++}
++
++static inline int hdd0ov_is_marker(const char* name) { return strncmp(name, HDD0OV_WH, 4) == 0; }
++
++/* Merged directory listing */
++typedef struct hdd0ov_entry { char name[256]; char path[HDD0OV_PATH]; int is_dir; } hdd0ov_entry;
++typedef struct hdd0ov_dir { hdd0ov_entry* e; int n, cap, pos; } hdd0ov_dir;
++
++static inline void hdd0ov_dir_add(hdd0ov_dir* d, const char* name, const char* dirpath)
++{
++    for (int i = 0; i < d->n; i++) if (!strcmp(d->e[i].name, name)) return;   /* the upper came first */
++    if (d->n == d->cap) {
++        int nc = d->cap ? d->cap * 2 : 64;
++        hdd0ov_entry* ne = (hdd0ov_entry*)realloc(d->e, (size_t)nc * sizeof *ne);
++        if (!ne) return;
++        d->e = ne; d->cap = nc;
++    }
++    hdd0ov_entry* x = &d->e[d->n++];
++    snprintf(x->name, sizeof x->name, "%s", name);
++    snprintf(x->path, sizeof x->path, "%s/%s", dirpath, name);
++    x->is_dir = hdd0ov_kind(x->path) == 2;
++}
++
++/* NULL when rel is not a directory in the merged view. Entries in upper-then-lower order, "." and ".." first. */
++static inline hdd0ov_dir* hdd0ov_opendir(const char* rel)
++{
++    if (hdd0ov_merged_kind(rel) != 2) return NULL;
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    hdd0ov_dir* d = (hdd0ov_dir*)calloc(1, sizeof *d);
++    if (!d) return NULL;
++    char upath[HDD0OV_PATH], lpath[HDD0OV_PATH];
++    hdd0ov_join(upath, sizeof upath, up, rel); hdd0ov_join(lpath, sizeof lpath, lo, rel);
++    const int up_dir = hdd0ov_kind(upath) == 2;
++    char opq[HDD0OV_PATH + 16]; snprintf(opq, sizeof opq, "%s/" HDD0OV_OPQ, upath);
++    const int lower_shown = hdd0ov_kind(lpath) == 2 && hdd0ov_lower_visible(rel) && !(up_dir && hdd0ov_kind(opq));
++    hdd0ov_dir_add(d, ".", up_dir ? upath : lpath);
++    hdd0ov_dir_add(d, "..", up_dir ? upath : lpath);
++    if (up_dir) {
++        DIR* h = opendir(upath);
++        if (h) { struct dirent* x;
++            while ((x = readdir(h)) != NULL)
++                if (strcmp(x->d_name, ".") && strcmp(x->d_name, "..") && !hdd0ov_is_marker(x->d_name))
++                    hdd0ov_dir_add(d, x->d_name, upath);
++            closedir(h); }
++    }
++    if (lower_shown) {
++        DIR* h = opendir(lpath);
++        if (h) { struct dirent* x;
++            while ((x = readdir(h)) != NULL) {
++                if (!strcmp(x->d_name, ".") || !strcmp(x->d_name, "..") || hdd0ov_is_marker(x->d_name)) continue;
++                char wh[HDD0OV_PATH + 300], crel[HDD0OV_PATH + 300];
++                snprintf(crel, sizeof crel, "%s/%s", rel, x->d_name);
++                hdd0ov_wh(wh, sizeof wh, crel);
++                if (!hdd0ov_kind(wh)) hdd0ov_dir_add(d, x->d_name, lpath);
++            }
++            closedir(h); }
++    }
++    return d;
++}
++/* 1 with the next entry, 0 at the end */
++static inline int hdd0ov_readdir(hdd0ov_dir* d, const char** name, const char** path, int* is_dir)
++{
++    if (!d || d->pos >= d->n) return 0;
++    hdd0ov_entry* x = &d->e[d->pos++];
++    if (name) *name = x->name;
++    if (path) *path = x->path;
++    if (is_dir) *is_dir = x->is_dir;
++    return 1;
++}
++static inline void hdd0ov_closedir(hdd0ov_dir* d) { if (d) { free(d->e); free(d); } }
++
++/* unlink a file: 0 ok, -1 ENOENT, -2 is a directory */
++static inline int hdd0ov_unlink(const char* rel)
++{
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    const int k = hdd0ov_merged_kind(rel);
++    if (!k) return -1;
++    if (k == 2) return -2;
++    char upath[HDD0OV_PATH], lpath[HDD0OV_PATH];
++    hdd0ov_join(upath, sizeof upath, up, rel); hdd0ov_join(lpath, sizeof lpath, lo, rel);
++    if (hdd0ov_kind(upath) == 1 && HDD0OV_UNLINK(upath) != 0) return -1;
++    if (hdd0ov_kind(lpath) && hdd0ov_lower_visible(rel)) {
++        char parent[HDD0OV_PATH]; hdd0ov_parent(rel, parent, sizeof parent);
++        if (parent[0]) hdd0ov_upper_dirs(parent);
++        char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, rel);
++        FILE* f = fopen(wh, "wb"); if (!f) return -1; fclose(f);
++    }
++    return 0;
++}
++
++/* rmdir: 0 ok, -1 ENOENT, -2 not empty, -3 not a directory */
++static inline int hdd0ov_rmdir(const char* rel)
++{
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    const int k = hdd0ov_merged_kind(rel);
++    if (!k) return -1;
++    if (k != 2) return -3;
++    hdd0ov_dir* d = hdd0ov_opendir(rel);
++    const int entries = d ? d->n - 2 : 0;
++    hdd0ov_closedir(d);
++    if (entries > 0) return -2;
++    char upath[HDD0OV_PATH], lpath[HDD0OV_PATH];
++    hdd0ov_join(upath, sizeof upath, up, rel); hdd0ov_join(lpath, sizeof lpath, lo, rel);
++    if (hdd0ov_kind(upath) == 2) {   /* drop the markers it holds, then the directory */
++        DIR* h = opendir(upath);
++        if (h) { struct dirent* x;
++            while ((x = readdir(h)) != NULL)
++                if (hdd0ov_is_marker(x->d_name)) { char m[HDD0OV_PATH + 300]; snprintf(m, sizeof m, "%s/%s", upath, x->d_name); HDD0OV_UNLINK(m); }
++            closedir(h); }
++        if (HDD0OV_RMDIR(upath) != 0) return -1;
++    }
++    if (hdd0ov_kind(lpath) == 2 && hdd0ov_lower_visible(rel)) {
++        char parent[HDD0OV_PATH]; hdd0ov_parent(rel, parent, sizeof parent);
++        if (parent[0]) hdd0ov_upper_dirs(parent);
++        char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, rel);
++        FILE* f = fopen(wh, "wb"); if (!f) return -1; fclose(f);
++    }
++    return 0;
++}
++
++/* rename a -> b (files and directory trees): b is built in the upper from a's merged contents, then a is deleted in
++ * the merged view (upper copy removed, lower hidden by a whiteout). 0 ok, -1 ENOENT / failure. */
++static inline int hdd0ov_rename(const char* a, const char* b)
++{
++    const char* up; const char* lo; hdd0ov_roots(&up, &lo);
++    const int k = hdd0ov_merged_kind(a);
++    if (!k) return -1;
++    if (k == 1) {
++        if (hdd0ov_merged_kind(b) == 1 && hdd0ov_unlink(b) != 0) return -1;
++        char bpath[HDD0OV_PATH];
++        if (hdd0ov_for_write(b, bpath, sizeof bpath, 1, 1) != 0) return -1;
++        char ua[HDD0OV_PATH]; hdd0ov_join(ua, sizeof ua, up, a);
++        if (hdd0ov_kind(ua) == 1) {   /* upper file: a plain rename */
++            if (rename(ua, bpath) != 0) return -1;
++            char la[HDD0OV_PATH]; hdd0ov_join(la, sizeof la, lo, a);
++            if (hdd0ov_kind(la) && hdd0ov_lower_visible(a)) {   /* the lower one would show through: hide it */
++                char wh[HDD0OV_PATH]; hdd0ov_wh(wh, sizeof wh, a);
++                FILE* f = fopen(wh, "wb"); if (f) fclose(f);
++            }
++            return 0;
++        }
++        char src[HDD0OV_PATH]; hdd0ov_resolve(a, src, sizeof src);
++        if (hdd0ov_copy_file(src, bpath) != 0) return -1;
++        return hdd0ov_unlink(a);
++    }
++    /* directory: recreate b, move every child, remove a */
++    if (hdd0ov_merged_kind(b)) return -1;
++    if (hdd0ov_mkdir(b) != 0) return -1;
++    hdd0ov_dir* d = hdd0ov_opendir(a);
++    const char* name; int rc = 0;
++    while (d && hdd0ov_readdir(d, &name, NULL, NULL)) {
++        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
++        char ca[HDD0OV_PATH + 300], cb[HDD0OV_PATH + 300];
++        snprintf(ca, sizeof ca, "%s/%s", a, name); snprintf(cb, sizeof cb, "%s/%s", b, name);
++        if (hdd0ov_rename(ca, cb) != 0) rc = -1;
++    }
++    hdd0ov_closedir(d);
++    if (rc) return rc;
++    return hdd0ov_rmdir(a);
++}
++
++#endif /* PS3RECOMP_HDD0_OVERLAY_H */
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -26,6 +26,7 @@
+ #include <atomic>
+ #include <sys/stat.h>
+ #include "../platform/win32_dirent.h"   /* <dirent.h>, or a Win32 stand-in */
++#include "../syscalls/hdd0_overlay.h"   /* R&C patch 7014: PS3_HDD0_LOWER under PS3_HDD0_ROOT */
+ 
+ /* Guest-resolving host backtrace (ppu_loader.cpp). Must be declared at file scope:
+  * `extern "C"` inside a function body is ill-formed in C++. */
+@@ -141,6 +142,8 @@
+      * /dev_hdd0/game/<title>/), mirroring the PS3/RPCS3 layout: base data on
+      * /dev_bdvd (disc), update data on /dev_hdd0. Set PS3_HDD0_ROOT to the host
+      * dir that /dev_hdd0 maps into (the one containing game/<title>/). */
++    { const char* ovrel;   /* R&C patch 7014: with PS3_HDD0_LOWER, reads fall through upper -> lower */
++      if (hdd0ov_match(guest, &ovrel)) { hdd0ov_resolve(ovrel, out, cap); return; } }
+     static const char* hdd0_root = nullptr; static int hdd0_init = 0;
+     if (!hdd0_init) { hdd0_root = getenv("PS3_HDD0_ROOT"); hdd0_init = 1; }
+     if (hdd0_root && strncmp(guest, "/dev_hdd0/", 10) == 0) {
+@@ -214,6 +217,8 @@
+ static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */   /* 1 if this fd is an open .usm movie (read tracker) */
+ static DIR*  g_dirs[FS_MAX];
+ static char  g_dir_path[FS_MAX][1024];   /* host path per open dir (for readdir stat) */
++static hdd0ov_dir* g_ovdirs[FS_MAX];      /* R&C patch 7014: a merged /dev_hdd0 listing (g_dirs[fd] = the marker below) */
++#define FS_OVDIR_MARK ((DIR*)(uintptr_t)1)
+ 
+ static int fd_alloc_file(FILE* f)
+ {
+@@ -234,6 +239,16 @@
+     uint32_t flags  = (uint32_t)ctx->gpr[4];
+     uint32_t fd_ptr = (uint32_t)ctx->gpr[5];
+     host_path(hpath, sizeof hpath, gpath);
++    {   /* R&C patch 7014: any open that may write goes to the upper (lower-only files are copied up first) */
++        const char* ovrel;
++        if (hdd0ov_match(gpath, &ovrel) &&
++            ((flags & 0x3) != CELL_FS_O_RDONLY || (flags & (CELL_FS_O_CREAT | CELL_FS_O_TRUNC | CELL_FS_O_APPEND)))) {
++            if (hdd0ov_for_write(ovrel, hpath, sizeof hpath, (flags & CELL_FS_O_CREAT) != 0, (flags & CELL_FS_O_TRUNC) != 0) != 0) {
++                fprintf(stderr, "[fs] open FAIL '%s' (overlay: no such file or parent) (flags=0x%X)\n", gpath, flags);
++                ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_ENOENT; return;
++            }
++        }
++    }
+ 
+     /* NPDRM: see the note in sys_fs.c -- an EDAT is decrypted once into a cache
+      * file and that is opened in its place. */
+@@ -712,6 +727,20 @@
+     guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
+     uint32_t fd_ptr = (uint32_t)ctx->gpr[4];
+     host_path(hpath, sizeof hpath, gpath);
++    {   /* R&C patch 7014: a /dev_hdd0 listing merges the upper and the lower */
++        const char* ovrel;
++        if (hdd0ov_match(gpath, &ovrel)) {
++            hdd0ov_dir* od = hdd0ov_opendir(ovrel);
++            if (!od) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_ENOENT; return; }
++            int fd = fd_alloc_dir(FS_OVDIR_MARK);
++            if (fd < 0) { hdd0ov_closedir(od); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
++            g_ovdirs[fd] = od;
++            strncpy(g_dir_path[fd], hpath, sizeof g_dir_path[fd] - 1);
++            if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
++            ctx->gpr[3] = CELL_OK;
++            return;
++        }
++    }
+     DIR* d = opendir(hpath);
+     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] opendir '%s' -> %s\n", gpath, d ? "OK" : "ENOENT");
+     if (!d) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_ENOENT; return; }
+@@ -729,16 +758,24 @@
+     uint32_t dirent = (uint32_t)ctx->gpr[4];
+     uint32_t nread_ptr = (uint32_t)ctx->gpr[5];
+     if (fd < 0 || fd >= FS_MAX || !g_dirs[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
++    const char* ename; uint8_t type;
++    if (g_ovdirs[fd]) {   /* R&C patch 7014: merged listing */
++        const char* epath; int is_dir;
++        if (!hdd0ov_readdir(g_ovdirs[fd], &ename, &epath, &is_dir)) { if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return; }
++        type = is_dir ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
++    } else {
+     struct dirent* e = readdir(g_dirs[fd]);
+     if (!e) { if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return; }
+     char full[1300]; struct stat st;
+     snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
+-    uint8_t type = (stat(full, &st) == 0 && (st.st_mode & S_IFDIR))
++    type = (stat(full, &st) == 0 && (st.st_mode & S_IFDIR))
+                    ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
+-    size_t nl = strlen(e->d_name); if (nl > 255) nl = 255;
++    ename = e->d_name;
++    }
++    size_t nl = strlen(ename); if (nl > 255) nl = 255;
+     vm_base[dirent + 0] = type;
+     vm_base[dirent + 1] = (uint8_t)nl;
+-    for (size_t i = 0; i < nl; i++) vm_base[dirent + 2 + i] = (uint8_t)e->d_name[i];
++    for (size_t i = 0; i < nl; i++) vm_base[dirent + 2 + i] = (uint8_t)ename[i];
+     vm_base[dirent + 2 + nl] = 0;
+     if (nread_ptr) vm_write64(nread_ptr, 0x102);
+     ctx->gpr[3] = CELL_OK;
+@@ -768,13 +805,20 @@
+     ctx->gpr[3] = CELL_OK;
+     for (; count < bytes / 312; ++count) {
+         errno = 0;
++        const char* entry_name; char path[1300];
++        if (g_ovdirs[fd]) {   /* R&C patch 7014: merged listing; each entry's own layer answers its stat */
++            const char* epath;
++            if (!hdd0ov_readdir(g_ovdirs[fd], &entry_name, &epath, NULL)) break;
++            snprintf(path, sizeof path, "%s", epath);
++        } else {
+         struct dirent* entry = readdir(g_dirs[fd]);
+         if (!entry) {
+             if (errno) ctx->gpr[3] = 0x8001002Bu; // CELL_EIO
+             break;
+         }
+-        char path[1300];
++        entry_name = entry->d_name;
+         snprintf(path, sizeof path, "%s/%s", g_dir_path[fd], entry->d_name);
++        }
+         struct stat st;
+         if (stat(path, &st) != 0) {
+             ctx->gpr[3] = 0x8001002Bu; // entry disappeared or cannot be inspected
+@@ -788,11 +832,11 @@
+         vm_write64(out + 0x0C, uint64_t(st.st_atime));
+         vm_write64(out + 0x14, uint64_t(st.st_mtime));
+         vm_write64(out + 0x1C, uint64_t(st.st_ctime));
+-        size_t length = strlen(entry->d_name);
++        size_t length = strlen(entry_name);
+         if (length > 255) length = 255;
+         vm_base[out + 52] = directory ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
+         vm_base[out + 53] = uint8_t(length);
+-        memcpy(vm_base + out + 54, entry->d_name, length);
++        memcpy(vm_base + out + 54, entry_name, length);
+     }
+     vm_write32(count_ptr, count);
+ }
+@@ -800,7 +844,8 @@
+ static void cellFsClosedir(ppu_context* ctx)
+ {
+     int fd = (int)(uint32_t)ctx->gpr[3];
+-    if (fd >= 0 && fd < FS_MAX && g_dirs[fd]) { closedir(g_dirs[fd]); g_dirs[fd] = nullptr; }
++    if (fd >= 0 && fd < FS_MAX && g_ovdirs[fd]) { hdd0ov_closedir(g_ovdirs[fd]); g_ovdirs[fd] = nullptr; g_dirs[fd] = nullptr; }   /* 7014 */
++    else if (fd >= 0 && fd < FS_MAX && g_dirs[fd]) { closedir(g_dirs[fd]); g_dirs[fd] = nullptr; }
+     ctx->gpr[3] = CELL_OK;
+ }
+ 
+@@ -835,7 +880,14 @@
+     char gpath[1024], hpath[1100];
+     guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
+     host_path(hpath, sizeof hpath, gpath);
+-    int r = host_mkdir_p(hpath);
++    int r;
++    const char* ovrel;
++    if (hdd0ov_match(gpath, &ovrel)) {   /* R&C patch 7014: created in the upper, parents too, as host_mkdir_p does */
++        char part[1024]; size_t n = strlen(ovrel); r = 0;
++        for (size_t i = 1; i <= n && i < sizeof part; i++)
++            if (i == n || ovrel[i] == '/') { memcpy(part, ovrel, i); part[i] = 0; if (hdd0ov_mkdir(part) < 0) { r = -1; break; } }
++    } else
++    r = host_mkdir_p(hpath);
+     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] mkdir '%s' -> '%s' (%s)\n", gpath, hpath, r == 0 ? "OK" : "FAIL");
+     ctx->gpr[3] = CELL_OK;   /* existing dir is benign for boot */
+ }
+diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
+--- a/runtime/syscalls/sys_fs.c
++++ b/runtime/syscalls/sys_fs.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include "sys_fs.h"
++#include "hdd0_overlay.h"   /* R&C patch 7014 */
+ #include "../../libs/filesystem/edat.h"
+ #include "../memory/vm.h"
+ #include <string.h>
+@@ -166,6 +167,9 @@
+     snprintf(path, cap, "%s", alt);
+ }
+ 
++/* R&C patch 7014: PS3_HDD0_LOWER under PS3_HDD0_ROOT (hdd0_overlay.h). */
++static hdd0ov_dir* g_sys_fs_ovdirs[SYS_FS_DIR_MAX];
++
+ void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_size)
+ {
+     /* Lazily adopt PS3_VFS_ROOT if the root is still the default ".", so this
+@@ -181,6 +185,8 @@
+     {
+         static const char* hdd0_root = NULL; static int hdd0_init = 0;
+         if (!hdd0_init) { hdd0_root = getenv("PS3_HDD0_ROOT"); hdd0_init = 1; }
++        const char* ovrel;   /* R&C patch 7014: reads fall through upper -> lower */
++        if (hdd0ov_match(ps3_path, &ovrel)) { hdd0ov_resolve(ovrel, host_path, (size_t)host_path_size); return; }
+         if (hdd0_root && strncmp(ps3_path, "/dev_hdd0/", 10) == 0) {
+             snprintf(host_path, (size_t)host_path_size, "%s/%s", hdd0_root, ps3_path + 10);
+             fs_normalize_sep(host_path);
+@@ -341,7 +347,13 @@
+     const char* ps3_path = (const char*)vm_to_host(path_addr);
+     char host_path[1024];
+     sys_fs_translate_path(ps3_path, host_path, sizeof(host_path));
+-
++    {   /* R&C patch 7014: an open that may write goes to the upper (a lower-only file is copied up first) */
++        const char* ovrel;
++        if (hdd0ov_match(ps3_path, &ovrel) &&
++            ((flags & CELL_FS_O_ACCMODE) != CELL_FS_O_RDONLY || (flags & (CELL_FS_O_CREAT | CELL_FS_O_TRUNC | CELL_FS_O_APPEND))) &&
++            hdd0ov_for_write(ovrel, host_path, sizeof(host_path), (flags & CELL_FS_O_CREAT) != 0, (flags & CELL_FS_O_TRUNC) != 0) != 0)
++            return (int64_t)(int32_t)CELL_ENOENT;
++    }
+     { extern char* getenv(const char*); if (getenv("FLOW_TITLEOPEN") && ps3_path && strstr(ps3_path, "Titles")) {
+         size_t _l = strlen(ps3_path);
+         fprintf(stderr, "[TITLEOPEN] path='%s' (len=%zu, ends_slash=%d) guest_lr=0x%08X\n",
+@@ -816,7 +828,21 @@
+ 
+     sys_fs_dir_info* d = &g_sys_fs_dirs[slot];
+     memset(d, 0, sizeof(*d));
+-
++    {   /* R&C patch 7014: a /dev_hdd0 listing merges both layers */
++        const char* ovrel;
++        if (hdd0ov_match(ps3_path, &ovrel)) {
++            hdd0ov_dir* od = hdd0ov_opendir(ovrel);
++            if (!od) return (int64_t)(int32_t)CELL_ENOENT;
++            g_sys_fs_ovdirs[slot] = od;
++#ifdef _WIN32
++            d->find_handle = INVALID_HANDLE_VALUE;
++#endif
++            d->active = 1;
++            strncpy(d->path, host_path, sizeof(d->path) - 1);
++            write_be32(fd_out, (uint32_t)(slot + 1));
++            return CELL_OK;
++        }
++    }
+ #ifdef _WIN32
+     char search_path[1024];
+     snprintf(search_path, sizeof(search_path), "%s\\*", host_path);
+@@ -862,7 +888,12 @@
+ 
+     const char* name = NULL;
+     int is_dir = 0;
+-
++    if (g_sys_fs_ovdirs[dir_fd - 1]) {   /* R&C patch 7014 */
++        if (!hdd0ov_readdir(g_sys_fs_ovdirs[dir_fd - 1], &name, NULL, &is_dir)) {
++            if (nread_addr != 0) write_be64(nread_addr, 0);
++            return CELL_OK;
++        }
++    } else {
+ #ifdef _WIN32
+     if (d->first_read) {
+         d->first_read = 0;
+@@ -886,6 +917,7 @@
+     name = entry->d_name;
+     is_dir = (entry->d_type == DT_DIR) ? 1 : 0;
+ #endif
++    }
+ 
+     if (dirent_addr != 0 && name != NULL) {
+         uint8_t* out = (uint8_t*)vm_to_host(dirent_addr);
+@@ -921,7 +953,11 @@
+     sys_fs_dir_info* d = &g_sys_fs_dirs[dir_fd - 1];
+     if (!d->active)
+         return (int64_t)(int32_t)CELL_EBADF;
+-
++    if (g_sys_fs_ovdirs[dir_fd - 1]) {   /* R&C patch 7014 */
++        hdd0ov_closedir(g_sys_fs_ovdirs[dir_fd - 1]); g_sys_fs_ovdirs[dir_fd - 1] = NULL;
++        d->active = 0;
++        return CELL_OK;
++    }
+ #ifdef _WIN32
+     if (d->find_handle != INVALID_HANDLE_VALUE)
+         FindClose(d->find_handle);
+@@ -949,6 +985,11 @@
+ 
+     const char* ps3_path = (const char*)vm_to_host(path_addr);
+     char host_path[1024];
++    { const char* ovrel;   /* R&C patch 7014: in the upper */
++      if (hdd0ov_match(ps3_path, &ovrel)) {
++          const int r = hdd0ov_mkdir(ovrel);
++          return r == 0 ? CELL_OK : (int64_t)(int32_t)(r == 1 ? CELL_EEXIST : CELL_ENOENT);
++      } }
+     sys_fs_translate_path(ps3_path, host_path, sizeof(host_path));
+ 
+ #ifdef _WIN32
+@@ -990,6 +1031,11 @@
+     const char* new_ps3 = (const char*)vm_to_host(new_addr);
+ 
+     char old_host[1024], new_host[1024];
++    { const char* ra; const char* rb;   /* R&C patch 7014: renames inside /dev_hdd0 happen in the upper */
++      const int ma = hdd0ov_match(old_ps3, &ra), mb = hdd0ov_match(new_ps3, &rb);
++      if (ma && mb) return hdd0ov_rename(ra, rb) == 0 ? CELL_OK : (int64_t)(int32_t)CELL_ENOENT;
++      if (ma || mb) return (int64_t)(int32_t)CELL_EXDEV;   /* never move a lower file out or across */
++    }
+     sys_fs_translate_path(old_ps3, old_host, sizeof(old_host));
+     sys_fs_translate_path(new_ps3, new_host, sizeof(new_host));
+ 
+@@ -1013,6 +1059,11 @@
+ 
+     const char* ps3_path = (const char*)vm_to_host(path_addr);
+     char host_path[1024];
++    { const char* ovrel;   /* R&C patch 7014: upper removed, a lower file hidden by a whiteout */
++      if (hdd0ov_match(ps3_path, &ovrel)) {
++          const int r = hdd0ov_unlink(ovrel);
++          return r == 0 ? CELL_OK : (int64_t)(int32_t)(r == -2 ? CELL_EISDIR : CELL_ENOENT);
++      } }
+     sys_fs_translate_path(ps3_path, host_path, sizeof(host_path));
+ 
+ #ifdef _WIN32
+@@ -1039,6 +1090,11 @@
+ 
+     const char* ps3_path = (const char*)vm_to_host(path_addr);
+     char host_path[1024];
++    { const char* ovrel;   /* R&C patch 7014 */
++      if (hdd0ov_match(ps3_path, &ovrel)) {
++          const int r = hdd0ov_rmdir(ovrel);
++          return r == 0 ? CELL_OK : (int64_t)(int32_t)(r == -2 ? CELL_ENOTEMPTY : r == -3 ? CELL_ENOTDIR : CELL_ENOENT);
++      } }
+     sys_fs_translate_path(ps3_path, host_path, sizeof(host_path));
+ 
+ #ifdef _WIN32

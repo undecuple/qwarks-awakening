@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below and keep the MIT licence notice with any copied code."
+title: "Qwark's Awakening"
+type: software
+authors:
+  - alias: undecuple
+repository-code: "https://github.com/undecuple/qwarks-awakening"
+url: "https://github.com/undecuple/qwarks-awakening"
+license: MIT
+abstract: >-
+  Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation). A native Windows port of the PS3 Ratchet & Clank games by static recompilation of their PPU and SPU code on ps3recomp, with the PS3 system software they call reimplemented and graphics on Direct3D 12. Early work: in our tests the first game, Tools of Destruction, plays its first levels by hand, with known bugs; it is not playable yet. Contains no game code or data.
+keywords:
+  - static recompilation
+  - PS3
+  - ps3recomp
+  - Ratchet & Clank
+  - game preservation

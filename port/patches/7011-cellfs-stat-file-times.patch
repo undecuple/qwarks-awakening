@@ -1,0 +1,62 @@
+cellFsStat / cellFsFstat report the host file's atime, mtime and ctime instead of 0, as lv2 does (RPCS3 sys_fs_stat and
+sys_fs_fstat copy them from the file; /dev_bdvd included). FIOS's disc cache keys each cached block by the archive's
+modification date; with 0 it dropped every block ("FIOS cache block[N] for '...' ignored because mod date changed at read",
+R&C ToD, 3 log lines per read). Host test: R&C port/rc/tests/run_fs_stat_test.sh.
+
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -68,6 +68,12 @@
+ #  define FS_STAT64(p, s)    stat((p), (s))
+ typedef struct stat fs_stat64_t;
+ #endif
++/* R&C patch 7011: fstat of an open host FILE, same struct as FS_STAT64. */
++#ifdef _WIN32
++#  define FS_FSTAT64(f, s)   _fstat64(_fileno(f), (s))
++#else
++#  define FS_FSTAT64(f, s)   fstat(fileno(f), (s))
++#endif
+ 
+ extern "C" uint8_t* vm_base;
+ extern "C" void ppu_guest_caller(char* out, size_t n);
+@@ -627,6 +633,18 @@
+     vm_write64(sb + 0x2C, 0x200);        /* blksize */
+ }
+ 
++/* R&C patch 7011: the host file's times. lv2 fills atime/mtime/ctime from the file (RPCS3 sys_fs_stat / sys_fs_fstat
++ * copy them from the host stat, /dev_bdvd included; only the "/" root reports -1); write_stat left them 0. FIOS's disc
++ * cache keys every cached block by the archive's modification date (fileStatus.modificationDate at 0x007AEB34): with 0
++ * it threw each block away ("FIOS cache block[N] for '...' ignored because mod date changed at read", R&C ToD, every
++ * read). */
++static void write_stat_times(uint32_t sb, const fs_stat64_t* st)
++{
++    vm_write64(sb + 0x0C, (uint64_t)(int64_t)st->st_atime);
++    vm_write64(sb + 0x14, (uint64_t)(int64_t)st->st_mtime);
++    vm_write64(sb + 0x1C, (uint64_t)(int64_t)st->st_ctime);
++}
++
+ /* KZ3 patch 3008: a port hook may answer cellFsStat for a guest path before the
+  * host is asked (0 = no opinion, else the CELL_FS error to return). KZ3's
+  * psarc_vfs uses it to keep FIOS off the archive it serves. */
+@@ -651,7 +669,7 @@
+     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] stat '%s' -> OK (size=%lld)\n", gpath, (long long)st.st_size);
+     uint32_t mode = (st.st_mode & S_IFDIR) ? (CELL_FS_S_IFDIR | 0x1FF)
+                                            : (CELL_FS_S_IFREG | 0x1B6);
+-    if (sb) write_stat(sb, mode, (uint64_t)st.st_size);
++    if (sb) { write_stat(sb, mode, (uint64_t)st.st_size); write_stat_times(sb, &st); }   /* patch 7011 */
+     if (getenv("PS3_FSLOG") && strstr(gpath,".toc")) fprintf(stderr,"[FSDBG] cellFsStat('%s') -> size=0x%llX\n",gpath,(unsigned long long)st.st_size);
+     ctx->gpr[3] = CELL_OK;
+ }
+@@ -679,7 +697,11 @@
+           if (c > 0 && sz > c) {
+               fprintf(stderr, "[fs] fstat fd=%d size %lld -> capped %lld (FS_FSTAT_CAP)\n", fd, (long long)sz, c);
+               sz = c; } } }
+-    if (sb) write_stat(sb, CELL_FS_S_IFREG | 0x1B6, (uint64_t)sz);
++    if (sb) {
++        write_stat(sb, CELL_FS_S_IFREG | 0x1B6, (uint64_t)sz);
++        fs_stat64_t st;   /* patch 7011: the open file's times, as lv2's fstat */
++        if (FS_FSTAT64(g_files[fd], &st) == 0) write_stat_times(sb, &st);
++    }
+     if (getenv("PS3_FSLOG")) { static int _n=0; if(_n++<12) fprintf(stderr,"[FSDBG] cellFsFstat(fd=%d) -> size=0x%llX\n",fd,(unsigned long long)sz); }
+     ctx->gpr[3] = CELL_OK;
+ }

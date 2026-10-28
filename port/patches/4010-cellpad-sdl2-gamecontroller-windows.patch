@@ -1,0 +1,857 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a7c6214..93ea610 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -139,9 +139,26 @@ if(WIN32)
+         ole32       # COM for WASAPI audio
+         bcrypt      # BCryptGenRandom for SSL RNG
+     )
++    # KZ3 patch 4010: cellPad loads SDL3.dll at run time (SDL3 Gamepad, HIDAPI: DualShock 4, DualSense, Switch Pro,
++    # Xbox; motion sensors) and falls back to XInput without it. It declares the SDL3 ABI it uses itself: no SDL3
++    # headers or import library needed. With SDL3's headers found, their values are checked at compile time.
++    option(PS3RECOMP_PAD_SDL3 "Windows: SDL3 Gamepad pads via SDL3.dll loaded at run time" ON)
++    if(PS3RECOMP_PAD_SDL3)
++        target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_PAD_SDL3)
++        find_package(SDL3 CONFIG QUIET)
++        if(TARGET SDL3::Headers)
++            target_include_directories(ps3recomp_runtime PRIVATE
++                $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>)
++            message(STATUS "  SDL3:         cellPad loads SDL3.dll at run time (ABI checked against SDL3 headers)")
++        else()
++            message(STATUS "  SDL3:         cellPad loads SDL3.dll at run time (no SDL3 headers: ABI not checked)")
++        endif()
++    endif()
+ else()
+-    # cellPad and cellAudio select their SDL2 backends unconditionally off
+-    # Windows (see PAD_BACKEND_SDL2 / AUDIO_BACKEND_SDL2), so SDL2 is required
++    # KZ3 patch 4010: cellPad loads libSDL3.so.0 at run time (dlopen).
++    target_link_libraries(ps3recomp_runtime PRIVATE ${CMAKE_DL_LIBS})
++    # cellAudio selects its SDL2 backend unconditionally off
++    # Windows (see AUDIO_BACKEND_SDL2), so SDL2 is required
+     # here -- docs/BUILDING.md already lists it as the Linux/macOS dependency.
+     find_package(SDL2 QUIET)
+     if(SDL2_FOUND)
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 51b8873..c4904d9 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -4,10 +4,8 @@
+  * Reads real gamepad input from the host and translates to PS3 pad format.
+  *
+  * Backend selection:
+- *   - Windows default: XInput (no extra dependencies)
+- *   - Everywhere else / if PS3RECOMP_PAD_USE_SDL2 is defined: SDL2 GameController
+- *
+- * Define PS3RECOMP_PAD_USE_SDL2 to force SDL2 backend on Windows.
++ *   - Windows: SDL3 Gamepad when SDL3.dll loads (PS3RECOMP_PAD_SDL3, patch 4010), else XInput
++ *   - Everywhere else: SDL3 Gamepad from libSDL3.so.0, loaded at run time
+  */
+ 
+ #include <time.h>
+@@ -36,29 +34,35 @@ static double pad_clock(unsigned long long t0_ms)
+  * Backend selection
+  * -----------------------------------------------------------------------*/
+ 
+-#if defined(PS3RECOMP_PAD_USE_SDL2)
+-  #define PAD_BACKEND_SDL2  1
+-  #define PAD_BACKEND_XINPUT 0
++/* KZ3 patch 4010: the SDL backend is SDL3's Gamepad API, loaded at cellPadInit (SDL3.dll on Windows, libSDL3.so.0
++ * elsewhere) through the small ABI subset declared below, so the build needs no SDL3 headers and the exe starts
++ * without the library. On Windows (PS3RECOMP_PAD_SDL3, CMake option, default on) SDL3 with its HIDAPI drivers
++ * (DualShock 4, DualSense, Switch Pro, Xbox) serves the pads when the DLL loads and PAD_SDL is not 0; otherwise
++ * XInput, as before. */
++#if defined(_WIN32) && defined(PS3RECOMP_PAD_SDL3)
++  #define PAD_BACKEND_SDL   1
++  #define PAD_BACKEND_XINPUT 1
+ #elif defined(_WIN32)
+-  #define PAD_BACKEND_SDL2  0
++  #define PAD_BACKEND_SDL   0
+   #define PAD_BACKEND_XINPUT 1
+ #else
+-  #define PAD_BACKEND_SDL2  1
++  #define PAD_BACKEND_SDL   1
+   #define PAD_BACKEND_XINPUT 0
+ #endif
+ 
+-#if PAD_BACKEND_XINPUT
++#ifdef _WIN32
+   #ifndef WIN32_LEAN_AND_MEAN
+     #define WIN32_LEAN_AND_MEAN
+   #endif
+   #include <windows.h>
++#elif PAD_BACKEND_SDL
++  #include <dlfcn.h>
++#endif
++#if PAD_BACKEND_XINPUT
+   #include <xinput.h>
+   #pragma comment(lib, "xinput.lib")
+ #endif
+-
+-#if PAD_BACKEND_SDL2
+-  #include <SDL2/SDL.h>
+-#endif
++#include "pad_host.h"
+ 
+ /* ---------------------------------------------------------------------------
+  * Internal state
+@@ -66,71 +70,26 @@ static double pad_clock(unsigned long long t0_ms)
+ 
+ #define PAD_MAX_HOST_PORTS  4  /* XInput supports max 4; SDL may support more */
+ 
+-typedef struct {
+-    int  connected;
+-    u16  buttons;           /* CELL_PAD_CTRL_* bitmask */
+-    u8   analog_lx;         /* 0-255, center=128 */
+-    u8   analog_ly;
+-    u8   analog_rx;
+-    u8   analog_ry;
+-    u8   trigger_l2;        /* 0-255 */
+-    u8   trigger_r2;        /* 0-255 */
+-    /* Pressure-sensitive face buttons (0-255) */
+-    u8   press_right;
+-    u8   press_left;
+-    u8   press_up;
+-    u8   press_down;
+-    u8   press_triangle;
+-    u8   press_circle;
+-    u8   press_cross;
+-    u8   press_square;
+-    u8   press_l1;
+-    u8   press_r1;
+-} PadHostState;
+-
+-static int           s_pad_initialized = 0;
++/* PadHostState: pad_host.h (patch 4010) */
++
++static int          s_pad_initialized = 0;
+ static u32           s_max_connect = 0;
+ static u32           s_port_setting[CELL_PAD_MAX_PORT_NUM];
+ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
+ /* Per-port "a report has arrived since your last read" flag; see cellPadGetData. */
+ static int s_data_fresh[PAD_MAX_HOST_PORTS];
+ 
+-#if PAD_BACKEND_SDL2
+-static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
++#if PAD_BACKEND_SDL
++typedef struct PadSdlGamepad PadSdlGamepad;   /* SDL_Gamepad */
++typedef struct PadSdlMutex   PadSdlMutex;     /* SDL_Mutex */
++static PadSdlGamepad* s_sdl_controllers[PAD_MAX_HOST_PORTS];
+ static int s_sdl_inited = 0;
+ #endif
++/* 4010: 1 = SDL serves the pads (always without XInput; on Windows when SDL3.dll loaded and initialised). */
++static int s_use_sdl = !PAD_BACKEND_XINPUT;
+ 
+-/* ---------------------------------------------------------------------------
+- * Rumble (cellPadSetActDirect)
+- *
+- * A DualShock 3 has two motors: the small one (motor[0]) is on or off, the
+- * large one (motor[1]) takes 0-255. A title sets them and they stay that way
+- * until it sets them again; some titles only call when the value changes.
+- * SDL's rumble runs for a duration instead, so the last request per port is
+- * kept and renewed from the pad poll while it is non-zero. If the title stops
+- * polling (a hang, a closed window), the motors stop within
+- * PAD_RUMBLE_HOLD_MS. Large -> the host's low-frequency motor, small -> the
+- * high-frequency one, which is how DualShock 4, DualSense and Xbox pads are
+- * laid out too.
+- * -------------------------------------------------------------------------*/
+-
+-#define PAD_RUMBLE_HOLD_MS     1000   /* one SDL request lasts this long ... */
+-#define PAD_RUMBLE_RENEW_MS     400   /* ... and is renewed this often */
+-
+-typedef struct {
+-    u16 lo, hi;                 /* what the host motors were last asked for */
+-    unsigned long long sent_ms; /* when (pad_now_ms), 0 = nothing to renew */
+-} PadRumble;
+-static PadRumble s_rumble[PAD_MAX_HOST_PORTS];
+-
+-static unsigned long long pad_now_ms(void);
+-
+-/* The two host motor levels (0-65535) for a PS3 actuator request. */
+-static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+-{
+-    *lo = (u16)(large * 257u);
+-    *hi = small_on ? 0xFFFFu : 0u;
+-}
++/* KZ3 patch 4010: rumble goes through pad_act_to_rumble (XInput) and pad_sdl_rumble (SDL3), which hold and
++ * renew a request like upstream PR #372 does (SPU pass 91); #372's PadRumble/pad_rumble_levels are not used. */
+ 
+ /* ---------------------------------------------------------------------------
+  * XInput backend
+@@ -636,162 +595,279 @@ static void pad_poll_xinput(void)
+     }
+ }
+ 
+-static void pad_init_backend(void)
+-{
+-    /* XInput needs no explicit init */
+-}
+-
+-static void pad_shutdown_backend(void)
+-{
+-    /* XInput needs no explicit shutdown */
+-}
++/* XInput needs no explicit init or shutdown. */
+ 
+ #endif /* PAD_BACKEND_XINPUT */
+ 
+ /* ---------------------------------------------------------------------------
+- * SDL2 backend
++ * SDL3 backend
+  * -----------------------------------------------------------------------*/
+ 
+-#if PAD_BACKEND_SDL2
++#include <stdbool.h>
++#include <stdint.h>
++#if PAD_BACKEND_SDL
+ 
+-static u8 pad_sdl_axis_to_u8(int raw)
+-{
+-    /* SDL axis: -32768..32767 -> 0..255 with center at 128 */
+-    int val = ((raw + 32768) * 255) / 65535;
+-    if (val < 0) val = 0;
+-    if (val > 255) val = 255;
+-    return (u8)val;
+-}
++/* KZ3 patch 4010: controllers keep their port across hot-plug (by SDL instance id); the pad type, the face button
++ * labels and the motion sensors are logged per port; the DS3 actuators drive SDL rumble and are held until the game
++ * changes them (as on a DS3), re-sent once a second because SDL ends a rumble after its duration; accelerometer and
++ * gyro (where the pad has them) feed the SIXAXIS words (pad_sdl_sensors in pad_host.h).
++ * The SDL3 functions used, with SDL3's own types reduced to their ABI: bool = C99 bool (1 byte), SDL_JoystickID and
++ * Uint32 = uint32_t, enums = int, SDL_Gamepad and SDL_Mutex opaque. */
++#ifdef _WIN32
++  #define PAD_SDLCALL __cdecl
++#else
++  #define PAD_SDLCALL
++#endif
++#define PAD_SDL_FUNCS(X) \
++    X(void, SDL_SetMainReady, (void)) \
++    X(bool, SDL_SetHint, (const char*, const char*)) \
++    X(bool, SDL_InitSubSystem, (uint32_t)) \
++    X(const char*, SDL_GetError, (void)) \
++    X(int, SDL_GetVersion, (void)) \
++    X(void, SDL_free, (void*)) \
++    X(uint32_t*, SDL_GetGamepads, (int*)) \
++    X(PadSdlGamepad*, SDL_OpenGamepad, (uint32_t)) \
++    X(void, SDL_CloseGamepad, (PadSdlGamepad*)) \
++    X(bool, SDL_GamepadConnected, (PadSdlGamepad*)) \
++    X(void, SDL_UpdateGamepads, (void)) \
++    X(void, SDL_SetGamepadEventsEnabled, (bool)) \
++    X(void, SDL_SetJoystickEventsEnabled, (bool)) \
++    X(bool, SDL_GetGamepadButton, (PadSdlGamepad*, int)) \
++    X(int16_t, SDL_GetGamepadAxis, (PadSdlGamepad*, int)) \
++    X(int, SDL_GetGamepadType, (PadSdlGamepad*)) \
++    X(int, SDL_GetGamepadButtonLabel, (PadSdlGamepad*, int)) \
++    X(const char*, SDL_GetGamepadName, (PadSdlGamepad*)) \
++    X(bool, SDL_RumbleGamepad, (PadSdlGamepad*, uint16_t, uint16_t, uint32_t)) \
++    X(bool, SDL_GamepadHasSensor, (PadSdlGamepad*, int)) \
++    X(bool, SDL_SetGamepadSensorEnabled, (PadSdlGamepad*, int, bool)) \
++    X(bool, SDL_GetGamepadSensorData, (PadSdlGamepad*, int, float*, int)) \
++    X(PadSdlMutex*, SDL_CreateMutex, (void)) \
++    X(void, SDL_LockMutex, (PadSdlMutex*)) \
++    X(void, SDL_UnlockMutex, (PadSdlMutex*))
++#define PAD_SDL_DECL(ret, name, args) typedef ret (PAD_SDLCALL *name##_fn) args; static name##_fn p_##name;
++PAD_SDL_FUNCS(PAD_SDL_DECL)
++#undef PAD_SDL_DECL
++#define PSDL(f) p_##f
++
++#define PAD_SDL_INIT_GAMEPAD 0x00002000u   /* SDL_INIT_GAMEPAD (implies SDL_INIT_JOYSTICK) */
++
++#if defined(__has_include)
++#if __has_include(<SDL3/SDL.h>)
++#include <SDL3/SDL.h>
++_Static_assert(SDL_GAMEPAD_BUTTON_SOUTH == PAD_SDL_A && SDL_GAMEPAD_BUTTON_NORTH == PAD_SDL_Y
++               && SDL_GAMEPAD_BUTTON_DPAD_RIGHT == PAD_SDL_DPAD_RIGHT && SDL_GAMEPAD_BUTTON_TOUCHPAD == PAD_SDL_TOUCHPAD,
++               "pad_host.h button values follow SDL3");
++_Static_assert(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER == PAD_SDL_TRIGGERRIGHT && SDL_GAMEPAD_AXIS_COUNT == PAD_SDL_AXIS_MAX,
++               "pad_host.h axis values follow SDL3");
++_Static_assert(SDL_GAMEPAD_TYPE_PS5 == 6 && SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO == 7
++               && SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE == 8, "pad_host.h type and label values follow SDL3");
++_Static_assert(SDL_SENSOR_ACCEL == PAD_SDL_SENSOR_ACCEL && SDL_SENSOR_GYRO == PAD_SDL_SENSOR_GYRO
++               && SDL_INIT_GAMEPAD == PAD_SDL_INIT_GAMEPAD, "pad_host.h sensor and init values follow SDL3");
++#endif
++#endif
++
++#define PAD_SDL_RUMBLE_MS   2000   /* each SDL rumble request lasts this long ... */
++#define PAD_SDL_REFRESH_MS  1000   /* ... and is re-sent this often while the game holds it */
++#define PAD_SDL_ENUM_MS     500    /* hot-plug scan interval */
+ 
+-static u8 pad_sdl_trigger_to_u8(int raw)
++static unsigned long long pad_now_ms(void);
++static PadSdlMutex*       s_sdl_lock;
++static int                s_sdl_slot_id[PAD_MAX_HOST_PORTS];   /* SDL instance id per port, -1 = free */
++static unsigned long long s_sdl_enum_ms;
++static unsigned short     s_rumble_lo[PAD_MAX_HOST_PORTS], s_rumble_hi[PAD_MAX_HOST_PORTS];
++static unsigned long long s_rumble_ms[PAD_MAX_HOST_PORTS];
++static unsigned char      s_sdl_sensors[PAD_MAX_HOST_PORTS];   /* bit 0 accel, bit 1 gyro, enabled */
++
++/* Turn on the pad's accelerometer and gyro (SDL leaves them off) and log what the port is. */
++static void pad_sdl_open_log(int p, PadSdlGamepad* gc)
+ {
+-    /* SDL trigger: 0..32767 -> 0..255 */
+-    int val = (raw * 255) / 32767;
+-    if (val < 0) val = 0;
+-    if (val > 255) val = 255;
+-    return (u8)val;
++    unsigned s = 0;
++    if (PSDL(SDL_GamepadHasSensor)(gc, PAD_SDL_SENSOR_ACCEL)
++        && PSDL(SDL_SetGamepadSensorEnabled)(gc, PAD_SDL_SENSOR_ACCEL, true)) s |= 1;
++    if (PSDL(SDL_GamepadHasSensor)(gc, PAD_SDL_SENSOR_GYRO)
++        && PSDL(SDL_SetGamepadSensorEnabled)(gc, PAD_SDL_SENSOR_GYRO, true)) s |= 2;
++    s_sdl_sensors[p] = (unsigned char)s;
++    const char* name = PSDL(SDL_GetGamepadName)(gc);
++    printf("[pad] port %d: %s (%s), face %s/%s/%s/%s, sensors %s\n", p,
++           pad_sdl_type_name(PSDL(SDL_GetGamepadType)(gc)), name ? name : "?",
++           pad_sdl_label_name(PSDL(SDL_GetGamepadButtonLabel)(gc, PAD_SDL_A)),
++           pad_sdl_label_name(PSDL(SDL_GetGamepadButtonLabel)(gc, PAD_SDL_B)),
++           pad_sdl_label_name(PSDL(SDL_GetGamepadButtonLabel)(gc, PAD_SDL_X)),
++           pad_sdl_label_name(PSDL(SDL_GetGamepadButtonLabel)(gc, PAD_SDL_Y)),
++           s == 3 ? "accel+gyro" : s == 1 ? "accel" : s == 2 ? "gyro" : "no");
+ }
+ 
+-/* Send port i's rumble state to its controller, with a fresh duration. */
+-static void pad_sdl_rumble_send(int i)
++static void pad_sdl_sync(unsigned long long now)
+ {
+-    SDL_GameController* gc = s_sdl_controllers[i];
+-    if (!gc) return;
+-    PadRumble* r = &s_rumble[i];
+-    const int on = r->lo || r->hi;
+-    SDL_GameControllerRumble(gc, r->lo, r->hi, on ? PAD_RUMBLE_HOLD_MS : 0);
+-    r->sent_ms = on ? pad_now_ms() : 0;
++    int lost = 0;
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++)
++        if (s_sdl_controllers[p] && !PSDL(SDL_GamepadConnected)(s_sdl_controllers[p])) lost = 1;
++    if (!lost && s_sdl_enum_ms && now - s_sdl_enum_ms < PAD_SDL_ENUM_MS) return;
++    s_sdl_enum_ms = now;
++
++    int ids[16], n = 0, num = 0;
++    uint32_t* list = PSDL(SDL_GetGamepads)(&num);
++    for (int i = 0; list && i < num && n < 16; i++) ids[n++] = (int)list[i];
++    if (list) PSDL(SDL_free)(list);
++    unsigned changed = pad_slots_sync(s_sdl_slot_id, PAD_MAX_HOST_PORTS, ids, n);
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) {
++        if (!(changed & (1u << p))) continue;
++        if (s_sdl_controllers[p]) { PSDL(SDL_CloseGamepad)(s_sdl_controllers[p]); s_sdl_controllers[p] = NULL; }
++        s_host_state[p].connected = 0;
++        s_rumble_lo[p] = s_rumble_hi[p] = 0;
++        s_sdl_sensors[p] = 0;
++        if (s_sdl_slot_id[p] < 0) { printf("[pad] port %d: disconnected\n", p); fflush(stdout); continue; }
++        PadSdlGamepad* gc = s_sdl_controllers[p] = PSDL(SDL_OpenGamepad)((uint32_t)s_sdl_slot_id[p]);
++        if (!gc) {
++            printf("[pad] port %d: open failed (%s)\n", p, PSDL(SDL_GetError)());
++            s_sdl_slot_id[p] = -1;
++        } else {
++            pad_sdl_open_log(p, gc);
++        }
++        fflush(stdout);
++    }
+ }
+ 
+-static void pad_poll_sdl2(void)
++static void pad_poll_sdl(void)
+ {
+-    SDL_GameControllerUpdate();
+-
+-    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+-        if (!s_sdl_controllers[i]) {
+-            /* Try to open newly connected controllers */
+-            if (SDL_IsGameController(i)) {
+-                s_sdl_controllers[i] = SDL_GameControllerOpen(i);
+-            }
++    unsigned long long now = pad_now_ms();
++    PSDL(SDL_LockMutex)(s_sdl_lock);
++    PSDL(SDL_UpdateGamepads)();
++    pad_sdl_sync(now);
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) {
++        PadSdlGamepad* gc = s_sdl_controllers[p];
++        if (!gc) { s_host_state[p].connected = 0; continue; }
++        PadSdlRaw r;
++        for (int b = 0; b < PAD_SDL_BUTTON_MAX; b++)
++            r.button[b] = PSDL(SDL_GetGamepadButton)(gc, b) ? 1 : 0;
++        for (int a = 0; a < PAD_SDL_AXIS_MAX; a++)
++            r.axis[a] = PSDL(SDL_GetGamepadAxis)(gc, a);
++        pad_sdl_map(&r, &s_host_state[p]);
++        if (s_sdl_sensors[p]) {
++            float acc[3], gyr[3];
++            int ha = (s_sdl_sensors[p] & 1) && PSDL(SDL_GetGamepadSensorData)(gc, PAD_SDL_SENSOR_ACCEL, acc, 3);
++            int hg = (s_sdl_sensors[p] & 2) && PSDL(SDL_GetGamepadSensorData)(gc, PAD_SDL_SENSOR_GYRO, gyr, 3);
++            pad_sdl_sensors(ha ? acc : NULL, hg ? gyr : NULL, &s_host_state[p]);
+         }
+-
+-        SDL_GameController* gc = s_sdl_controllers[i];
+-        if (!gc || !SDL_GameControllerGetAttached(gc)) {
+-            s_host_state[i].connected = 0;
+-            if (gc) {
+-                SDL_GameControllerClose(gc);
+-                s_sdl_controllers[i] = NULL;
+-            }
+-            memset(&s_rumble[i], 0, sizeof s_rumble[i]);
+-            continue;
++        if ((s_rumble_lo[p] || s_rumble_hi[p]) && now - s_rumble_ms[p] >= PAD_SDL_REFRESH_MS) {
++            PSDL(SDL_RumbleGamepad)(gc, s_rumble_lo[p], s_rumble_hi[p], PAD_SDL_RUMBLE_MS);
++            s_rumble_ms[p] = now;
+         }
++    }
++    PSDL(SDL_UnlockMutex)(s_sdl_lock);
++}
+ 
+-        s_host_state[i].connected = 1;
+-
+-        /* Keep a rumble the title set going (see PAD_RUMBLE_HOLD_MS). */
+-        if (s_rumble[i].sent_ms && pad_now_ms() - s_rumble[i].sent_ms >= PAD_RUMBLE_RENEW_MS)
+-            pad_sdl_rumble_send(i);
+-
+-        u16 btns = 0;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))          btns |= CELL_PAD_CTRL_SELECT;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK))     btns |= CELL_PAD_CTRL_L3;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSTICK))    btns |= CELL_PAD_CTRL_R3;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START))         btns |= CELL_PAD_CTRL_START;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP))       btns |= CELL_PAD_CTRL_UP;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT))    btns |= CELL_PAD_CTRL_RIGHT;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN))     btns |= CELL_PAD_CTRL_DOWN;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT))     btns |= CELL_PAD_CTRL_LEFT;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  btns |= CELL_PAD_CTRL_L1;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) btns |= CELL_PAD_CTRL_R1;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y))             btns |= CELL_PAD_CTRL_TRIANGLE;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B))             btns |= CELL_PAD_CTRL_CIRCLE;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A))             btns |= CELL_PAD_CTRL_CROSS;
+-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X))             btns |= CELL_PAD_CTRL_SQUARE;
+-
+-        /* Triggers via axis */
+-        int lt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+-        int rt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+-        if (lt > 3000) btns |= CELL_PAD_CTRL_L2;
+-        if (rt > 3000) btns |= CELL_PAD_CTRL_R2;
+-
+-        s_host_state[i].buttons = btns;
+-
+-        /* Analog sticks */
+-        s_host_state[i].analog_lx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX));
+-        s_host_state[i].analog_ly = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY));
+-        s_host_state[i].analog_rx = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX));
+-        s_host_state[i].analog_ry = pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY));
+-
+-        /* Triggers */
+-        s_host_state[i].trigger_l2 = pad_sdl_trigger_to_u8(lt);
+-        s_host_state[i].trigger_r2 = pad_sdl_trigger_to_u8(rt);
+-
+-        /* Pressure: SDL has digital buttons, so 0 or 255 */
+-        s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
+-        s_host_state[i].press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
+-        s_host_state[i].press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
+-        s_host_state[i].press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
+-        s_host_state[i].press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
+-        s_host_state[i].press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
+-        s_host_state[i].press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
+-        s_host_state[i].press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
+-        s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
+-        s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
++static void pad_sdl_rumble(u32 port_no, const u8 motor[CELL_PAD_ACTUATOR_MAX])
++{
++    unsigned short lo, hi;
++    pad_act_to_rumble(motor, &lo, &hi);
++    PSDL(SDL_LockMutex)(s_sdl_lock);
++    PadSdlGamepad* gc = s_sdl_controllers[port_no];
++    if (gc && (lo != s_rumble_lo[port_no] || hi != s_rumble_hi[port_no])) {
++        PSDL(SDL_RumbleGamepad)(gc, lo, hi, PAD_SDL_RUMBLE_MS);
++        s_rumble_lo[port_no] = lo; s_rumble_hi[port_no] = hi;
++        s_rumble_ms[port_no] = pad_now_ms();
+     }
++    PSDL(SDL_UnlockMutex)(s_sdl_lock);
+ }
+ 
+-static void pad_init_backend(void)
++/* 1 = SDL serves the pads. Windows: SDL3.dll from the exe's folder, then System32 (never the working directory or
++ * PATH); PAD_SDL=0 keeps XInput. Elsewhere: libSDL3.so.0 from the loader's path. */
++static int pad_sdl_init(void)
+ {
+     if (!s_sdl_inited) {
+-        if (SDL_WasInit(SDL_INIT_GAMECONTROLLER) == 0) {
+-            SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
++        s_sdl_inited = -1;
++        const char* e = getenv("PAD_SDL");
++        if (e && strcmp(e, "0") == 0) {
++            printf("[pad] PAD_SDL=0: %s\n", PAD_BACKEND_XINPUT ? "XInput backend" : "no pad backend");
++            fflush(stdout);
++            return 0;
+         }
++#ifdef _WIN32
++        HMODULE m = LoadLibraryExW(L"SDL3.dll", NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++        #define PAD_SDL_SYM(n) (void (*)(void))GetProcAddress(m, n)
++        const char* lib = "SDL3.dll";
++#else
++        void* m = dlopen("libSDL3.so.0", RTLD_NOW | RTLD_LOCAL);
++        #define PAD_SDL_SYM(n) (void (*)(void))dlsym(m, n)
++        const char* lib = "libSDL3.so.0";
++#endif
++        const char* fb = PAD_BACKEND_XINPUT ? "XInput backend (PlayStation pads only through Steam Input)"
++                                            : "no pad backend";
++        if (!m) { printf("[pad] no %s: %s\n", lib, fb); fflush(stdout); return 0; }
++#define PAD_SDL_LOAD(ret, name, args) \
++        p_##name = (name##_fn)PAD_SDL_SYM(#name); \
++        if (!p_##name) { printf("[pad] %s lacks %s (SDL 3.2 or newer needed): %s\n", lib, #name, fb); \
++                         fflush(stdout); return 0; }
++        PAD_SDL_FUNCS(PAD_SDL_LOAD)
++#undef PAD_SDL_LOAD
++#undef PAD_SDL_SYM
++        PSDL(SDL_SetMainReady)();
++        /* The game window is not SDL's: take pad input as XInput does (focus is the player's business). */
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
++        /* HIDAPI drivers: DualShock 4, DualSense, Switch Pro and Xbox pads with their own reports (rumble, sensors,
++         * labels). On by default in SDL3; set so a system-wide SDL hint cannot turn them off for the game. */
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_HIDAPI", "1");
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_HIDAPI_PS4", "1");
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_HIDAPI_PS5", "1");
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_HIDAPI_SWITCH", "1");
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_HIDAPI_XBOX", "1");
++        /* ASSUMPTION (not run on a real pad yet): RawInput's message window belongs to the thread that initialised
++         * SDL, and the pad is polled from game threads; without it, Xbox pads go through SDL's XInput driver. */
++        PSDL(SDL_SetHint)("SDL_JOYSTICK_RAWINPUT", "0");
++        if (!PSDL(SDL_InitSubSystem)(PAD_SDL_INIT_GAMEPAD)) {
++            printf("[pad] SDL gamepad init failed (%s): %s\n", PSDL(SDL_GetError)(), fb);
++            fflush(stdout);
++            return 0;
++        }
++        /* Nobody pumps this SDL's event queue: polled state only (SDL_UpdateGamepads). */
++        PSDL(SDL_SetGamepadEventsEnabled)(false);
++        PSDL(SDL_SetJoystickEventsEnabled)(false);
++        s_sdl_lock = PSDL(SDL_CreateMutex)();
++        int v = PSDL(SDL_GetVersion)();
++        printf("[pad] SDL %d.%d.%d gamepad backend\n", v / 1000000, v / 1000 % 1000, v % 1000);
++        fflush(stdout);
+         s_sdl_inited = 1;
+     }
+-    memset(s_sdl_controllers, 0, sizeof(s_sdl_controllers));
+-
+-    /* Open any controllers already connected */
+-    int num = SDL_NumJoysticks();
+-    for (int i = 0; i < num && i < PAD_MAX_HOST_PORTS; i++) {
+-        if (SDL_IsGameController(i)) {
+-            s_sdl_controllers[i] = SDL_GameControllerOpen(i);
+-        }
++    if (s_sdl_inited < 0) return 0;
++    PSDL(SDL_LockMutex)(s_sdl_lock);
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) {
++        s_sdl_controllers[p] = NULL;
++        s_sdl_slot_id[p] = -1;
++        s_rumble_lo[p] = s_rumble_hi[p] = 0;
++        s_sdl_sensors[p] = 0;
+     }
++    s_sdl_enum_ms = 0;
++    PSDL(SDL_UnlockMutex)(s_sdl_lock);
++    return 1;
+ }
+ 
+-static void pad_shutdown_backend(void)
++static void pad_sdl_shutdown(void)
+ {
+-    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+-        if (s_sdl_controllers[i]) {
+-            SDL_GameControllerRumble(s_sdl_controllers[i], 0, 0, 0);
+-            SDL_GameControllerClose(s_sdl_controllers[i]);
+-            s_sdl_controllers[i] = NULL;
+-        }
++    PSDL(SDL_LockMutex)(s_sdl_lock);
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) {
++        if (s_sdl_controllers[p]) PSDL(SDL_CloseGamepad)(s_sdl_controllers[p]);
++        s_sdl_controllers[p] = NULL;
++        s_sdl_slot_id[p] = -1;
+     }
+-    memset(s_rumble, 0, sizeof s_rumble);
++    PSDL(SDL_UnlockMutex)(s_sdl_lock);
+ }
+ 
+-#endif /* PAD_BACKEND_SDL2 */
++#endif /* PAD_BACKEND_SDL */
++
++static void pad_init_backend(void)
++{
++#if PAD_BACKEND_SDL
++    s_use_sdl = pad_sdl_init();
++#endif
++}
++
++static void pad_shutdown_backend(void)
++{
++#if PAD_BACKEND_SDL
++    if (s_use_sdl) pad_sdl_shutdown();
++#endif
++}
+ 
+ /* ---------------------------------------------------------------------------
+  * Poll dispatcher
+@@ -837,10 +913,11 @@ static void pad_poll_backend(void)
+      * every port. cellPadGetData hands each one out exactly once. */
+     for (int _i = 0; _i < PAD_MAX_HOST_PORTS; _i++) s_data_fresh[_i] = 1;
+ 
++#if PAD_BACKEND_SDL
++    if (s_use_sdl) pad_poll_sdl();
++#endif
+ #if PAD_BACKEND_XINPUT
+-    pad_poll_xinput();
+-#elif PAD_BACKEND_SDL2
+-    pad_poll_sdl2();
++    if (!s_use_sdl) pad_poll_xinput();
+ #endif
+ #ifdef _WIN32
+     /* KZ3 patch 2037: keys always polled (not only with no pad on port 0) and merged into port 0. */
+@@ -1374,11 +1451,12 @@ skip_inject: ;
+ 
+     /* Sensor data (only meaningful if SENSOR_ON) */
+     if (setting & CELL_PAD_SETTING_SENSOR_ON) {
+-        /* Default sensor values: accelerometer at rest (512 = 1g center) */
+-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_X] = 512;
+-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Y] = 399; /* gravity */
+-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Z] = 512;
+-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_G] = 512;
++        /* 4010: the pad's accelerometer and gyro where it has them (pad_sdl_sensors); otherwise a DS3 at rest
++         * (512 = 0 g, Y 399 = gravity, gyro 512 = still). */
++        data->button[CELL_PAD_BTN_OFFSET_SENSOR_X] = hs->has_sensor ? hs->sensor_x : 512;
++        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Y] = hs->has_sensor ? hs->sensor_y : 399;
++        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Z] = hs->has_sensor ? hs->sensor_z : 512;
++        data->button[CELL_PAD_BTN_OFFSET_SENSOR_G] = hs->has_sensor ? hs->sensor_g : 512;
+     }
+     }  /* end connected block */
+ 
+@@ -1657,18 +1735,12 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+ 
+     param = GUEST_PTR(param, CellPadActParam*);
+ 
+-    if (port_no >= PAD_MAX_HOST_PORTS)
+-        return CELL_OK;
+-
+-    u16 lo, hi;
+-    pad_rumble_levels(param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL],
+-                      param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE], &lo, &hi);
+-    s_rumble[port_no].lo = lo;
+-    s_rumble[port_no].hi = hi;
+-
++    /* 4010: motor[SMALL] is on/off (0/1) on a DS3; scaling it by 257 gave a near-silent small motor. */
+ #if PAD_BACKEND_XINPUT
+-    /* XInput keeps the motors at what they were last set to: no renewal. */
+-    if (s_host_state[port_no].connected) {
++    /* Map to XInput vibration */
++    if (!s_use_sdl && port_no < PAD_MAX_HOST_PORTS && s_host_state[port_no].connected) {
++        unsigned short lo, hi;
++        pad_act_to_rumble(param->motor, &lo, &hi);
+         XINPUT_VIBRATION vib;
+         vib.wLeftMotorSpeed  = (WORD)lo;
+         vib.wRightMotorSpeed = (WORD)hi;
+@@ -1676,8 +1748,9 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+     }
+ #endif
+ 
+-#if PAD_BACKEND_SDL2
+-    pad_sdl_rumble_send((int)port_no);
++#if PAD_BACKEND_SDL
++    if (s_use_sdl && port_no < PAD_MAX_HOST_PORTS)
++        pad_sdl_rumble(port_no, param->motor);
+ #endif
+ 
+     return CELL_OK;
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+new file mode 100644
+index 0000000..1e9a314
+--- /dev/null
++++ b/libs/input/pad_host.h
+@@ -0,0 +1,200 @@
++/*
++ * pad_host.h -- host pad state and the SDL3 Gamepad -> DualShock 3 mapping (KZ3 patch 4010).
++ *
++ * Pure functions only: no SDL header and no SDL call, so the mapping, the port assignment, the
++ * actuator and the motion sensor conversions are testable on a host with no SDL and no pad
++ * (tools/net/test_pad_sdl.c). The index values below are SDL3's ABI (SDL_GamepadButton, SDL_GamepadAxis,
++ * SDL_GamepadType, SDL_GamepadButtonLabel, SDL_SensorType; stable since SDL 3.2.0); cellPad.c checks them
++ * against SDL3's headers with static asserts when the build has them.
++ */
++#ifndef PS3RECOMP_PAD_HOST_H
++#define PS3RECOMP_PAD_HOST_H
++
++#include <string.h>
++#include "cellPad.h"
++
++typedef struct {
++    int  connected;
++    u16  buttons;           /* CELL_PAD_CTRL_* bitmask */
++    u8   analog_lx;         /* 0-255, center=128 */
++    u8   analog_ly;
++    u8   analog_rx;
++    u8   analog_ry;
++    u8   trigger_l2;        /* 0-255 */
++    u8   trigger_r2;        /* 0-255 */
++    /* Pressure-sensitive face buttons (0-255) */
++    u8   press_right;
++    u8   press_left;
++    u8   press_up;
++    u8   press_down;
++    u8   press_triangle;
++    u8   press_circle;
++    u8   press_cross;
++    u8   press_square;
++    u8   press_l1;
++    u8   press_r1;
++    /* 4010: SIXAXIS words as a DS3 reports them (0-1023), valid when has_sensor (pad_sdl_sensors) */
++    int  has_sensor;
++    u16  sensor_x, sensor_y, sensor_z, sensor_g;
++} PadHostState;
++
++/* SDL3 SDL_GamepadButton values, positional (A = SOUTH, B = EAST, X = WEST, Y = NORTH, whatever the cap says;
++ * PADDLE1-4 = RIGHT_PADDLE1, LEFT_PADDLE1, RIGHT_PADDLE2, LEFT_PADDLE2); MISC2-6 (21-25) are not read. */
++enum { PAD_SDL_A, PAD_SDL_B, PAD_SDL_X, PAD_SDL_Y, PAD_SDL_BACK, PAD_SDL_GUIDE, PAD_SDL_START,
++       PAD_SDL_LEFTSTICK, PAD_SDL_RIGHTSTICK, PAD_SDL_LEFTSHOULDER, PAD_SDL_RIGHTSHOULDER,
++       PAD_SDL_DPAD_UP, PAD_SDL_DPAD_DOWN, PAD_SDL_DPAD_LEFT, PAD_SDL_DPAD_RIGHT,
++       PAD_SDL_MISC1, PAD_SDL_PADDLE1, PAD_SDL_PADDLE2, PAD_SDL_PADDLE3, PAD_SDL_PADDLE4,
++       PAD_SDL_TOUCHPAD, PAD_SDL_BUTTON_MAX };
++/* SDL3 SDL_GamepadAxis values */
++enum { PAD_SDL_LEFTX, PAD_SDL_LEFTY, PAD_SDL_RIGHTX, PAD_SDL_RIGHTY,
++       PAD_SDL_TRIGGERLEFT, PAD_SDL_TRIGGERRIGHT, PAD_SDL_AXIS_MAX };
++
++/* One poll of one controller, as SDL reports it. */
++typedef struct {
++    u8    button[PAD_SDL_BUTTON_MAX];   /* 0/1 */
++    short axis[PAD_SDL_AXIS_MAX];       /* sticks -32768..32767 (Y: up negative), triggers 0..32767 */
++} PadSdlRaw;
++
++/* Same deadzone and L2/R2 threshold as the XInput path, so both backends feel alike. */
++#define PAD_HOST_STICK_DEADZONE    7849
++#define PAD_HOST_TRIGGER_THRESHOLD 30
++
++static inline u8 pad_host_stick_u8(int raw)
++{
++    const int dz = PAD_HOST_STICK_DEADZONE;
++    float n = 0.0f;
++    if (raw > dz)       n = (float)(raw - dz) / (float)(32767 - dz);
++    else if (raw < -dz) n = (float)(raw + dz) / (float)(32767 - dz);
++    int v = (int)(n * 127.0f) + 128;
++    return (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
++}
++
++static inline u8 pad_host_trigger_u8(int raw)
++{
++    int v = raw <= 0 ? 0 : (raw * 255) / 32767;
++    return (u8)(v > 255 ? 255 : v);
++}
++
++/* SDL (position-based) layout -> DS3: A = Cross, B = Circle, X = Square, Y = Triangle; Back (DS4 Share,
++ * DualSense Create) and the touchpad click = Select. Guide (PS button) is not passed on: on a PS3 the system takes it
++ * and the game never sees it. Sticks: SDL's Y is already PS3's (up = low). */
++static inline void pad_sdl_map(const PadSdlRaw* r, PadHostState* hs)
++{
++    static const struct { u8 sdl; u16 cell; } map[] = {
++        { PAD_SDL_BACK, CELL_PAD_CTRL_SELECT },     { PAD_SDL_TOUCHPAD, CELL_PAD_CTRL_SELECT },
++        { PAD_SDL_LEFTSTICK, CELL_PAD_CTRL_L3 },    { PAD_SDL_RIGHTSTICK, CELL_PAD_CTRL_R3 },
++        { PAD_SDL_START, CELL_PAD_CTRL_START },
++        { PAD_SDL_DPAD_UP, CELL_PAD_CTRL_UP },      { PAD_SDL_DPAD_RIGHT, CELL_PAD_CTRL_RIGHT },
++        { PAD_SDL_DPAD_DOWN, CELL_PAD_CTRL_DOWN },  { PAD_SDL_DPAD_LEFT, CELL_PAD_CTRL_LEFT },
++        { PAD_SDL_LEFTSHOULDER, CELL_PAD_CTRL_L1 }, { PAD_SDL_RIGHTSHOULDER, CELL_PAD_CTRL_R1 },
++        { PAD_SDL_Y, CELL_PAD_CTRL_TRIANGLE },      { PAD_SDL_B, CELL_PAD_CTRL_CIRCLE },
++        { PAD_SDL_A, CELL_PAD_CTRL_CROSS },         { PAD_SDL_X, CELL_PAD_CTRL_SQUARE },
++    };
++    u16 b = 0;
++    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
++        if (r->button[map[i].sdl]) b |= map[i].cell;
++    memset(hs, 0, sizeof *hs);
++    hs->connected  = 1;
++    hs->trigger_l2 = pad_host_trigger_u8(r->axis[PAD_SDL_TRIGGERLEFT]);
++    hs->trigger_r2 = pad_host_trigger_u8(r->axis[PAD_SDL_TRIGGERRIGHT]);
++    if (hs->trigger_l2 > PAD_HOST_TRIGGER_THRESHOLD) b |= CELL_PAD_CTRL_L2;
++    if (hs->trigger_r2 > PAD_HOST_TRIGGER_THRESHOLD) b |= CELL_PAD_CTRL_R2;
++    hs->buttons   = b;
++    hs->analog_lx = pad_host_stick_u8(r->axis[PAD_SDL_LEFTX]);
++    hs->analog_ly = pad_host_stick_u8(r->axis[PAD_SDL_LEFTY]);
++    hs->analog_rx = pad_host_stick_u8(r->axis[PAD_SDL_RIGHTX]);
++    hs->analog_ry = pad_host_stick_u8(r->axis[PAD_SDL_RIGHTY]);
++    /* Pressure: SDL reports the face buttons as digital, so 0 or 255 (as XInput). */
++    hs->press_up       = (b & CELL_PAD_CTRL_UP)       ? 255 : 0;
++    hs->press_down     = (b & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
++    hs->press_left     = (b & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
++    hs->press_right    = (b & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
++    hs->press_triangle = (b & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
++    hs->press_circle   = (b & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
++    hs->press_cross    = (b & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
++    hs->press_square   = (b & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
++    hs->press_l1       = (b & CELL_PAD_CTRL_L1)       ? 255 : 0;
++    hs->press_r1       = (b & CELL_PAD_CTRL_R1)       ? 255 : 0;
++}
++
++/* SDL_GamepadType -> the name the log shows ("[pad] port 0: DualSense"). */
++static inline const char* pad_sdl_type_name(int t)
++{
++    switch (t) {
++    case 1:  return "gamepad";
++    case 2:  return "Xbox 360";
++    case 3:  return "Xbox One";
++    case 4:  return "DualShock 3";
++    case 5:  return "DualShock 4";
++    case 6:  return "DualSense";
++    case 7:  return "Switch Pro";
++    case 8: case 9: case 10: return "Joy-Con";
++    default: return "gamepad";
++    }
++}
++
++/* SDL_GamepadButtonLabel (what the cap shows) -> log text, for the face buttons. */
++static inline const char* pad_sdl_label_name(int l)
++{
++    static const char* const n[] = { "?", "A", "B", "X", "Y", "Cross", "Circle", "Square", "Triangle" };
++    return l >= 0 && l < (int)(sizeof n / sizeof n[0]) ? n[l] : "?";
++}
++
++/* SDL3 SDL_SensorType values */
++enum { PAD_SDL_SENSOR_ACCEL = 1, PAD_SDL_SENSOR_GYRO = 2 };
++
++/* Motion sensors -> DS3 SIXAXIS (cellPad SENSOR_ON words 20-23, 10 bits, 0..1023):
++ *   DS3: accel X, Y, Z with 512 = 0 g and 113 counts per g; a DS3 lying flat reads Y = 399 (the runtime's rest value);
++ *        G = one gyro, the yaw rate, 512 = still, 123 counts per 90 deg/s.
++ *   SDL3: accel in m/s^2 (+X right, +Y up, +Z toward the player; lying flat reads Y = +9.80665), gyro in rad/s
++ *        (values[0] pitch, [1] yaw, [2] roll; counter-clockwise positive seen from the positive axis).
++ *   ds3_accel = 512 - 113 * a / 9.80665          (SDL's +1 g on Y at rest -> 399, as a DS3)
++ *   ds3_g     = 512 - 123 * yaw * (180 / pi) / 90
++ * rounded, clamped to 0..1023. ASSUMPTION: the signs of X, Z and G (all axes taken inverted from SDL's, as Y must
++ * be) and the scales 113 / 123-per-90 (the ones RPCS3 uses to bring DS4 data into DS3 range, not measured on a DS3);
++ * a real DualShock 4 / DualSense confirms them. accel or gyro NULL = that sensor absent (DS3 rest value). */
++static inline u16 pad_sensor_word(float v)
++{
++    float w = v + (v >= 0.0f ? 0.5f : -0.5f);
++    return (u16)(w < 0.0f ? 0 : w > 1023.0f ? 1023 : (int)w);
++}
++
++static inline void pad_sdl_sensors(const float* accel, const float* gyro, PadHostState* hs)
++{
++    const float g = 9.80665f, deg = 57.29578f;
++    hs->has_sensor = accel || gyro;
++    hs->sensor_x = accel ? pad_sensor_word(512.0f - 113.0f * accel[0] / g) : 512;
++    hs->sensor_y = accel ? pad_sensor_word(512.0f - 113.0f * accel[1] / g) : 399;
++    hs->sensor_z = accel ? pad_sensor_word(512.0f - 113.0f * accel[2] / g) : 512;
++    hs->sensor_g = gyro  ? pad_sensor_word(512.0f - 123.0f * gyro[1] * deg / 90.0f) : 512;
++}
++
++/* DS3 actuators: motor[SMALL] is on/off (0 or 1, any non-zero counts), motor[LARGE] is 0-255. SDL's low-frequency
++ * motor is the large one. */
++static inline void pad_act_to_rumble(const u8 motor[CELL_PAD_ACTUATOR_MAX], unsigned short* low, unsigned short* high)
++{
++    *low  = (unsigned short)(motor[CELL_PAD_ACTUATOR_PARAM_LARGE] * 257);
++    *high = motor[CELL_PAD_ACTUATOR_PARAM_SMALL] ? 0xFFFF : 0;
++}
++
++/* Hot-plug: keep each controller (SDL instance id) on the port it got; a new one takes the lowest free port; a port
++ * whose controller is gone is freed (-1). present = the instance ids attached now. Returns a bitmask of changed ports. */
++static inline unsigned pad_slots_sync(int* slot, int nslot, const int* present, int npresent)
++{
++    unsigned changed = 0;
++    for (int s = 0; s < nslot; s++) {
++        if (slot[s] < 0) continue;
++        int found = 0;
++        for (int i = 0; i < npresent && !found; i++) found = present[i] == slot[s];
++        if (!found) { slot[s] = -1; changed |= 1u << s; }
++    }
++    for (int i = 0; i < npresent; i++) {
++        int have = 0;
++        for (int s = 0; s < nslot && !have; s++) have = slot[s] == present[i];
++        for (int s = 0; s < nslot && !have; s++)
++            if (slot[s] < 0) { slot[s] = present[i]; changed |= 1u << s; have = 1; }
++    }
++    return changed;
++}
++
++#endif

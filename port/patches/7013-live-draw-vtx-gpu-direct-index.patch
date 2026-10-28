@@ -1,0 +1,263 @@
+LD_VTX_GPU_INDEX=1 (default off; only together with LD_VTX_GPU=1): indexed TRIANGLES draws on the GPU-fetch path (KZ3 patch 2076)
+use the guest index buffer directly. The indices are converted to little-endian u32 as the D3D index buffer, the vertex buffer is
+a fixed identity table (entry k = k, 0x100000 entries, made once) and BaseVertexLocation is the RSX base index, so the shader's
+element is index + base index, as rsx_vg_element gives it; the decode block covers [min, max] + base. The per-occurrence
+references (refs), the unique-vertex hash (remap) and the 4-byte element payload go away for those draws. Restart values in the
+data, a 20-bit wrap, an index count that is not a multiple of 3, other primitives, array or inline batches and every refused GPU
+plan keep the old path. New header libs/video/rsx_vg_index.h (pure, host-tested: R&C port/rc/tests/run_vg_index_test.sh).
+R&C ToD: P1 measured refs + remap + copy ~218 ms/s of the walker. ENHANCEMENT (performance; output identical by construction).
+
+diff --git a/libs/video/rsx_vg_index.h b/libs/video/rsx_vg_index.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_vg_index.h
+@@ -0,0 +1,51 @@
++/*
++ * R&C patch 7013: direct index buffers for GPU-fetch draws (LD_VTX_GPU_INDEX=1, with LD_VTX_GPU=1; default off).
++ *
++ * An indexed TRIANGLES draw on the GPU-fetch path (KZ3 patch 2076) used to turn every index occurrence into a
++ * {vertex_id, base_index} reference (refs), collapse them to unique vertices with a hash (remap), upload one u32
++ * element per unique vertex and an occurrence -> unique index buffer. With this path the guest index buffer itself
++ * becomes the D3D index buffer (big-endian u16/u32 -> little-endian u32), the vertex buffer is a fixed identity table
++ * (entry k = k) and the draw's BaseVertexLocation is the RSX base index, so the vertex shader receives
++ * element = index + base_index, exactly rsx_vg_element({index, base_index}) as long as index + base_index stays below
++ * 0x100000 (no 20-bit wrap; checked). The decode block covers [min, max] + base (rsx_vertex_fetch_plan_prepare over two
++ * references), which is the range the old path's references span. Not taken (old path): restart index present in the
++ * data, an index count that is not a multiple of 3, a wrap, other primitives, array or inline batches.
++ */
++#ifndef RSX_VG_INDEX_H
++#define RSX_VG_INDEX_H
++#include "rsx_vertex_compact.h"
++
++#define RSX_VG_ELEMENT_LIMIT 0x100000u   /* elements are 20 bits (rsx_vg_element) */
++
++/* Convert `count` guest indices (big-endian, 2 or 4 bytes) to little-endian u32 at out; track min and max.
++ * Returns 0 when the restart value occurs (restart enabled): the caller keeps the old path. */
++static inline int rsx_vg_index_convert(const u8* src, u32 count, int is_u32, int restart_enabled, u32 restart_value,
++                                       u32* out, u32* lo, u32* hi)
++{
++    u32 mn = 0xFFFFFFFFu, mx = 0;
++    if (is_u32) {
++        for (u32 i = 0; i < count; i++) {
++            const u8* s = src + (size_t)i * 4u;
++            const u32 v = ((u32)s[0] << 24) | ((u32)s[1] << 16) | ((u32)s[2] << 8) | s[3];
++            if (restart_enabled && v == restart_value) return 0;
++            out[i] = v; if (v < mn) mn = v; if (v > mx) mx = v;
++        }
++    } else {
++        for (u32 i = 0; i < count; i++) {
++            const u32 v = ((u32)src[i * 2u] << 8) | src[i * 2u + 1u];
++            if (restart_enabled && v == restart_value) return 0;
++            out[i] = v; if (v < mn) mn = v; if (v > mx) mx = v;
++        }
++    }
++    *lo = mn; *hi = mx;
++    return 1;
++}
++
++/* The element range the decode block must cover, or 0 when index + base would leave the 20-bit range. */
++static inline int rsx_vg_index_range(u32 lo, u32 hi, u32 base_index, u32* e_lo, u32* e_hi)
++{
++    if ((u64)hi + base_index >= RSX_VG_ELEMENT_LIMIT || lo > hi) return 0;
++    *e_lo = lo + base_index; *e_hi = hi + base_index;
++    return 1;
++}
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -21,6 +21,7 @@
+ 
+ #include "rsx_live_draw.h"
+ #include "rsx_clear_rect.h"   /* R&C patch 7010 */
++#include "rsx_vg_index.h"     /* R&C patch 7013 */
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+ 
+@@ -9633,6 +9634,8 @@
+     int     imm_refused;
+     u32     inline_dropped_at_begin;
+     int vg;              /* patch 2076: this draw's vertices are fetched on the GPU (payload = u32 element) */
++    int vg_direct;       /* R&C patch 7013: GPU fetch with the guest index buffer (dir_idx) and the identity table */
++    u32* dir_idx; u32 dir_n, dir_cap, dir_base;   /* patch 7013: converted indices, count, capacity, base index */
+     rsx_vg_draw vg_d;    /* patch 2076: its table and raw spans */
+ } draw_ctx;
+ 
+@@ -9750,6 +9753,7 @@
+ static void dc_reset(void)
+ {
+     dc.vg = 0;   /* patch 2076 */
++    dc.vg_direct = 0; dc.dir_n = 0; dc.dir_base = 0;   /* R&C patch 7013 */
+     dc.n_arr = dc.n_idx = dc.n_verts = dc.n_refs = 0;
+     dc.n_source_refs = 0;
+     dc.refs_remapped = 0;
+@@ -10006,6 +10010,90 @@
+         }
+ }
+ 
++/* R&C patch 7013 (rsx_vg_index.h): LD_VTX_GPU_INDEX=1 (default off; only with LD_VTX_GPU=1). */
++static struct { int on; ID3D12Resource* ident; unsigned long long draws, fallback, indices; } g_vgi = { -1, NULL, 0, 0, 0 };
++static int ld_vg_index_on(void)
++{
++    if (g_vgi.on < 0) {
++        const char* e = getenv("LD_VTX_GPU_INDEX");
++        g_vgi.on = e && e[0] == '1';
++        if (g_vgi.on) fprintf(stderr, "[vtx-gpu-index] on: indexed TRIANGLES GPU-fetch draws use the guest index buffer\n");
++    }
++    return g_vgi.on && ld_vtx_gpu_on();
++}
++/* The identity vertex table (entry k = k, RSX_VG_ELEMENT_LIMIT entries, upload heap, made once). */
++static ID3D12Resource* ld_vg_ident(void)
++{
++    if (g_vgi.ident) return g_vgi.ident;
++    D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
++    D3D12_RESOURCE_DESC bd = {0};
++    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = (u64)RSX_VG_ELEMENT_LIMIT * 4u;
++    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
++    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    ID3D12Resource* r = NULL; u32* m = NULL; D3D12_RANGE rr = {0, 0};
++    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
++            D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&r)) ||
++        FAILED(r->lpVtbl->Map(r, 0, &rr, (void**)&m))) {
++        if (r) r->lpVtbl->Release(r);
++        fprintf(stderr, "[vtx-gpu-index] identity table failed: off\n");
++        g_vgi.on = 0;
++        return NULL;
++    }
++    for (u32 k = 0; k < RSX_VG_ELEMENT_LIMIT; k++) m[k] = k;
++    r->lpVtbl->Unmap(r, 0, NULL);
++    g_vgi.ident = r;
++    return r;
++}
++/* Try the direct path for this draw. 1 = taken (dc.vg, dc.vg_direct, dc.dir_*, dc.fetch_plan, dc.vg_d set; no refs);
++ * 0 = not taken, nothing changed that the old path depends on. */
++static int ld_vg_try_direct(const rsx_vertex_layout_plan* layout)
++{
++    if (dc.n_arr || !dc.n_idx || dc.inl || g.rsx.current_primitive != 5u /* TRIANGLES */ || !ld_vg_ident()) return 0;
++    const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
++    rsx_dsp_index_array ia; rsx_dsp_get_index_array(&g.rsx, &ia);
++    const u32 es = ia.is_u32 ? 4u : 2u;
++    static int no_restart = -1;
++    if (no_restart < 0) no_restart = getenv("RSX_NO_RESTART") ? 1 : 0;
++    const int restart_enabled = !no_restart && rsx_dsp_restart_index_enabled(&g.rsx, ia.is_u32);
++    const u32 restart_value = rsx_dsp_restart_index(&g.rsx);
++    u64 total = 0;
++    for (u32 b = 0; b < dc.n_idx; b++) total += dc.idx[b].count;
++    if (!total || total % 3u || total > 0x7FFFFFFFu) return 0;
++    if (total > dc.dir_cap) {
++        u32* n = (u32*)realloc(dc.dir_idx, (size_t)total * sizeof(u32));
++        if (!n) return 0;
++        dc.dir_idx = n; dc.dir_cap = (u32)total;
++    }
++    u32 lo = 0xFFFFFFFFu, hi = 0, at = 0;
++    for (u32 b = 0; b < dc.n_idx; b++) {
++        const u32 count = dc.idx[b].count;
++        if (!count) continue;
++        const u64 start = (u64)ia.offset + (u64)dc.idx[b].first * es, bytes = (u64)count * es;
++        if (start + bytes > 0x100000000ull) return 0;
++        const u8* src = guest_ptr(ia.location, (u32)start, (u32)bytes);
++        u32 l, h;
++        if (!src || !rsx_vg_index_convert(src, count, ia.is_u32, restart_enabled, restart_value, dc.dir_idx + at, &l, &h))
++            return 0;
++        if (l < lo) lo = l; if (h > hi) hi = h;
++        at += count;
++    }
++    u32 e_lo, e_hi;
++    if (!rsx_vg_index_range(lo, hi, base_index, &e_lo, &e_hi)) return 0;
++    rsx_vertex_ref span[2] = { { lo, base_index }, { hi, base_index } };
++    dc.layout = *layout;
++    rsx_vertex_fetch_plan_init(&dc.fetch_plan, &g.rsx, layout, (rsx_vertex_guest_ptr_fn)g.guest_ptr, g.guest_user);
++    rsx_vertex_fetch_plan_set_inline(&dc.fetch_plan, &g.rsx, NULL, 0);
++    rsx_vertex_fetch_plan_prepare(&dc.fetch_plan, span, 2);
++    if (rsx_vg_plan(&dc.fetch_plan, g_vg.max_block, &dc.vg_d) != RSX_VG_OK) return 0;
++    dc.vg = 1; dc.vg_direct = 1;
++    dc.dir_n = at; dc.dir_base = base_index;
++    dc.n_verts = e_hi - e_lo + 1u;   /* nonzero: the draw is not dropped as empty; no payload is uploaded */
++    dc.n_source_refs = at;
++    g_vgi.draws++; g_vgi.indices += at;
++    g_vg.draws++; g_vg.verts += dc.n_verts; g_vg.block_bytes += dc.vg_d.block_bytes;
++    return 1;
++}
++
+ static void fetch_batches_hoisted(
+     const rsx_vertex_layout_plan* layout, int packed_payload)
+ {
+@@ -10016,6 +10104,10 @@
+         return;
+     }
+     LDW_T0(refs_t0);   /* patch 2033: vertex-fetch split */
++    if (packed_payload && ld_vg_index_on()) {   /* R&C patch 7013 */
++        if (ld_vg_try_direct(layout)) { LDW_ADD(RSX_PERF_W_VTX_REFS_T, refs_t0); return; }
++        if (dc.n_idx && !dc.n_arr) g_vgi.fallback++;
++    }
+     for (u32 batch = 0; batch < dc.n_arr && dc.fetch_ok; batch++)
+         for (u32 i = 0; i < dc.arr[batch].count && dc.fetch_ok; i++)
+             push_compact_ref(dc.arr[batch].first + i, 0);
+@@ -13010,11 +13102,12 @@
+      * vertex references to share one fetched and uploaded payload. */
+     int indexed = 0;
+     if (vc_hit) indexed = vc_hit->indexed;   /* patch 2047 */
++    else if (dc.vg_direct) indexed = 1;      /* R&C patch 7013: TRIANGLES from the guest index buffer */
+     else if (!rsx_vertex_topology_plan(prim, dc.refs_remapped, &indexed)) {
+         g_ld_stats.group_drop_primitive++;
+         return;
+     }
+-    u32 n_tri = vc_hit ? vc_hit->n_tri : indexed
++    u32 n_tri = vc_hit ? vc_hit->n_tri : dc.vg_direct ? dc.dir_n : indexed
+         ? topology_index_count(prim)
+         : dc.n_source_refs - dc.n_source_refs % 3;
+ 
+@@ -13023,11 +13116,11 @@
+         return;
+     }
+ 
+-    if (!vc_hit) live_a010_geom_trace(prim, n_tri);   /* patch 2047: a hit has no CPU-side payload */
++    if (!vc_hit && !dc.vg_direct) live_a010_geom_trace(prim, n_tri);   /* patch 2047 / R&C 7013: no CPU-side payload */
+ 
+     const u32 vertex_stride = dc.vg ? 4u :   /* patch 2076: one u32 element index */
+         ld_vertex_compact_payload() ? used_layout.stride : VERT_STRIDE;
+-    const u32 uploaded_vertices = indexed ? dc.n_verts : n_tri;
++    const u32 uploaded_vertices = dc.vg_direct ? 0u : indexed ? dc.n_verts : n_tri;   /* 7013: the identity table */
+     const void* vertex_data = vc_hit ? (const void*)vc_hit->data : ld_vertex_compact_payload()
+         ? (const void*)dc.compact_verts : (const void*)dc.verts;
+     const u64 draw_payload_bytes = (u64)uploaded_vertices * vertex_stride;
+@@ -13074,6 +13167,8 @@
+     } else if (vc_fill && dc.fetch_ok)
+         ld_vc_after_fetch(vc_fill, vc_verify, prim, vertex_data, (u32)draw_vb_bytes, (u32)draw_ib_bytes, n_tri,
+                           indexed, (u32*)((u8*)g.ib_mapped + g.ib_used));
++    else if (dc.vg_direct)   /* R&C patch 7013: the guest indices, converted */
++        memcpy((u8*)g.ib_mapped + g.ib_used, dc.dir_idx, (size_t)dc.dir_n * sizeof(u32));
+     else if (indexed)
+         write_topology_indices(
+             prim, (u32*)((u8*)g.ib_mapped + g.ib_used));
+@@ -13844,14 +13939,19 @@
+     }
+ 
+     D3D12_VERTEX_BUFFER_VIEW vbv;
+-    ID3D12Resource* vb_src = vertex_stride ? ld_vbd_vb(g.vb_used, draw_vb_bytes) : g.vb;   /* patch 2053 */
++    ID3D12Resource* vb_src = vertex_stride && !dc.vg_direct ? ld_vbd_vb(g.vb_used, draw_vb_bytes) : g.vb;   /* patch 2053 */
+     vbv.BufferLocation = vb_src->lpVtbl->GetGPUVirtualAddress(vb_src) + g.vb_used;
++    const D3D12_GPU_VIRTUAL_ADDRESS vg_block_va = vbv.BufferLocation + vg_block_off;   /* R&C 7013: the ring, always */
+     vbv.StrideInBytes = vertex_stride;
+     vbv.SizeInBytes = (u32)draw_payload_bytes;   /* patch 2076: the block after it is not vertex data */
++    if (dc.vg_direct) {   /* R&C patch 7013: element = index + BaseVertexLocation (= base index) via the identity table */
++        vbv.BufferLocation = g_vgi.ident->lpVtbl->GetGPUVirtualAddress(g_vgi.ident);
++        vbv.SizeInBytes = RSX_VG_ELEMENT_LIMIT * 4u;
++    }
+     if (vertex_stride)
+         g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv);
+     if (dc.vg) {   /* patch 2076: t20 = this draw's table + raw spans, t21 = the decode table */
+-        g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root, vbv.BufferLocation + vg_block_off);
++        g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root, vg_block_va);
+         g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root + 1,
+                                                           g_vg.lut->lpVtbl->GetGPUVirtualAddress(g_vg.lut));
+     }
+@@ -13906,7 +14006,7 @@
+         ibv.Format = DXGI_FORMAT_R32_UINT;
+         g.list->lpVtbl->IASetIndexBuffer(g.list, &ibv);
+         g.list->lpVtbl->DrawIndexedInstanced(
+-            g.list, n_tri, 1, 0, 0, 0);
++            g.list, n_tri, 1, 0, dc.vg_direct ? (INT)dc.dir_base : 0, 0);   /* R&C 7013: BaseVertexLocation */
+     } else {
+         g.list->lpVtbl->DrawInstanced(g.list, n_tri, 1, 0, 0);
+     }

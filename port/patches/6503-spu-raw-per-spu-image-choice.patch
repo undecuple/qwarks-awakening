@@ -1,0 +1,415 @@
+Patch 6503 (rc-SPU pass 3): each raw SPU runs the image that reached its own local store.
+
+raw_spu_start kept the resolved lifted entry in one file-scope variable (s_pending_entry) that was never cleared,
+and the proxy-GET lookup only ran while it was empty. Tools of Destruction streams igcollspu into raw SPU 0 and then
+igCollBroadSpu into raw SPU 1: spu1 skipped its own lookup and ran spu0's image (tods-ng-lua: no proxy-loaded or
+window line for spu1, "spu1 START ... image=40", "[spu] img=40 exit: synthesised stop 0x0000 at LS 0x00000" after
+1 step). The image choice is now per SPU (spu_raw_resolve.h, pure, host-testable): proxy GET runs since the SPU's
+last start (and the declared windows of patch 6502), else the image sys_raw_spu_image_load bound to that SPU (the
+import before the load), else the image the SPU already ran (a restart: its LS still holds it; logged when GETs
+since the last start matched nothing), else, only if nothing was streamed, the latest import. A stream that matches
+nothing never runs another SPU's image. sys_raw_spu_create clears the SPU's state. Log lines are unchanged.
+Test: runtime/spu/tests/test_spu_raw_two_spus.c (host, CI linux gcc/clang + macos). General; upstream only with the
+PM's OK.
+
+diff --git a/.github/workflows/linux.yml b/.github/workflows/linux.yml
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -114,6 +114,11 @@
+             -std=gnu17 -Wall -Wextra -I include -I runtime/spu \
+             -o /tmp/test_spu_raw_fp_window runtime/spu/tests/test_spu_raw_fp_window.c
+           /tmp/test_spu_raw_fp_window
++          # Each raw SPU runs the image of its own local store (patch 6503).
++          ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} \
++            -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++            -o /tmp/test_spu_raw_two_spus runtime/spu/tests/test_spu_raw_two_spus.c
++          /tmp/test_spu_raw_two_spus
+ 
+       # The AVX2 single-precision fast path must match the exact scalar path bit for bit.
+       - name: Run the SPU float fast-path test (AVX2)
+diff --git a/.github/workflows/macos.yml b/.github/workflows/macos.yml
+--- a/.github/workflows/macos.yml
++++ b/.github/workflows/macos.yml
+@@ -88,6 +88,10 @@
+           clang -std=gnu17 -Wall -Wextra -I include -I runtime/spu \
+                 -o /tmp/test_spu_raw_fp_window runtime/spu/tests/test_spu_raw_fp_window.c
+           /tmp/test_spu_raw_fp_window
++          # Each raw SPU runs the image of its own local store (patch 6503).
++          clang -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++                -o /tmp/test_spu_raw_two_spus runtime/spu/tests/test_spu_raw_two_spus.c
++          /tmp/test_spu_raw_two_spus
+ 
+       # libnet over host sockets (PS3_NET_ONLINE), end to end on loopback: every
+       # handler is called through the NID it registered under.
+diff --git a/runtime/spu/spu_raw.c b/runtime/spu/spu_raw.c
+--- a/runtime/spu/spu_raw.c
++++ b/runtime/spu/spu_raw.c
+@@ -30,6 +30,7 @@
+ #include "spu_context.h"
+ #include "spu_workload.h"
+ #include "spu_lifted_job.h"
++#include "spu_raw_resolve.h"   /* per-SPU image choice (patch 6503) */
+ #include "../syscalls/lv2_syscall_table.h"
+ #include "../../include/ps3emu/error_codes.h"
+ #include "ps3emu/nid.h"      /* ps3_compute_nid */
+@@ -88,8 +89,11 @@
+     volatile long started;      /* the host thread is live */
+     /* Contiguous LS runs filled by proxy GETs since the last start: a program
+      * streamed in this way is resolved by fingerprinting a run (raw_spu_start). */
+-    uint32_t     get_lo[8], get_hi[8];
+-    int          get_runs;
++    spu_raw_get_runs gets;
++    /* The image sys_raw_spu_image_load put into THIS SPU since its last start. */
++    spu_raw_image_ref loaded;
++    /* The image this SPU ran at its last start (kept across restarts). */
++    spu_raw_image_ref current;
+ #ifdef _WIN32
+     HANDLE       thread;
+ #endif
+@@ -195,9 +199,10 @@
+  * length is derived from the section-header table end, which is where an SPU ELF
+  * emitted by the SDK ends.
+  * -----------------------------------------------------------------------*/
+-static spu_lifted_entry_fn s_pending_entry;
+-static int                 s_pending_image_id;
+-static uint32_t            s_pending_elf_entry;
++/* The most recent import. sys_raw_spu_image_load binds it to the SPU it loads; it
++ * reaches a start directly only for an SPU whose LS was neither loaded nor
++ * streamed (spu_raw_resolve.h). */
++static spu_raw_image_ref s_import;
+ 
+ void spu_raw_note_image(uint32_t src_ea, uint32_t entry)
+ {
+@@ -219,9 +224,9 @@
+     uint64_t fp = spu_workload_fingerprint(e, len);
+     int image_id = 0;
+     spu_lifted_entry_fn fn = spu_workload_find_img(fp, &image_id);
+-    s_pending_entry     = fn;
+-    s_pending_image_id  = image_id;
+-    s_pending_elf_entry = entry;
++    s_import.entry     = fn;
++    s_import.image_id  = image_id;
++    s_import.elf_entry = entry;
+ 
+     fprintf(stderr, "[spu-raw] image_import src=0x%08X len=%u entry=0x%05X "
+                     "fp=0x%016llX -> %s\n",
+@@ -277,36 +282,23 @@
+ static void raw_spu_start(raw_spu* s)
+ {
+     uint32_t n = (uint32_t)(s - s_spu);
+-    /* No image was imported: the PPU streamed the program in by proxy DMA.
+-     * Ports register each image's executable segment too (build_spu_workloads
+-     * .text fingerprint), so one of the GET runs matches it. */
+-    /* The whole run first, then each declared fingerprint window inside it
+-     * (spu_raw.h: programs whose image the guest patches before streaming). */
+-    for (int r = 0; !s_pending_entry && r < s->get_runs; r++) {
+-        spu_raw_fp_window rng[1 + SPU_RAW_FP_WINDOW_MAX];
+-        unsigned nr = spu_raw_run_fp_ranges(s->get_lo[r], s->get_hi[r], rng,
+-                                            1 + SPU_RAW_FP_WINDOW_MAX);
+-        for (unsigned k = 0; !s_pending_entry && k < nr; k++) {
+-            uint64_t fp = spu_workload_fingerprint(vm_base + s->base + rng[k].lo, rng[k].len);
+-            s_pending_entry = spu_workload_find_img(fp, &s_pending_image_id);
+-            if (k == 0)
+-                fprintf(stderr, "[spu-raw] spu%u proxy-loaded LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
+-                        n, s->get_lo[r], s->get_hi[r], (unsigned long long)fp,
+-                        s_pending_entry ? "lifted entry registered" : "no match");
+-            else
+-                fprintf(stderr, "[spu-raw] spu%u   window LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
+-                        n, rng[k].lo, rng[k].lo + rng[k].len, (unsigned long long)fp,
+-                        s_pending_entry ? "lifted entry registered" : "no match");
+-        }
+-    }
+-    s->get_runs = 0;
+-    if (!s_pending_entry) {
++    /* Chosen from what reached THIS SPU's local store since its last start:
++     * proxy GET runs (and declared windows), else the image sys_raw_spu_image_load
++     * put here, else the image it already ran (a restart), else (nothing streamed)
++     * the latest import. Never another SPU's choice (spu_raw_resolve.h). */
++    spu_raw_image_ref img;
++    int src = spu_raw_resolve_image(n, vm_base + s->base, &s->gets, &s->loaded, &s->current, &s_import,
++                                    spu_workload_find_img, spu_workload_fingerprint, stderr, &img);
++    s->gets.n = 0;
++    s->loaded.entry = NULL;
++    if (src == SPU_RAW_SRC_NONE) {
+         fprintf(stderr, "[spu-raw] spu%u run requested but no lifted image is "
+                         "registered -- the SPU cannot run. Lift the image and "
+                         "register it (see a port's src/spu_images.c).\n", n);
+         fflush(stderr);
+         return;
+     }
++    s->current = img;
+ #ifdef _WIN32
+     if (InterlockedCompareExchange(&s->started, 1, 0) != 0) return;  /* already up */
+ #endif
+@@ -320,12 +312,12 @@
+     /* THE point of this whole file: local store is the guest window, not a copy.
+      * The PPU keeps writing command buffers into it while the SPU runs. */
+     s->ctx->ls       = vm_base + s->base;
+-    s->ctx->image_id = s_pending_image_id;
+-    s->entry         = s_pending_entry;
++    s->ctx->image_id = img.image_id;
++    s->entry         = img.entry;
+     s->ctx->gpr[1]._u32[0] = SPU_LS_SIZE - 0x10;      /* SPU ABI stack top */
+ 
+     uint32_t npc = be32_load(s->base + SPU_RAW_NPC) & ~3u;
+-    s->ctx->pc = npc ? npc : s_pending_elf_entry;
++    s->ctx->pc = npc ? npc : img.elf_entry;
+ 
+     g_spu_force_ch_block = 1;   /* an empty RdInMbox must park, not fabricate 0 */
+ 
+@@ -461,10 +453,7 @@
+         uint8_t* ls = vm_base + s->base + lsa;
+         if (cmd & 0x40u) {                                      /* GET: EA -> LS */
+             memcpy(ls, vm_base + ea, size);
+-            int r = 0;
+-            while (r < s->get_runs && s->get_hi[r] != lsa) r++;
+-            if (r < s->get_runs)   s->get_hi[r] += size;
+-            else if (r < 8)      { s->get_lo[r] = lsa; s->get_hi[r] = lsa + size; s->get_runs++; }
++            spu_raw_note_get(&s->gets, lsa, size);
+         }
+         else if (cmd & 0x20u) memcpy(vm_base + ea, ls, size);   /* PUT: LS -> EA */
+         if (dbg())
+@@ -543,6 +532,9 @@
+         if (s_spu[n].used) continue;
+         s_spu[n].used = 1;
+         s_spu[n].base = SPU_RAW_BASE + n * SPU_RAW_STRIDE;
++        s_spu[n].gets.n = 0;               /* nothing streamed or loaded yet (patch 6503) */
++        s_spu[n].loaded.entry = NULL;
++        s_spu[n].current.entry = NULL;
+ 
+         /* Zero the problem state. Local store is left alone: the guest may have
+          * already staged code there, and hardware does not clear it either. */
+@@ -693,6 +685,9 @@
+         else if (type == 2)   { memset(vm_base + base + lsa, 0, size); }
+     }
+     be32_store(base + SPU_RAW_NPC, entry);
++    /* This SPU now holds the image of the import before this call (patch 6503). */
++    s_spu[n].loaded = s_import;
++    s_spu[n].gets.n = 0;
+ 
+     fprintf(stderr, "[spu-raw] image_load spu%u: %u segments, %u bytes into LS, "
+                     "NPC=0x%05X\n", n, nsegs, copied, entry);
+diff --git a/runtime/spu/spu_raw_resolve.h b/runtime/spu/spu_raw_resolve.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/spu/spu_raw_resolve.h
+@@ -0,0 +1,99 @@
++/* spu_raw_resolve.h -- which lifted image a raw SPU runs when its run-control register is set (spu_raw.c).
++ *
++ * A raw SPU's local store is filled one of two ways, and the image must be chosen PER SPU from what reached
++ * THAT SPU's local store since its last start:
++ *   1. proxy GETs (the PPU streams the program with MFC proxy commands): each contiguous GET run, and each
++ *      declared fingerprint window inside it (spu_raw.h), is looked up by fingerprint;
++ *   2. sys_raw_spu_image_load: the image of the _sys_spu_image_import before it, bound to that SPU when it
++ *      was loaded into it.
++ * A restart (run control set again, e.g. after a stop-and-signal) with nothing new resolved keeps the image the SPU
++ * already runs: its local store still holds it, and GETs of data between runs do not replace the code. Only when
++ * the SPU never had an image and nothing was streamed (the LS was written some other way) does the most recent
++ * import apply.
++ * A GET run that matches nothing does NOT fall back to an image resolved for another SPU: its local store holds
++ * code nobody registered, and running an earlier image's lifted code on it is wrong.
++ *
++ * Before this, raw_spu_start kept the resolved entry in one file-scope variable that was never cleared, and the
++ * proxy lookup only ran while that variable was empty: the second raw SPU of a title (Tools of Destruction's
++ * igCollBroadSpu on spu1, after igcollspu on spu0) skipped its own lookup and ran the first SPU's image.
++ *
++ * Pure (lookup and fingerprint are passed in), so host tests use it without the runtime.
++ */
++#ifndef SPU_RAW_RESOLVE_H
++#define SPU_RAW_RESOLVE_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include "spu_raw.h"
++#include "spu_workload.h"
++
++#define SPU_RAW_GET_RUNS_MAX 8
++
++typedef struct {
++    spu_lifted_entry_fn entry;      /* NULL: nothing resolved */
++    int                 image_id;
++    uint32_t            elf_entry;  /* start pc when NPC is 0 (image imports only) */
++} spu_raw_image_ref;
++
++/* Contiguous LS ranges filled by proxy GETs since the SPU's last start. */
++typedef struct {
++    uint32_t lo[SPU_RAW_GET_RUNS_MAX], hi[SPU_RAW_GET_RUNS_MAX];
++    int      n;
++} spu_raw_get_runs;
++
++enum { SPU_RAW_SRC_NONE = 0, SPU_RAW_SRC_PROXY, SPU_RAW_SRC_LOADED, SPU_RAW_SRC_KEPT, SPU_RAW_SRC_IMPORT };
++
++/* Record one proxy GET of `size` bytes at `lsa` (extends the run it continues, else opens a new one). */
++static inline void spu_raw_note_get(spu_raw_get_runs* g, uint32_t lsa, uint32_t size)
++{
++    int r = 0;
++    while (r < g->n && g->hi[r] != lsa) r++;
++    if (r < g->n)                       g->hi[r] += size;
++    else if (r < SPU_RAW_GET_RUNS_MAX) { g->lo[r] = lsa; g->hi[r] = lsa + size; g->n++; }
++}
++
++/* Resolve the image for SPU `spu` whose local store is `ls`. `loaded` is the image bound by
++ * sys_raw_spu_image_load to this SPU since its last start (entry NULL if none), `current` the image the SPU ran
++ * at its previous start (entry NULL if it never ran), `import` the most recent _sys_spu_image_import. Writes *out and returns the SPU_RAW_SRC_* it came from (NONE: the SPU cannot run).
++ * Logs each proxy lookup as "[spu-raw] spuN proxy-loaded LS lo..hi fp=.. -> .." (and "   window" lines). */
++static inline int spu_raw_resolve_image(unsigned spu, const uint8_t* ls, const spu_raw_get_runs* g,
++                                        const spu_raw_image_ref* loaded, const spu_raw_image_ref* current,
++                                        const spu_raw_image_ref* import,
++                                        spu_lifted_entry_fn (*find)(uint64_t fp, int* image_id),
++                                        uint64_t (*fingerprint)(const void* data, size_t n),
++                                        FILE* log, spu_raw_image_ref* out)
++{
++    out->entry = NULL; out->image_id = 0; out->elf_entry = 0;
++    for (int r = 0; r < g->n; r++) {
++        spu_raw_fp_window rng[1 + SPU_RAW_FP_WINDOW_MAX];
++        unsigned nr = spu_raw_run_fp_ranges(g->lo[r], g->hi[r], rng, 1 + SPU_RAW_FP_WINDOW_MAX);
++        for (unsigned k = 0; k < nr; k++) {
++            int id = 0;
++            uint64_t fp = fingerprint(ls + rng[k].lo, rng[k].len);
++            spu_lifted_entry_fn fn = find(fp, &id);
++            if (log) {
++                if (k == 0)
++                    fprintf(log, "[spu-raw] spu%u proxy-loaded LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
++                            spu, g->lo[r], g->hi[r], (unsigned long long)fp,
++                            fn ? "lifted entry registered" : "no match");
++                else
++                    fprintf(log, "[spu-raw] spu%u   window LS 0x%05X..0x%05X fp=0x%016llX -> %s\n",
++                            spu, rng[k].lo, rng[k].lo + rng[k].len, (unsigned long long)fp,
++                            fn ? "lifted entry registered" : "no match");
++            }
++            if (fn) { out->entry = fn; out->image_id = id; return SPU_RAW_SRC_PROXY; }
++        }
++    }
++    if (loaded && loaded->entry) { *out = *loaded; return SPU_RAW_SRC_LOADED; }
++    if (current && current->entry) {
++        if (log && g->n)
++            fprintf(log, "[spu-raw] spu%u keeps image %d (the GETs since its last start matched no image)\n",
++                    spu, current->image_id);
++        *out = *current; return SPU_RAW_SRC_KEPT;
++    }
++    if (g->n == 0 && import && import->entry) { *out = *import; return SPU_RAW_SRC_IMPORT; }
++    return SPU_RAW_SRC_NONE;
++}
++
++#endif /* SPU_RAW_RESOLVE_H */
+diff --git a/runtime/spu/tests/test_spu_raw_two_spus.c b/runtime/spu/tests/test_spu_raw_two_spus.c
+new file mode 100644
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_raw_two_spus.c
+@@ -0,0 +1,115 @@
++/* test_spu_raw_two_spus.c -- each raw SPU runs the image that reached ITS local store (spu_raw_resolve.h, patch 6503).
++ *
++ * The case that broke: two raw SPUs streamed in sequence by proxy GETs (Tools of Destruction: igcollspu on spu0,
++ * then igCollBroadSpu on spu1, the second registered by a fingerprint window). raw_spu_start kept the resolved
++ * entry in one file-scope variable and only looked GET runs up while it was empty, so spu1 skipped its lookup and
++ * ran spu0's image (log: "spu1 START ... image=40", no proxy-loaded line). This replays the same sequence plus a
++ * restart, an unregistered stream, and the image-import/image-load path.
++ *
++ *   gcc -std=gnu17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -I include -I runtime/spu \
++ *       -o t runtime/spu/tests/test_spu_raw_two_spus.c && ./t
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "spu_raw_resolve.h"
++
++spu_raw_fp_window g_spu_raw_fp_windows[SPU_RAW_FP_WINDOW_MAX];
++unsigned          g_spu_raw_fp_window_count;
++
++static int g_pass, g_fail;
++#define CHECK(c, what) do { if (c) g_pass++; else { g_fail++; printf("FAIL %s (line %d)\n", what, __LINE__); } } while (0)
++
++static void SPU_ABI img_a(spu_context* c) { (void)c; }
++static void SPU_ABI img_b(spu_context* c) { (void)c; }
++static void SPU_ABI img_x(spu_context* c) { (void)c; }
++
++/* A tiny registry with spu_workload_find_img's contract, and spu_workload_fingerprint's algorithm. */
++static struct { uint64_t fp; spu_lifted_entry_fn fn; int id; } reg[8];
++static int nreg;
++static spu_lifted_entry_fn find(uint64_t fp, int* id)
++{
++    for (int i = 0; i < nreg; i++) if (reg[i].fp == fp) { *id = reg[i].id; return reg[i].fn; }
++    *id = 0; return NULL;
++}
++static uint64_t fnv(const void* d, size_t n)
++{
++    const uint8_t* p = (const uint8_t*)d; uint64_t h = 1469598103934665603ULL;
++    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
++    return h;
++}
++
++/* Guest-side images in "main memory" and one local store per raw SPU. */
++static uint8_t imgA[0x9000], imgB[0x2000], junk[0x1000];
++static uint8_t ls[5][0x40000];
++
++/* What raw_spu_start does with a raw SPU's state: resolve, then reset the per-start inputs, keep the choice. */
++typedef struct { spu_raw_get_runs gets; spu_raw_image_ref loaded, current; } raw;
++static raw spu[5];
++static spu_raw_image_ref s_import;
++
++static void stream(int n, uint32_t lsa, const uint8_t* src, uint32_t size)   /* proxy GETs of 0x4000 at most */
++{
++    for (uint32_t off = 0; off < size; off += 0x4000) {
++        uint32_t c = size - off < 0x4000 ? size - off : 0x4000;
++        memcpy(ls[n] + lsa + off, src + off, c);
++        spu_raw_note_get(&spu[n].gets, lsa + off, c);
++    }
++}
++static int start(int n, spu_raw_image_ref* out)
++{
++    int src = spu_raw_resolve_image((unsigned)n, ls[n], &spu[n].gets, &spu[n].loaded, &spu[n].current, &s_import,
++                                    find, fnv, stdout, out);
++    spu[n].gets.n = 0;
++    spu[n].loaded.entry = NULL;
++    if (src != SPU_RAW_SRC_NONE) spu[n].current = *out;
++    return src;
++}
++
++int main(void)
++{
++    for (unsigned i = 0; i < sizeof imgA; i++) imgA[i] = (uint8_t)(i * 31u + 7u);
++    for (unsigned i = 0; i < sizeof imgB; i++) imgB[i] = (uint8_t)(i * 17u + 3u);
++    for (unsigned i = 0; i < sizeof junk; i++) junk[i] = (uint8_t)(i ^ 0x5Au);
++    /* A: registered by its whole image (igcollspu). B: by the window before its 0x50-byte parameter block. */
++    reg[nreg].fp = fnv(imgA, sizeof imgA); reg[nreg].fn = img_a; reg[nreg++].id = 40;
++    reg[nreg].fp = fnv(imgB, sizeof imgB - 0x50); reg[nreg].fn = img_b; reg[nreg++].id = 41;
++    CHECK(spu_raw_add_fp_window(0x60, sizeof imgB - 0x50), "window");
++    spu_raw_image_ref r;
++
++    /* spu0: A streamed, started */
++    stream(0, 0x60, imgA, sizeof imgA);
++    CHECK(start(0, &r) == SPU_RAW_SRC_PROXY && r.entry == img_a && r.image_id == 40, "spu0 runs A");
++
++    /* spu1: the caller fills B's parameter block in main memory, then B is streamed: must be B, not spu0's A */
++    for (unsigned i = sizeof imgB - 0x50; i < sizeof imgB; i++) imgB[i] = (uint8_t)(0xC0 + i);
++    stream(1, 0x60, imgB, sizeof imgB);
++    CHECK(start(1, &r) == SPU_RAW_SRC_PROXY && r.entry == img_b && r.image_id == 41, "spu1 runs B (its own lookup)");
++
++    /* spu1 restarted with nothing new (stop-and-signal, run again): keeps B */
++    CHECK(start(1, &r) == SPU_RAW_SRC_KEPT && r.entry == img_b && r.image_id == 41, "spu1 restart keeps B");
++    /* spu0: a data GET between runs, then a restart: keeps A */
++    stream(0, 0x20000, junk, sizeof junk);
++    CHECK(start(0, &r) == SPU_RAW_SRC_KEPT && r.entry == img_a, "spu0 keeps A after a data GET");
++
++    /* spu2 never ran: an unregistered program streamed must not run anyone else's image */
++    stream(2, 0x60, junk, sizeof junk);
++    CHECK(start(2, &r) == SPU_RAW_SRC_NONE && r.entry == NULL, "spu2 unregistered stream does not run A or B");
++
++    /* the import path: import X, image_load into spu3 binds it; spu4 neither loaded nor streamed gets the import */
++    s_import.entry = img_x; s_import.image_id = 50; s_import.elf_entry = 0x80;
++    spu[3].loaded = s_import;
++    CHECK(start(3, &r) == SPU_RAW_SRC_LOADED && r.entry == img_x && r.elf_entry == 0x80, "spu3 runs the loaded import");
++    CHECK(start(4, &r) == SPU_RAW_SRC_IMPORT && r.entry == img_x, "spu4 runs the latest import");
++    /* ...but a stream into a fresh SPU that matches nothing does not fall back to the import */
++    spu[2].current.entry = NULL;
++    stream(2, 0x60, junk, sizeof junk);
++    CHECK(start(2, &r) == SPU_RAW_SRC_NONE, "unmatched stream ignores the import");
++    /* a later stream of A into spu3 replaces X */
++    stream(3, 0x60, imgA, sizeof imgA);
++    CHECK(start(3, &r) == SPU_RAW_SRC_PROXY && r.entry == img_a, "spu3 re-streamed runs A");
++
++    printf("%d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}

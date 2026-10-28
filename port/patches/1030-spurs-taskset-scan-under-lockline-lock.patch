@@ -1,0 +1,93 @@
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -421,8 +421,8 @@
+         e[10] = (uint8_t)((uint32_t)exit_code >> 8); e[11] = (uint8_t)exit_code;
+         e[14] = 0; e[15] = (uint8_t)((e[15] & 0xF0u) | 2u);
+     }
++    spu_coh_notify_write(ea);              /* under the lock-line lock, as the notify expects (KZ3 patch 1030) */
+     spu_lockline_unlock();
+-    spu_coh_notify_write(ea);
+     static int n;
+     if (n++ < 16)
+         fprintf(stderr, "[task2] taskset 0x%08X task %u %s exit_code[%u] state 0x%02X code %d\n", taskset_ea,
+@@ -437,6 +437,15 @@
+     ts_lock();
+     uint8_t* ts = vm_base + taskset_ea;
+     uint8_t* run = ts_running(taskset_ea);
++    /* KZ3 patch 1030: the bitsets (+0x10 ready, +0x20 pending, +0x30 enabled) share the taskset's first lock
++     * line with the SPU-side cellSpursCreateTask2 (GETLLAR/PUTLLC). A plain byte RMW here could interleave with
++     * a PUTLLC commit (which only holds the lock-line lock) and drop or resurrect another task's bits: tasks 0-3
++     * (Havok integrate, image 40) and 4-7 (narrow phase, image 41) share byte 0 of every bitset, and a task 0
++     * exit races the SPU creating task 7. Update under the lock-line lock, then break SPU reservations on the
++     * line so a GETLLAR copy taken before the update cannot commit over it. */
++    extern void spu_lockline_lock(void); extern void spu_lockline_unlock(void);
++    extern void spu_coh_notify_write(uint32_t ea);
++    spu_lockline_lock();
+     if (done_task < 128) {
+         uint8_t m = (uint8_t)(0x80u >> (done_task & 7));
+         ts[0x10 + done_task / 8] &= (uint8_t)~m;
+@@ -444,6 +453,7 @@
+         ts[0x30 + done_task / 8] &= (uint8_t)~m;
+         if (run) run[done_task / 8] &= (uint8_t)~m;
+     }
++    uint32_t start_t[128], start_elf[128], start_ctx[128]; size_t start_sz[128]; int n_start = 0;
+     for (uint32_t t = 0; t < 128 && run; t++) {
+         uint8_t m = (uint8_t)(0x80u >> (t & 7));
+         if (!(ts[0x30 + t / 8] & m) || (run[t / 8] & m)) continue;
+@@ -461,14 +471,43 @@
+         if (!sz) continue;
+         ts[0x20 + t / 8] &= (uint8_t)~m;                 /* pending -> started */
+         run[t / 8] |= m;
++        start_t[n_start] = t; start_elf[n_start] = elf; start_ctx[n_start] = ctx; start_sz[n_start] = sz; n_start++;
++    }
++    spu_coh_notify_write(taskset_ea);
++    spu_lockline_unlock();
++    for (int i = 0; i < n_start; i++) {             /* dispatch outside the lock-line lock, still under ts_lock */
+         fprintf(stderr, "[taskset] start task %u of taskset 0x%08X elf=0x%08X "
+-                        "(after task %u exited)\n", t, taskset_ea, elf, done_task);
+-        g_ydkj_real_taskset_ea = taskset_ea; g_ydkj_real_taskid = t;
+-        spu_workload_dispatch_async(vm_base + elf, (uint32_t)sz, ctx);
++                        "(after task %u exited)\n", start_t[i], taskset_ea, start_elf[i], done_task);
++        g_ydkj_real_taskset_ea = taskset_ea; g_ydkj_real_taskid = start_t[i];
++        spu_workload_dispatch_async(vm_base + start_elf[i], (uint32_t)start_sz[i], start_ctx[i]);
+     }
+     ts_unlock();
+ }
+ 
++/* KZ3 patch 1030 (diagnostic): one line per tracked taskset with its bitsets, the runtime's running marks and
++ * every enabled task's ELF/context and taskset2 exit-code state; called from the SEMDUMP periodic dump. */
++void spu_taskset_dump_tracked(const char* why)
++{
++    extern uint8_t* vm_base;
++    if (!vm_base) return;
++    for (int i = 0; i < TS_TRACK; i++) {
++        uint32_t ea = s_ts_run[i].ea;
++        if (!ea) continue;
++        const uint8_t* t = vm_base + ea; const uint8_t* r = s_ts_run[i].running;
++        fprintf(stderr, "[ts-dump] %s ts=0x%08X run=%02X%02X ready=%02X%02X pend=%02X%02X en=%02X%02X sig=%02X%02X wait=%02X%02X\n",
++                why, ea, r[0], r[1], t[0x10], t[0x11], t[0x20], t[0x21], t[0x30], t[0x31], t[0x40], t[0x41], t[0x50], t[0x51]);
++        uint32_t size = ((uint32_t)t[0x1890] << 24) | ((uint32_t)t[0x1891] << 16) | ((uint32_t)t[0x1892] << 8) | t[0x1893];
++        for (int k = 0; k < 16; k++) {
++            const uint8_t* ti = t + 0x80 + 0x30 * k;
++            uint32_t elf = ((uint32_t)ti[0x14] << 24) | ((uint32_t)ti[0x15] << 16) | ((uint32_t)ti[0x16] << 8) | ti[0x17];
++            if (!elf) continue;
++            const uint8_t* xc = t + 0x1980 + 16 * k;
++            fprintf(stderr, "[ts-dump]   task %d elf=%08X ctx=%02X%02X%02X%02X exit=%s%02X%02X%02X%02X/%02X\n", k, elf,
++                    ti[0x1C], ti[0x1D], ti[0x1E], ti[0x1F], size == 0x2900u ? "" : "(n/a)", xc[8], xc[9], xc[10], xc[11], xc[15]);
++        }
++    }
++}
++
+ /* A PUTLLC landed in the first 0x1900 bytes of a taskset the runtime tracks (bitsets, task_info): SPU code
+  * may have created a task or made one ready (KZ3's Havok task calls the SPU-side cellSpursCreateTask2,
+  * elf_00f6b900 LS 0x1C710, then joins it). The real taskset policy module would schedule it; scan the
+--- a/runtime/syscalls/sys_event.c
++++ b/runtime/syscalls/sys_event.c
+@@ -305,6 +305,7 @@
+ {
+     uint32_t r28 = s_sd_r[0], r29 = s_sd_r[1], r30 = s_sd_r[2], r31 = s_sd_r[3];
+     fprintf(stderr, "[semdump] %s r28=0x%08X r29=0x%08X r30=0x%08X r31=0x%08X\n", why, r28, r29, r30, r31);
++    { extern void spu_taskset_dump_tracked(const char* why); spu_taskset_dump_tracked(why); }   /* KZ3 patch 1030 */
+     kz3_semdump_region("sem", r30, 0x10);
+     /* KZ3 patch 1029: a Havok semaphore (0x8E88E4) keeps its (waiters << 16 | count) word at [r30+4]. */
+     if (r30 >= 0x10000u && r30 < 0xF0000000u) { uint32_t wp = sd_rd32(r30 + 4u);

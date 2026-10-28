@@ -1,0 +1,34 @@
+PPU_WATCHDOG_STACK=N (diagnostic, default off): the watchdog's per-thread line (ppu_report_guest_lrs, printed by RC_WATCHDOG and
+the debug console) also follows each guest thread's back chain N hops (max 32) and prints the saved return addresses, so one
+report names the call chain of every parked thread (R&C NEW GAME stall after the raw SPU start, rc-runtime pass 8). Without the
+variable nothing changes.
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -876,6 +876,25 @@
+         fprintf(stderr, "[WATCHDOG]   guest-tid %-3u lr=0x%08X  r3=0x%08X sp=0x%08X r27=0x%08X r28=0x%08X\n",
+                 (unsigned)c->thread_id, (uint32_t)c->lr,
+                 (uint32_t)c->gpr[3], (uint32_t)c->gpr[1], (uint32_t)c->gpr[27], (uint32_t)c->gpr[28]);
++        /* PPU_WATCHDOG_STACK=N (diagnostic, default off; R&C patch 7003): follow that thread's guest back chain N hops
++         * (max 32) and print the saved return addresses. 64-bit ABI: [sp] = back chain, a frame's caller saves lr at
++         * [frame + 16] (low word at +20). A thread parked in an HLE wait keeps its guest sp, so this names the whole
++         * guest call chain of every waiting thread in one report, without a second run to feed RC_STACK. Unlocked and
++         * best-effort, as the line above: a torn chain stops at the first link that does not grow. */
++        { static int s_hops = -1;
++          if (s_hops < 0) { const char* e = getenv("PPU_WATCHDOG_STACK"); s_hops = e ? atoi(e) : 0; if (s_hops > 32) s_hops = 32; }
++          if (s_hops > 0 && vm_base) {
++              uint32_t sp = (uint32_t)c->gpr[1];
++              fprintf(stderr, "[WATCHDOG]     tid %u chain:", (unsigned)c->thread_id);
++              for (int h = 0; h < s_hops && sp >= 0x10000u && sp < 0xE0000000u; h++) {
++                  uint32_t nx; memcpy(&nx, vm_base + sp + 4, 4); nx = __builtin_bswap32(nx);
++                  if (nx <= sp || nx >= 0xE0000000u) break;
++                  uint32_t ra; memcpy(&ra, vm_base + nx + 20, 4);
++                  fprintf(stderr, " 0x%08X", __builtin_bswap32(ra));
++                  sp = nx;
++              }
++              fprintf(stderr, "\n");
++          } }
+         /* With BCTRL_RING armed, follow it with that thread's recent INDIRECT
+          * targets. lr cannot see those (bctrl does not write it), so for a
+          * thread looping on a vtable call the ring is the only record of where

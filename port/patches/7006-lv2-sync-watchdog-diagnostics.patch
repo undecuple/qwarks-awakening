@@ -1,0 +1,175 @@
+Diagnostics for lv2 mutex/cond waits (print-only; default output unchanged): each guest thread's sync phase (1 waiting in
+sys_mutex_lock, 2 in sys_cond_wait for a signal, 3 in sys_cond_wait re-acquiring the mutex) and lv2_sync_describe_thread(), which the
+R&C watchdog prints for threads in syscall 102/107 (mutex id, owner, count, recursion, waiters, bound conds, create/destroy counts
+of the slot). LV2_SYNC_DESTROY_LOG=1 logs a destroy of a busy mutex (held, waiters or bound conds, which lv2 refuses) and the
+re-creation of such a slot. For ToD's intermittent level-load stall (tods-ng-c1: tid 1 in sys_mutex_lock(3), rc-runtime pass 11).
+
+diff --git a/runtime/syscalls/sys_mutex.h b/runtime/syscalls/sys_mutex.h
+--- a/runtime/syscalls/sys_mutex.h
++++ b/runtime/syscalls/sys_mutex.h
+@@ -84,6 +84,14 @@
+ /* Registration */
+ void sys_mutex_init(lv2_syscall_table* tbl);
+ 
++/* R&C patch 7006 (diagnostics): what each guest thread waits for in the lv2 sync syscalls.
++ * kind 1 = sys_mutex_lock waiting for mutex obj, 2 = sys_cond_wait waiting for a signal on cond obj,
++ * 3 = sys_cond_wait re-acquiring the cond's mutex after the wake; 0 = none. */
++void lv2_sync_phase(uint64_t tid, int kind, uint32_t obj);
++/* One line about guest thread tid's sync wait (mutex owner, count, recursion, waiters, bound conds,
++ * creates/destroys of the slot). Returns 0 when the thread is not in a mutex/cond wait. */
++int  lv2_sync_describe_thread(unsigned tid, char* buf, unsigned n);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/syscalls/sys_mutex.c b/runtime/syscalls/sys_mutex.c
+--- a/runtime/syscalls/sys_mutex.c
++++ b/runtime/syscalls/sys_mutex.c
+@@ -14,6 +14,65 @@
+  * -----------------------------------------------------------------------*/
+ sys_mutex_info g_sys_mutexes[SYS_MUTEX_MAX];
+ 
++/* R&C patch 7006 (diagnostics, print-only): per-slot create/destroy counts and each guest thread's sync wait,
++ * read by the watchdog (lv2_sync_describe_thread, port/rc/main.cpp). LV2_SYNC_DESTROY_LOG=1 logs a destroy of a
++ * held mutex, of a mutex with waiters or bound conds, and the re-creation of a slot that was destroyed that way. */
++#include "sys_cond.h"
++#include <stdlib.h>
++#define LV2_SYNC_TIDS 64
++static uint32_t s_mtx_creates[SYS_MUTEX_MAX], s_mtx_destroys[SYS_MUTEX_MAX];
++static unsigned char s_mtx_bad_destroy[SYS_MUTEX_MAX];
++static volatile int      s_phase_kind[LV2_SYNC_TIDS];
++static volatile uint32_t s_phase_obj[LV2_SYNC_TIDS];
++void lv2_sync_phase(uint64_t tid, int kind, uint32_t obj)
++{
++    if (tid >= LV2_SYNC_TIDS) return;
++    s_phase_obj[tid] = obj; s_phase_kind[tid] = kind;
++}
++static int lv2_sync_destroy_log(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LV2_SYNC_DESTROY_LOG"); on = e && e[0] == '1'; }
++    return on;
++}
++static unsigned mtx_bound_conds(uint32_t mid)
++{
++    unsigned n = 0;
++    for (unsigned i = 0; i < SYS_COND_MAX; i++)
++        if (g_sys_conds[i].active && g_sys_conds[i].mutex_id == mid) n++;
++    return n;
++}
++static unsigned mtx_waiters(uint32_t mid)
++{
++    unsigned n = 0;
++    for (unsigned t = 0; t < LV2_SYNC_TIDS; t++)
++        if ((s_phase_kind[t] == 1 && s_phase_obj[t] == mid) ||
++            (s_phase_kind[t] == 3 && s_phase_obj[t] && s_phase_obj[t] <= SYS_COND_MAX &&
++             g_sys_conds[s_phase_obj[t] - 1].mutex_id == mid)) n++;
++    return n;
++}
++static int mtx_describe(uint32_t mid, char* buf, unsigned n)
++{
++    if (!mid || mid > SYS_MUTEX_MAX) return snprintf(buf, n, "mutex %u (bad id)", mid);
++    const sys_mutex_info* m = &g_sys_mutexes[mid - 1];
++    char name[9]; memcpy(name, m->name, 8); name[8] = 0;
++    return snprintf(buf, n, "mutex %u '%s' active=%d owner=%llu count=%d recursive=%d waiters=%u conds=%u "
++                    "creates=%u destroys=%u", mid, name, m->active, (unsigned long long)m->owner_tid, m->lock_count,
++                    m->recursive, mtx_waiters(mid), mtx_bound_conds(mid), s_mtx_creates[mid - 1], s_mtx_destroys[mid - 1]);
++}
++int lv2_sync_describe_thread(unsigned tid, char* buf, unsigned n)
++{
++    if (tid >= LV2_SYNC_TIDS || !buf || !n) return 0;
++    const int k = s_phase_kind[tid]; const uint32_t obj = s_phase_obj[tid];
++    if (!k) return 0;
++    char mb[192];
++    if (k == 1) { mtx_describe(obj, mb, sizeof mb); snprintf(buf, n, "lock wait: %s", mb); return 1; }
++    const uint32_t mid = (obj && obj <= SYS_COND_MAX) ? g_sys_conds[obj - 1].mutex_id : 0;
++    mtx_describe(mid, mb, sizeof mb);
++    snprintf(buf, n, "cond_wait on cond %u, %s; %s", obj, k == 2 ? "waiting for a signal" : "re-acquiring its mutex", mb);
++    return 1;
++}
++
+ #ifdef _WIN32
+ static CRITICAL_SECTION s_mtx_table_lock;
+ static int              s_mtx_table_lock_init = 0;
+@@ -83,6 +142,11 @@
+     }
+ 
+     sys_mutex_info* m = &g_sys_mutexes[slot];
++    if (s_mtx_bad_destroy[slot] && lv2_sync_destroy_log())   /* patch 7006 */
++        fprintf(stderr, "[lv2-sync] mutex slot %d re-created after an unsafe destroy (creates=%u destroys=%u) lr=0x%08X\n",
++                slot + 1, s_mtx_creates[slot], s_mtx_destroys[slot], (uint32_t)ctx->lr);
++    s_mtx_bad_destroy[slot] = 0;
++    s_mtx_creates[slot]++;
+     memset(m, 0, sizeof(*m));
+     m->active = 1;
+ 
+@@ -159,6 +223,18 @@
+         return (int64_t)(int32_t)CELL_ESRCH;
+     }
+ 
++    {   /* patch 7006: lv2 refuses these (EBUSY held, EPERM conds bound); this runtime destroys anyway */
++        const unsigned conds = mtx_bound_conds(mutex_id), waiters = mtx_waiters(mutex_id);
++        if (m->owner_tid || m->lock_count > 0 || conds || waiters) {
++            s_mtx_bad_destroy[mutex_id - 1] = 1;
++            if (lv2_sync_destroy_log()) {
++                char mb[192]; mtx_describe(mutex_id, mb, sizeof mb);
++                fprintf(stderr, "[lv2-sync] destroy of a busy %s by tid %llu lr=0x%08X\n", mb,
++                        (unsigned long long)ctx->thread_id, (uint32_t)ctx->lr);
++            }
++        }
++    }
++    s_mtx_destroys[mutex_id - 1]++;
+ #ifdef _WIN32
+     DeleteCriticalSection(&m->cs);
+     if (m->wait_handle) CloseHandle(m->wait_handle);
+@@ -195,6 +271,7 @@
+         return (int64_t)(int32_t)CELL_EDEADLK;
+     }
+ 
++    lv2_sync_phase(caller_tid, 1, mutex_id);   /* patch 7006 */
+ #ifdef _WIN32
+     if (timeout_us == 0) {
+         /* Infinite wait */
+@@ -210,6 +287,7 @@
+         int64_t deadline = lv2_usec_deadline(timeout_us);
+         while (!TryEnterCriticalSection(&m->cs)) {
+             if (lv2_deadline_passed(deadline)) {
++                lv2_sync_phase(caller_tid, 0, 0);
+                 return (int64_t)(int32_t)CELL_ETIMEDOUT;
+             }
+             if (timeout_us < 1000) SwitchToThread();
+@@ -230,11 +308,13 @@
+         }
+         int rc = pthread_mutex_timedlock(&m->mtx, &ts);
+         if (rc == ETIMEDOUT) {
++            lv2_sync_phase(caller_tid, 0, 0);
+             return (int64_t)(int32_t)CELL_ETIMEDOUT;
+         }
+     }
+ #endif
+ 
++    lv2_sync_phase(caller_tid, 0, 0);
+     m->owner_tid = caller_tid;
+     m->lock_count++;
+     return CELL_OK;
+diff --git a/runtime/syscalls/sys_cond.c b/runtime/syscalls/sys_cond.c
+--- a/runtime/syscalls/sys_cond.c
++++ b/runtime/syscalls/sys_cond.c
+@@ -154,6 +154,7 @@
+     m->owner_tid = 0;
+     m->lock_count = 0;
+     for (int i = 0; i < depth; ++i) guest_unlock(m);
++    lv2_sync_phase(ctx->thread_id, 2, LV2_ARG_U32(ctx, 0));   /* R&C patch 7006 */
+ 
+     int32_t result = CELL_OK;
+ #ifdef _WIN32
+@@ -195,7 +196,9 @@
+     while (*link != &waiter) link = &(*link)->next;
+     *link = waiter.next;
+     cond_unlock(c);
++    lv2_sync_phase(ctx->thread_id, 3, LV2_ARG_U32(ctx, 0));   /* patch 7006 */
+     for (int i = 0; i < depth; ++i) guest_lock(m);
++    lv2_sync_phase(ctx->thread_id, 0, 0);
+     m->owner_tid = ctx->thread_id;
+     m->lock_count = depth;
+     return result;

@@ -1,0 +1,265 @@
+
+
+Rebased on ps3recomp v0.15.0 (SPU pass 81): rebased onto PR290 per-context slot list, ctx mfc_cache fast path kept, cleared in spu_mfc_release.
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -65,48 +65,48 @@ static uint64_t spu_host_ns(void)
+ #else
+ #  define SPU_TLS __thread
+ #endif
+-/* Called after an SPU atomic commits a 128-byte line, with the lock-line lock
+- * released. cellSpurs sets it so a PPU blocked in cellSpursEventFlagWait wakes
+- * when a task sets the flag, instead of on its next 2 ms poll. */
+-void (*g_spu_line_commit_hook)(uint32_t line) = 0;
+-/* spu_workload.c: wakes tasks parked in WAIT_SIGNAL on that line's taskset. */
+-void spu_taskset_line_committed(uint32_t line);
+-/* SPU_LS_WATCH=0x1BE80[,0x927D80...]: watch up to 4 16-byte LS lines (reads
+- * and writes) in every SPU image. See spu_ls_watch_hit2 for the fast path. */
+-#define SPU_WATCH_MAX 4
+-int g_spu_ls_watch_n = -1;
+-static unsigned s_spu_ls_watch[SPU_WATCH_MAX];
+-unsigned* spu_ls_watch_list(int* out_n)
+-{
+-    if (g_spu_ls_watch_n < 0) {
+-        int n = 0; const char* e = getenv("SPU_LS_WATCH");
+-        while (e && *e && n < SPU_WATCH_MAX) {
+-            s_spu_ls_watch[n++] = (unsigned)strtoul(e, (char**)&e, 0) & ~0xFu;
+-            while (*e == ',' || *e == ' ') e++;
+-        }
+-        g_spu_ls_watch_n = n;
+-    }
+-    *out_n = g_spu_ls_watch_n;
+-    return s_spu_ls_watch;
+-}
+-void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr)
+-{
+-    int n; spu_ls_watch_list(&n);
+-    if (!n) return;
+-    uint32_t a = lsa & (SPU_LS_MASK & ~0xFu);
+-    for (int i = 0; i < g_spu_ls_watch_n; i++) {
+-        if (s_spu_ls_watch[i] == a) {
+-            fprintf(stderr, "[spu-watch %s 0x%05X pc=0x%05X lr=0x%05X] "
+-                "%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n",
+-                is_write ? "WR" : "rd", a, pc, lr,
+-                p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
+-                p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
+-            fflush(stderr);
+-            break;
+-        }
+-    }
+-}
+-
++/* Called after an SPU atomic commits a 128-byte line, with the lock-line lock
++ * released. cellSpurs sets it so a PPU blocked in cellSpursEventFlagWait wakes
++ * when a task sets the flag, instead of on its next 2 ms poll. */
++void (*g_spu_line_commit_hook)(uint32_t line) = 0;
++/* spu_workload.c: wakes tasks parked in WAIT_SIGNAL on that line's taskset. */
++void spu_taskset_line_committed(uint32_t line);
++/* SPU_LS_WATCH=0x1BE80[,0x927D80...]: watch up to 4 16-byte LS lines (reads
++ * and writes) in every SPU image. See spu_ls_watch_hit2 for the fast path. */
++#define SPU_WATCH_MAX 4
++int g_spu_ls_watch_n = -1;
++static unsigned s_spu_ls_watch[SPU_WATCH_MAX];
++unsigned* spu_ls_watch_list(int* out_n)
++{
++    if (g_spu_ls_watch_n < 0) {
++        int n = 0; const char* e = getenv("SPU_LS_WATCH");
++        while (e && *e && n < SPU_WATCH_MAX) {
++            s_spu_ls_watch[n++] = (unsigned)strtoul(e, (char**)&e, 0) & ~0xFu;
++            while (*e == ',' || *e == ' ') e++;
++        }
++        g_spu_ls_watch_n = n;
++    }
++    *out_n = g_spu_ls_watch_n;
++    return s_spu_ls_watch;
++}
++void spu_ls_watch_slow(uint32_t lsa, int is_write, const uint8_t* p, uint32_t pc, uint32_t lr)
++{
++    int n; spu_ls_watch_list(&n);
++    if (!n) return;
++    uint32_t a = lsa & (SPU_LS_MASK & ~0xFu);
++    for (int i = 0; i < g_spu_ls_watch_n; i++) {
++        if (s_spu_ls_watch[i] == a) {
++            fprintf(stderr, "[spu-watch %s 0x%05X pc=0x%05X lr=0x%05X] "
++                "%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n",
++                is_write ? "WR" : "rd", a, pc, lr,
++                p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
++                p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
++            fflush(stderr);
++            break;
++        }
++    }
++}
++
+ static SPU_TLS jmp_buf s_spu_halt_env;
+ static SPU_TLS int     s_spu_halt_armed = 0;
+ 
+@@ -292,7 +292,19 @@ typedef struct spu_mfc_slot {
+ static spu_mfc_slot* s_mfc_slots;
+ static SRWLOCK s_mfc_claim_lock = SRWLOCK_INIT;
+ 
++/* KZ3 patch 1017: this runs on every MFC channel access, so the context caches its own engine in
++ * mfc_cache (no lock, no list walk; was thread-local, emulated TLS on MinGW). spu_mfc_release clears
++ * it before it frees the slot; a slot's ctx never changes while it is claimed. */
++static mfc_engine* mfc_for_slow(spu_context* ctx);
+ static mfc_engine* mfc_for(spu_context* ctx)
++{
++    if (ctx->mfc_cache) return (mfc_engine*)ctx->mfc_cache;
++    mfc_engine* e = mfc_for_slow(ctx);
++    ctx->mfc_cache = e;
++    return e;
++}
++
++static mfc_engine* mfc_for_slow(spu_context* ctx)
+ {
+     AcquireSRWLockShared(&s_mfc_claim_lock);
+     for (spu_mfc_slot* slot = s_mfc_slots; slot; slot = slot->next) {
+@@ -329,6 +341,7 @@ static mfc_engine* mfc_for(spu_context* ctx)
+ void spu_mfc_release(spu_context* ctx)
+ {
+     if (!ctx) return;
++    ctx->mfc_cache = NULL;   /* KZ3 patch 1013/1017 */
+     AcquireSRWLockExclusive(&s_mfc_claim_lock);
+     for (spu_mfc_slot** link = &s_mfc_slots; *link; link = &(*link)->next) {
+         if ((*link)->ctx != ctx) continue;
+@@ -762,10 +775,10 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+                       ctx->gpr[0]._u32[0] & SPU_LS_MASK, ea); }
+         ctx->resv_valid = 0;                           /* reservation consumed */
+         spu_lockline_unlock();
+-        if (ctx->atomic_stat == 0) {
+-            spu_taskset_line_committed(ea & ~127u);
+-            if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
+-        }
++        if (ctx->atomic_stat == 0) {
++            spu_taskset_line_committed(ea & ~127u);
++            if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
++        }
+         return 1;
+ 
+     case MFC_PUTLLUC_CMD:
+@@ -784,7 +797,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+         ctx->resv_valid = 0; ctx->atomic_stat = 2;   /* PUTLLUC complete */
+         spu_lockline_unlock();
+         spu_taskset_line_committed(ea & ~127u);
+-        if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
++        if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
+         return 1;
+ 
+     default:
+@@ -1566,7 +1579,7 @@ void spu_register_stack_reset_entry(uint32_t entry, int image_id)
+  * a stack-switching routine without going through spu_indirect_branch. */
+ void spu_check_stack_reset(spu_context* ctx, void (*fn)(spu_context*))
+ {
+-    if (!ctx->host_depth || !s_spu_halt_armed || ctx->policy_mode) return;
++    if (!ctx->host_depth || ctx->policy_mode || !s_stack_reset_count || !s_spu_halt_armed) return;  /* KZ3 1017: TLS read last */
+     for (unsigned i = 0; i < s_stack_reset_count; ++i)
+         if (ctx->pc == s_stack_reset[i].entry &&
+             fn == spu_lookup(ctx->pc, s_stack_reset[i].image_id)) {
+@@ -2124,9 +2137,9 @@ static int spu_smc_microstep(spu_context* ctx)
+                       " microstep set -- handing to the interpreter (steps=%d)\n",
+                       ctx->image_id, pc, w, steps); }
+         ctx->pc = pc;
+-        /* Stop at the drain's return point too: it sits mid-function, so it is
+-         * no lifted entry, and a job's return would otherwise run on through
+-         * the caller's code (GH3's song-freeze; see drain_ret_pc). */
++        /* Stop at the drain's return point too: it sits mid-function, so it is
++         * no lifted entry, and a job's return would otherwise run on through
++         * the caller's code (GH3's song-freeze; see drain_ret_pc). */
+         const uint32_t return_pc = ctx->drain_ret_pc;
+         uint32_t result = spu_interp_run_until(ctx, pc, return_pc);
+         /* A live interpreter rejoin is a transfer, not a host return. Nested
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -307,6 +307,18 @@ typedef struct spu_context {
+      * persistent workload-module image adopted at LS 0xA00, re-applied at
+      * dispatch after a call-bracket image restore. */
+     uint32_t host_depth;
++    /* KZ3 patch 1017: dispatch state that used to be thread-local. MinGW GCC has
++     * only emulated TLS (every access is a call to __emutls_get_address plus a
++     * table lookup), and these are touched several times per trampoline hop and
++     * per MFC channel access: 15-30 % of each SPU host thread's time in KZ3's
++     * movies. A context is pinned to one host thread, and a nested run on the same
++     * thread uses its own context, so per-context state means the same thing. */
++    void   (*tramp_fn)(struct spu_context*);  /* pending cross-function transfer */
++    uint32_t pch_ring[8];                     /* last trampoline-hop PCs */
++    unsigned pch_n;
++    uint32_t recent_pc[32];                   /* last drain steps ([pm-end]) */
++    unsigned recent_n;
++    void*    mfc_cache;                       /* this context's MFC engine */
+ 
+     /* Trampoline steps taken since this context started running. Only needed
+      * to tell a job's INITIAL entry at LS 0 from a later return to LS 0, which
+@@ -771,13 +783,15 @@ void spu_indirect_branch(spu_context* ctx);
+ 
+ /* Pending cross-function transfer target; NULL when none. Thread-local: each
+  * spu_context is pinned to one host thread for its lifetime. */
+-extern SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*);
++/* KZ3 patch 1017: a field of the context (was thread-local, see tramp_fn). Every
++ * user (runtime and lifted code) has its spu_context* in scope as `ctx`. */
++#define g_spu_trampoline_fn ((ctx)->tramp_fn)
+ 
+ /* Ring of the last PCs this SPU thread executed, for the unlifted-branch
+  * report. The dispatcher records indirect branches; SPU_DRAIN records every
+  * trampoline hop, which is the one that actually precedes a bad branch. */
+-extern SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
+-extern SPU_THREAD_LOCAL unsigned g_spu_pch_n;
++#define g_spu_pch   ((ctx)->pch_ring)
++#define g_spu_pch_n ((ctx)->pch_n)
+ 
+ /* Central per-transfer hooks (stubbed in spu_drain.c until their milestones). */
+ void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate */
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -17,9 +17,7 @@ typedef struct spu_irq_frame {
+ } spu_irq_frame;
+ 
+ /* Pending cross-function transfer target for this host thread's SPU context. */
+-SPU_THREAD_LOCAL void (*g_spu_trampoline_fn)(spu_context*) = 0;
+-SPU_THREAD_LOCAL uint32_t g_spu_pch[8];
+-SPU_THREAD_LOCAL unsigned g_spu_pch_n;
++/* g_spu_trampoline_fn, g_spu_pch, g_spu_pch_n: context fields (KZ3 patch 1017). */
+ 
+ /* yz_lockstep_tick now has its real body in spu_lockstep.c (milestone 2). */
+ 
+@@ -48,18 +46,16 @@ void* volatile    g_pm_flow_ctx = 0;
+ extern void spu_halt(spu_context*);
+ /* Last 32 drain steps on this host thread (pc), for post-mortems of a run that
+  * ended where it should not have (spurs_policy.c, [pm-end]). */
+-static _Thread_local uint32_t t_recent[32];
+-static _Thread_local uint32_t t_recent_n;
+-unsigned spu_recent_pcs(uint32_t* out, unsigned max)
+-{
+-    unsigned n = t_recent_n < 32 ? t_recent_n : 32, k = n < max ? n : max;
+-    for (unsigned i = 0; i < k; i++) out[i] = t_recent[(t_recent_n - k + i) & 31];
++unsigned spu_recent_pcs(const spu_context* ctx, uint32_t* out, unsigned max)
++{   /* KZ3 patch 1017: per context (was a thread-local ring, emulated TLS on MinGW) */
++    unsigned n = ctx->recent_n < 32 ? ctx->recent_n : 32, k = n < max ? n : max;
++    for (unsigned i = 0; i < k; i++) out[i] = ctx->recent_pc[(ctx->recent_n - k + i) & 31];
+     return k;
+ }
+ 
+ void spu_task_launch_check(spu_context* ctx, void* fn)
+ {
+-    t_recent[t_recent_n++ & 31] = (uint32_t)ctx->pc & SPU_LS_MASK;
++    ctx->recent_pc[ctx->recent_n++ & 31] = (uint32_t)ctx->pc & SPU_LS_MASK;
+     extern void spu_check_stack_reset(spu_context*, void (*)(spu_context*));
+     spu_check_stack_reset(ctx, (void (*)(spu_context*))fn);
+     /* A SPURS job returning to LS 0 is finished -- its crt tail-jumps to the
+diff --git a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -303,8 +303,8 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+     /* A lane's run should only end through exitToKernel. Anything else strands
+      * the jobs it had claimed (GH3's once-per-~10-songs freeze): say how. */
+     if (((uint32_t)ctx->pc & SPU_LS_MASK) != SPURS_PM_EXIT_TO_KERNEL_LS) {
+-        extern unsigned spu_recent_pcs(uint32_t*, unsigned);
+-        uint32_t r[32]; unsigned n = spu_recent_pcs(r, 32);
++        extern unsigned spu_recent_pcs(const spu_context*, uint32_t*, unsigned);
++        uint32_t r[32]; unsigned n = spu_recent_pcs(ctx, r, 32);
+         static volatile long s_pe; if (__atomic_add_fetch(&s_pe, 1, __ATOMIC_RELAXED) <= 64) {
+             fprintf(stderr, "[pm-end] lane %u ctx=%p halted=%d status=0x%X pc=0x%05X lr=0x%05X r3=0x%08X depth=%u recent:",
+                     spu_num, (void*)ctx, pm_halted, ctx->status, (uint32_t)ctx->pc & SPU_LS_MASK,

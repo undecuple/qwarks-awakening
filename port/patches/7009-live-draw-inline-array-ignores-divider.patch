@@ -1,0 +1,38 @@
+Live draw: INLINE_ARRAY vertices ignore the frequency divider. Vertex n of an inline stream reads element n; the RSX applies
+no divider, modulo or base index to inline data (RPCS3 RSXDrawCommands.cpp analyse_inputs_interleaved: the inlined branch
+registers every attribute with frequency 1, no modulo, and returns before frequency_divider_mask is read). A divider left in
+an attribute's format word by an earlier array draw made every inline vertex read element vertex/f (or vertex%f): upstream
+issue #457 item E1 (feanor-noldorin). Both fetch paths: fetch_attr (rsx_live_draw.c) and rsx_vertex_fetch_attr_one
+(rsx_vertex_compact.c; rsx_vertex_fetch_many falls back to it for a divided attribute). Host test:
+port/rc/tests/run_inline_divider_test.sh (R&C).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -9799,7 +9799,12 @@
+     const u32 divider_mask = rsx_dsp_reg(&g.rsx, 0x1FC0);
+     if (a.frequency >= 2)
+         g_ld_divider_fetches++;
+-    const u32 source_element = rsx_vertex_element_index(
++    /* R&C patch 7009: an INLINE_ARRAY vertex n reads element n of the stream. The RSX applies no frequency divider,
++     * modulo or base index to inline data (RPCS3 RSXDrawCommands.cpp analyse_inputs_interleaved: the inlined branch
++     * registers every attribute with frequency 1 and no modulo and returns before frequency_divider_mask is read;
++     * read, not copied). A divider left by an earlier array draw made every inline vertex read element 0 or
++     * vertex_id/f (upstream issue #457 E1). */
++    const u32 source_element = dc.inl ? vertex_id : rsx_vertex_element_index(
+         vertex_id, base_index, a.frequency,
+         (divider_mask >> i) & 1u);
+     const u8* p;
+diff --git a/libs/video/rsx_vertex_compact.c b/libs/video/rsx_vertex_compact.c
+--- a/libs/video/rsx_vertex_compact.c
++++ b/libs/video/rsx_vertex_compact.c
+@@ -363,7 +363,8 @@
+         return 1;
+     }
+ 
+-    const u32 element = rsx_vertex_element_index(
++    /* R&C patch 7009: inline vertices are consecutive; no divider, modulo or base index (see fetch_attr). */
++    const u32 element = plan->inline_data ? ref->vertex_id : rsx_vertex_element_index(
+         ref->vertex_id, ref->base_index, fetch->desc.frequency,
+         (plan->divider_mask >> attr) & 1u);
+     const u8* source = NULL;

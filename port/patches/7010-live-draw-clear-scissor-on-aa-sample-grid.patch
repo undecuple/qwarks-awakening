@@ -1,0 +1,92 @@
+Live draw: CLEAR_SURFACE scales the scissor to the sample grid of an antialiased surface, as draws already do. The surface
+is kept at its sample resolution (clip_w/clip_h scaled by aa_sx/aa_sy), the scissor registers are in pixels; the clear used
+them unscaled, so a 960x704 2x-horizontal target (1920x704 samples) with a 960x704 scissor was cleared on its left half only.
+ToD's Metropolis scene target 0:0x870000 is that case: the right half kept the previous frames' colour, depth and stencil and
+blended foliage and sky streaks piled up there (the cyan right half from x = 640 of the 1280 output). New header
+libs/video/rsx_clear_rect.h (pure, host-testable; R&C port/rc/tests/run_clear_rect_test.sh). LD_CLEAR_NO_SCISSOR=1 unchanged.
+
+diff --git a/libs/video/rsx_clear_rect.h b/libs/video/rsx_clear_rect.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_clear_rect.h
+@@ -0,0 +1,38 @@
++/*
++ * R&C patch 7010: the rectangle a CLEAR_SURFACE writes, on the live surface's grid.
++ *
++ * The clear is limited to the surface clip and the scissor (patch 2006). On an antialiased surface live draw keeps the
++ * surface at its sample resolution (rsx_dsp_get_surface scales clip_w/clip_h by aa_sx/aa_sy), but the scissor
++ * registers stay in pixels, as they do for draws, where live draw scales them to the sample grid. The clear did not:
++ * a 960x704 2x-horizontal target (clip 1920x704 samples) with a 960x704 scissor cleared samples 0..959 only, the left
++ * half of the picture. ToD's Metropolis scene target 0:0x870000 is exactly that; its right half kept the previous
++ * frames' colour, depth and stencil, so blended foliage and sky streaks piled up there frame after frame: the cyan
++ * right half (tods-cyan-c2: #clear 0x870000 mask=0xF3 scissor=0x03C00000/0x02C00000; the target was already cyan
++ * right of sample 960 before the frame's first draw).
++ * Returns 1 with *o set, 0 when there is no clip (clear the whole resource), -1 when the rectangle is empty.
++ */
++#ifndef RSX_CLEAR_RECT_H
++#define RSX_CLEAR_RECT_H
++#include "rsx_dispatch.h"
++
++typedef struct rsx_clear_rect_t { long left, top, right, bottom; } rsx_clear_rect_t;
++
++static inline int rsx_clear_rect(const rsx_dsp_surface* sf, int scissor_written, u32 scissor_h, u32 scissor_v,
++                                 rsx_clear_rect_t* o)
++{
++    if (!sf->clip_w || !sf->clip_h) return 0;
++    long l = 0, t = 0, r = (long)sf->clip_w, b = (long)sf->clip_h;
++    if (scissor_written) {
++        const long ax = sf->aa_sx ? (long)sf->aa_sx : 1, ay = sf->aa_sy ? (long)sf->aa_sy : 1;
++        const long sx = (long)(scissor_h & 0xFFFFu) * ax, sw = (long)(scissor_h >> 16) * ax;
++        const long sy = (long)(scissor_v & 0xFFFFu) * ay, sh = (long)(scissor_v >> 16) * ay;
++        if (sx > l) l = sx;
++        if (sy > t) t = sy;
++        if (sx + sw < r) r = sx + sw;
++        if (sy + sh < b) b = sy + sh;
++    }
++    if (r <= l || b <= t) return -1;
++    o->left = l; o->top = t; o->right = r; o->bottom = b;
++    return 1;
++}
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "rsx_live_draw.h"
++#include "rsx_clear_rect.h"   /* R&C patch 7010 */
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+ 
+@@ -14011,21 +14012,16 @@
+     { static int off = -1; if (off < 0) off = getenv("LD_CLEAR_NO_SCISSOR") ? 1 : 0;
+       rsx_dsp_surface csf;
+       rsx_dsp_get_surface(&g.rsx, &csf);
+-      if (!off && csf.clip_w && csf.clip_h) {
+-          LONG l = 0, t = 0, r = (LONG)csf.clip_w, b = (LONG)csf.clip_h;
+-          if (g.rsx.seen[M_SCISSOR_HORIZONTAL >> 2] || g.rsx.seen[M_SCISSOR_VERTICAL >> 2]) {
+-              const u32 sh = rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL);
+-              const u32 sv = rsx_dsp_reg(&g.rsx, M_SCISSOR_VERTICAL);
+-              const LONG sx = (LONG)(sh & 0xFFFFu), sw = (LONG)(sh >> 16);
+-              const LONG sy = (LONG)(sv & 0xFFFFu), svh = (LONG)(sv >> 16);
+-              if (sx > l) l = sx;
+-              if (sy > t) t = sy;
+-              if (sx + sw < r) r = sx + sw;
+-              if (sy + svh < b) b = sy + svh;
++      if (!off) {
++          /* R&C patch 7010: the scissor is in pixels, the surface at its sample grid (rsx_clear_rect.h). */
++          rsx_clear_rect_t cr;
++          const int k = rsx_clear_rect(&csf, g.rsx.seen[M_SCISSOR_HORIZONTAL >> 2] || g.rsx.seen[M_SCISSOR_VERTICAL >> 2],
++                                       rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL), rsx_dsp_reg(&g.rsx, M_SCISSOR_VERTICAL), &cr);
++          if (k < 0) return;   /* empty rectangle: the clear writes nothing */
++          if (k > 0) {
++              crect.left = (LONG)cr.left; crect.top = (LONG)cr.top; crect.right = (LONG)cr.right; crect.bottom = (LONG)cr.bottom;
++              n_crect = 1;
+           }
+-          if (r <= l || b <= t) return;   /* empty rectangle: the clear writes nothing */
+-          crect.left = l; crect.top = t; crect.right = r; crect.bottom = b;
+-          n_crect = 1;
+       } }
+     if (mask & (RSX_CLEAR_COLOR_R | RSX_CLEAR_COLOR_G | RSX_CLEAR_COLOR_B | RSX_CLEAR_COLOR_A)) {
+         const u32 c = rsx_dsp_clear_color(&g.rsx);

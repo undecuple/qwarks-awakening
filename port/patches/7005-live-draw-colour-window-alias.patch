@@ -1,0 +1,155 @@
+Live draw: a colour texture whose offset lies inside a live colour surface (not at its base) samples that rectangle of the
+surface instead of stale guest VRAM. ToD's post chain resolves the scene into the display buffer (0:0x0 / 0:0x438000, a
+1280x704 surface, pitch 5120) and samples it as a 1280x704 A8R8G8B8 texture at row 8 (0xA000 / 0x442000) for its bloom
+downsample and four screen-space sprites (tods-ng-b1 draws.csv). The surface lookup matched base offsets only, so those reads
+took never-written VRAM. Same pitch, same format family (A8R8G8B8 read of an RGBA8 surface), clipped to the surface, recopied
+when the surface's colour generation changes; 8 cached windows with their own SRV slots after the RG16 range.
+LD_CWIN=0 = old behaviour. Upstream candidate (general: any title sampling a sub-rectangle of a render target).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -203,7 +203,10 @@
+ /* Patch 2065: per-surface R16G16_FLOAT reinterpretation of an RGBA8 surface read as Y16_X16_FLOAT (SRV + UAV). */
+ #define SRV_SURF_RG16_BASE (SRV_ZWIN_BASE + MAX_SURFACES * LD_ZWIN_PER)
+ #define UAV_SURF_RG16_BASE (SRV_SURF_RG16_BASE + MAX_SURFACES)
+-#define SRV_CPU_HEAP_SLOTS (UAV_SURF_RG16_BASE + MAX_SURFACES)
++/* R&C patch 7005: colour windows -- a texture whose offset lies INSIDE a live colour surface (not at its base). */
++#define LD_CWIN_N          8
++#define SRV_CWIN_BASE      (UAV_SURF_RG16_BASE + MAX_SURFACES)
++#define SRV_CPU_HEAP_SLOTS (SRV_CWIN_BASE + LD_CWIN_N)
+ #define SRV_TABLE_SIZE   16
+ #define SRV_RING_TABLES  4096
+ 
+@@ -5733,6 +5736,120 @@
+     return -1;
+ }
+ 
++/* R&C patch 7005: a colour texture whose offset lies inside a live colour surface, not at its base.
++ * ToD's post chain (Metropolis, every frame) resolves the 1920x704 (960x704, 2x) scene into the display buffer at
++ * 0:0x0 / 0:0x438000 (a 1280x704 live surface, pitch 5120) and then samples that buffer as a 1280x704 A8R8G8B8
++ * texture at offset 0xA000 / 0x442000 = row 8 of the surface (the bloom downsample into 0x1673E80 and the four
++ * screen-space sprites after it; tods-ng-b1 draws.csv rows 6479 and 6493-6496). The surface lookup matches the base
++ * offset only, so the bind fell through to guest VRAM, which live draw never writes for a local surface: stale bytes.
++ * On the RSX the texture simply reads the rows the resolve wrote. Here: when the texture's pitch equals the surface's
++ * guest pitch and its rows start inside the surface, copy that rectangle (clipped to the surface) into a texture of
++ * the declared size and bind it; recopied whenever the surface's colour changed. Same format family only (an
++ * A8R8G8B8 read of an RGBA8 surface, as the base-offset alias binds it). LD_CWIN=0 = old behaviour.
++ * Returns the SRV slot, or -1. */
++typedef struct { ID3D12Resource* tex; u32 src, dx, dy, w, h, gen, used, serial; } ld_cwin_t;
++static ld_cwin_t g_ld_cwin[LD_CWIN_N];
++static int ld_cwin_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_CWIN"); on = (e && e[0] == '0') ? 0 : 1;
++                  fprintf(stderr, "[cwin] %s (LD_CWIN)\n", on ? "on" : "off"); }
++    return on;
++}
++static int ld_colour_window(const rsx_dsp_texture* t, u32 target)
++{
++    (void)target;
++    if (!ld_cwin_on() || !t->width || !t->height || !t->pitch) return -1;
++    if ((t->format & TEX_FMT_BASE_MASK) != RSX_TEX_FMT_A8R8G8B8) return -1;
++    int src = -1; u32 dx = 0, dy = 0;
++    for (u32 i = 0; i < g.n_surfaces; i++) {
++        const surface_t* s = &g.surfaces[i];
++        if (!s->tex || s->location != t->location || s->fmt != DXGI_FORMAT_R8G8B8A8_UNORM) continue;
++        const u32 gp = s->pitch ? s->pitch : s->w * 4u;
++        if (gp != t->pitch || t->offset <= s->offset) continue;
++        const u32 d = t->offset - s->offset, y = d / gp, x = (d % gp) / 4u;
++        if ((d % gp) % 4u || y >= s->h || x >= s->w) continue;
++        if (src < 0 || s->colour_gen > g.surfaces[src].colour_gen) { src = (int)i; dx = x; dy = y; }   /* the newest colour */
++    }
++    if (src < 0) return -1;
++    surface_t* s = &g.surfaces[src];
++    static u32 use_clock;
++    u32 k = LD_CWIN_N;
++    for (u32 j = 0; j < LD_CWIN_N; j++)
++        if (g_ld_cwin[j].tex && g_ld_cwin[j].src == (u32)src && g_ld_cwin[j].dx == dx && g_ld_cwin[j].dy == dy &&
++            g_ld_cwin[j].w == t->width && g_ld_cwin[j].h == t->height
++#if !defined(YZ_PERF_CLEAN)
++            && g_ld_cwin[j].serial == (u32)s->resource_serial
++#endif
++           ) { k = j; break; }
++    if (k == LD_CWIN_N) {
++        k = 0;
++        for (u32 j = 1; j < LD_CWIN_N; j++)
++            if (!g_ld_cwin[j].tex || (g_ld_cwin[k].tex && g_ld_cwin[j].used < g_ld_cwin[k].used)) k = j;
++        if (g_ld_cwin[k].tex) retire_texture(g_ld_cwin[k].tex);   /* the open command list may still read it */
++        g_ld_cwin[k].tex = NULL;
++        D3D12_HEAP_PROPERTIES hp = {0};
++        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++        D3D12_RESOURCE_DESC rd = {0};
++        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++        rd.Width = t->width; rd.Height = t->height;
++        rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++        rd.Format = s->fmt;
++        rd.SampleDesc.Count = 1;
++        ID3D12Resource* w = NULL;
++        if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, NULL, &IID_ID3D12Resource, (void**)&w))) {
++            static u32 n_fail;
++            if (n_fail++ < 8) fprintf(stderr, "[cwin] create failed %ux%u: guest VRAM bound\n", t->width, t->height);
++            return -1;
++        }
++        g_ld_cwin[k].tex = w; g_ld_cwin[k].src = (u32)src; g_ld_cwin[k].dx = dx; g_ld_cwin[k].dy = dy;
++        g_ld_cwin[k].w = t->width; g_ld_cwin[k].h = t->height; g_ld_cwin[k].gen = ~0u;
++#if !defined(YZ_PERF_CLEAN)
++        g_ld_cwin[k].serial = (u32)s->resource_serial;
++#endif
++        srv_write(SRV_CWIN_BASE + k, w);
++        static u32 n_log;
++        if (n_log++ < 16)
++            fprintf(stderr, "[cwin] tex %u:0x%08X %ux%u pitch %u -> surface[%d] %u:0x%08X %ux%u at (%u,%u) (window %u)\n",
++                    t->location, t->offset, t->width, t->height, t->pitch, src, s->location, s->offset, s->w, s->h,
++                    dx, dy, k);
++    }
++    g_ld_cwin[k].used = ++use_clock;
++    /* Recopy when the surface's colour changed since the last copy (colour_gen, patch 2044); a draw that reads a
++     * window of its own target gets the state before it, as a self-read (surface_feedback_srv) does. */
++    if (g_ld_cwin[k].gen != s->colour_gen || s->colour_gen == 0) {
++        const u32 x1 = dx + t->width < s->w ? dx + t->width : s->w;
++        const u32 y1 = dy + t->height < s->h ? dy + t->height : s->h;
++        D3D12_RESOURCE_BARRIER b[2] = {0};
++        for (int q = 0; q < 2; q++) {
++            b[q].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++            b[q].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        }
++        b[0].Transition.pResource = s->tex;
++        b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        b[1].Transition.pResource = g_ld_cwin[k].tex;
++        b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++        b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        D3D12_TEXTURE_COPY_LOCATION dst = {0}, sl = {0};
++        dst.pResource = g_ld_cwin[k].tex; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        sl.pResource = s->tex;            sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        D3D12_BOX box = { dx, dy, 0, x1, y1, 1 };
++        g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &sl, &box);
++        b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++        b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        g_ld_cwin[k].gen = s->colour_gen;
++        static unsigned long long n_copy;
++        if ((++n_copy & 0x3FFFull) == 1ull) fprintf(stderr, "[cwin] copies=%llu frame=%u\n", n_copy, g_ld_frames);
++    }
++    return (int)(SRV_CWIN_BASE + k);
++}
++
+ /* NV3089 scaled-image blit whose SOURCE is a live surface: the pixels exist
+  * only on the GPU, so the guest-memory copy in cellGcmSys moves black. GH3
+  * copies its 1040x592 scene out to 0x1651500 every frame, runs its post pass
+@@ -13317,6 +13434,10 @@
+                         "zslot=%u self=%d\n", g_ld_frames, rsx_dsp_reg(&g.rsx, 0x1D60), g.surfaces[target].location,
+                         g.surfaces[target].offset, u, t.offset, sampled, zeta_pref, current_zslot, self_zeta_read);
+         }
++        if (sampled < 0 && !zeta_pref) {   /* R&C patch 7005: a texture inside a live colour surface */
++            const int cw = ld_colour_window(&t, target);
++            if (cw >= 0) { slots[u] = (u32)cw; g_ld_bind_surf++; continue; }
++        }
+         if (sampled < 0 && !zeta_pref && g.surfaces[target].location == t.location &&
+             g.surfaces[target].offset == t.offset) {
+             /* Reads its own render target: sample a copy of it. */

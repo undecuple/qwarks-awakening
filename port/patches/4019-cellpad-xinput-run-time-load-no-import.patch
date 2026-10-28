@@ -1,0 +1,129 @@
+KZ3 patch 4019: cellPad loads XInput at run time instead of importing it, and the runtime no longer links xinput.
+MinGW's libxinput is xinput1_3.dll, which only the DirectX June 2010 redistributable installs: on a stock Windows 10
+22H2 (fresh VM, no redistributable) kz3.exe did not start at all, exit 0xC0000135 STATUS_DLL_NOT_FOUND (2026-10-22).
+Stock Windows 10/11 ship XInput1_4.dll and XInput9_1_0.dll. pad_xinput_load() (at cellPadInit when SDL does not serve
+the pads) tries XInput1_4.dll, XInput1_3.dll, XInput9_1_0.dll from System32 only, resolves XInputGetState and
+XInputSetState (the only two calls; 9_1_0 exports both), logs "[pad] XInput from <dll>" or "[pad] no XInput DLL ...",
+and without one every slot reads as unplugged (keyboard on port 0 still works). Guard: tools/net/test_pe_imports.py
+(KZ3 network pass 31, the RE notes s.27). Upstream candidate (general ps3recomp fix).
+
+R&C rebase: the same change, regenerated against R&C's tree, which carries 4010 but not KZ3's pad patches 4011-4016 (only the hunk
+context and offsets differ; every added line is KZ3's). From KZ3 755fcd8b.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -135,7 +135,8 @@
+ if(WIN32)
+     target_link_libraries(ps3recomp_runtime PRIVATE
+         ws2_32      # Winsock for network modules
+-        xinput      # XInput for gamepad
++        # KZ3 patch 4019: no xinput here; cellPad loads XInput1_4/1_3/9_1_0 at run time (libxinput = xinput1_3.dll,
++        # absent from stock Windows 10/11: the exe did not start).
+         ole32       # COM for WASAPI audio
+         bcrypt      # BCryptGenRandom for SSL RNG
+     )
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -4,7 +4,8 @@
+  * Reads real gamepad input from the host and translates to PS3 pad format.
+  *
+  * Backend selection:
+- *   - Windows: SDL3 Gamepad when SDL3.dll loads (PS3RECOMP_PAD_SDL3, patch 4010), else XInput
++ *   - Windows: SDL3 Gamepad when SDL3.dll loads (PS3RECOMP_PAD_SDL3, patch 4010), else XInput, loaded at run
++ *     time from System32 (XInput1_4.dll, XInput1_3.dll, XInput9_1_0.dll; patch 4019), else no pad (keyboard only)
+  *   - Everywhere else: SDL3 Gamepad from libSDL3.so.0, loaded at run time
+  */
+ 
+@@ -59,8 +60,11 @@
+   #include <dlfcn.h>
+ #endif
+ #if PAD_BACKEND_XINPUT
++  /* KZ3 patch 4019 (upstream candidate): types only. The exe must not import any XInput DLL: MinGW's libxinput
++   * is xinput1_3, which only the DirectX June 2010 redistributable installs, so on a stock Windows 10/11 the exe
++   * did not start at all (0xC0000135 STATUS_DLL_NOT_FOUND, fresh Windows 10 22H2, 2026-10-22). Stock Windows
++   * ships XInput1_4.dll and XInput9_1_0.dll; pad_xinput_load() picks the first of 1_4, 1_3, 9_1_0. */
+   #include <xinput.h>
+-  #pragma comment(lib, "xinput.lib")
+ #endif
+ #include "pad_host.h"
+ 
+@@ -101,6 +105,39 @@
+ #define PAD_STICK_DEADZONE  7849
+ #define PAD_TRIGGER_THRESHOLD 30
+ 
++/* KZ3 patch 4019: XInput is resolved at run time. Only XInputGetState and XInputSetState are called, and
++ * XInput9_1_0.dll exports both (with XInputGetCapabilities and XInputGetDSoundAudioDeviceGuids), so every one of
++ * the three DLLs serves. Loaded once, from System32 only (never the exe's folder, the working directory or PATH:
++ * no planted DLL), at the first cellPadInit that does not use SDL; the module stays loaded until exit. No DLL or
++ * a DLL without the two entry points = no XInput pads (keyboard on port 0 still works). */
++typedef DWORD (WINAPI *pad_xi_get_state_fn)(DWORD, XINPUT_STATE*);
++typedef DWORD (WINAPI *pad_xi_set_state_fn)(DWORD, XINPUT_VIBRATION*);
++static pad_xi_get_state_fn p_xi_get_state;
++static pad_xi_set_state_fn p_xi_set_state;
++static int s_xi_tried;
++
++static int pad_xinput_load(void)
++{
++    if (s_xi_tried) return p_xi_get_state != NULL;
++    s_xi_tried = 1;
++    static const wchar_t* const names[] = { L"XInput1_4.dll", L"XInput1_3.dll", L"XInput9_1_0.dll" };
++    for (size_t k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
++        HMODULE m = LoadLibraryExW(names[k], NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
++        if (!m) continue;
++        pad_xi_get_state_fn g = (pad_xi_get_state_fn)(void (*)(void))GetProcAddress(m, "XInputGetState");
++        pad_xi_set_state_fn st = (pad_xi_set_state_fn)(void (*)(void))GetProcAddress(m, "XInputSetState");
++        if (!g || !st) { FreeLibrary(m); continue; }
++        p_xi_get_state = g;
++        p_xi_set_state = st;
++        printf("[pad] XInput from %ls\n", names[k]);
++        fflush(stdout);
++        return 1;
++    }
++    printf("[pad] no XInput DLL (XInput1_4, XInput1_3, XInput9_1_0): no XInput pads\n");
++    fflush(stdout);
++    return 0;
++}
++
+ static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
+ {
+     float normalized;
+@@ -538,7 +575,8 @@
+         XINPUT_STATE state;
+         memset(&state, 0, sizeof(state));
+ 
+-        DWORD result = XInputGetState((DWORD)i, &state);
++        /* 4019: no XInput DLL = every slot reads as unplugged. */
++        DWORD result = p_xi_get_state ? p_xi_get_state((DWORD)i, &state) : ERROR_DEVICE_NOT_CONNECTED;
+         if (result != ERROR_SUCCESS) {
+             s_host_state[i].connected = 0;
+             continue;
+@@ -595,7 +633,7 @@
+     }
+ }
+ 
+-/* XInput needs no explicit init or shutdown. */
++/* XInput needs no explicit init or shutdown (4019: only the run-time load in pad_init_backend). */
+ 
+ #endif /* PAD_BACKEND_XINPUT */
+ 
+@@ -860,6 +898,9 @@
+ #if PAD_BACKEND_SDL
+     s_use_sdl = pad_sdl_init();
+ #endif
++#if PAD_BACKEND_XINPUT
++    if (!s_use_sdl) pad_xinput_load();
++#endif
+ }
+ 
+ static void pad_shutdown_backend(void)
+@@ -1744,7 +1785,7 @@
+         XINPUT_VIBRATION vib;
+         vib.wLeftMotorSpeed  = (WORD)lo;
+         vib.wRightMotorSpeed = (WORD)hi;
+-        XInputSetState((DWORD)port_no, &vib);
++        if (p_xi_set_state) p_xi_set_state((DWORD)port_no, &vib);
+     }
+ #endif
+ 

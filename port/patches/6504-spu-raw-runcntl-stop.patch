@@ -1,0 +1,149 @@
+Patch 6504 (rc-spu, 2026-10-22): SPU_RunCntl = 0 stops a raw SPU for real.
+
+Before: the store only set ctx->status; the host thread kept running the old program, and the next RunCntl = 1
+found it "already up" and returned without starting anything. Tools of Destruction reloads igCollBroadSpu at
+every level load (@0x0049DAF0: RunCntl = 0 via 0x005AAE60, new parameter block in the image, proxy GETs, NPC =
+0x100, RunCntl = 1 via 0x005AAE08), so the broad phase kept the first level's parameters for the whole session:
+tods-save-fastoon 9 reloads / 1 START, tods-play-1054 19 / 1, NEW GAME Metropolis 1 / 1 (works). The PM sees
+Ratchet fall through the ground after every load from a save (Fastoon, Cobalia).
+Now: RunCntl = 0 on a running raw SPU sets a stop request and wakes it; the SPU's
+next blocking channel read (spu_ch_wait, spu_channels.c, new hook g_spu_stop_requested) ends the run through the
+halt pad; the raw thread writes the stop pc to NPC, status = stopped (no stop-and-signal interrupt), logs
+"[spu-raw] spuN stopped by RunCntl at pc=..", clears started. RunCntl = 1 with a stop pending waits for that thread,
+then starts the new program as usual (START line). A RunCntl = 1 on a running SPU with no stop before it is still
+ignored, and now logged (first 8). Verified in tods-play-1114 (exe c0d3fa1c, then opt-in): 3 reloads of spu1, 3
+"stopped by RunCntl at pc=0x00978" + START lines, Ratchet stands on the ground at the Fastoon landing, no hang. General; upstream only with the PM's OK.
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -1151,9 +1151,23 @@
+     t_ft_busy0 = t1;
+ }
+ 
++/* Patch 6504: an external stop request (raw SPU SPU_RunCntl = 0, spu_raw.c). A
++ * blocking channel read is the stop point: the SPU's run ends there through the
++ * halt pad, with the pc at that read, as hardware leaves NPC at the instruction
++ * where it stopped. NULL (the default) = never asked. */
++int (*g_spu_stop_requested)(spu_context* ctx) = 0;
++static void spu_stop_if_requested(spu_context* ctx)
++{
++    if (g_spu_stop_requested && g_spu_stop_requested(ctx)) {
++        ctx->status = SPU_STATUS_STOPPED;
++        spu_halt(ctx);   /* longjmps to spu_run_with_halt; returns only outside a run */
++    }
++}
++
+ /* Block the calling SPU host thread until `channel` is readable. */
+ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
+ {
++    spu_stop_if_requested(ctx);   /* patch 6504 */
+     if (!yz_ch_block() || spu_ch_ready(ctx, channel)) return;
+     const uint64_t ft_t0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+ 
+@@ -1168,6 +1182,10 @@
+     {
+         unsigned long long start = GetTickCount64(), next_hb = 2000;
+         while (!spu_ch_ready(ctx, channel)) {
++            if (g_spu_stop_requested && g_spu_stop_requested(ctx)) {   /* patch 6504 */
++                yz_lockstep_block_end(ctx);
++                spu_stop_if_requested(ctx);
++            }
+             AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
+             if (!spu_ch_ready(ctx, channel))
+                 SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
+diff --git a/runtime/spu/spu_raw.c b/runtime/spu/spu_raw.c
+--- a/runtime/spu/spu_raw.c
++++ b/runtime/spu/spu_raw.c
+@@ -46,6 +46,7 @@
+ 
+ extern uint8_t* vm_base;
+ extern int g_spu_force_ch_block;              /* spu_channels.c */
++extern int (*g_spu_stop_requested)(spu_context* ctx);   /* spu_channels.c, patch 6504 */
+ extern int spu_run_with_halt(void (SPU_ABI *)(spu_context*), spu_context*);
+ /* For attributing an MMIO store to the guest code that made it. */
+ #include "../ppu/ppu_context.h"
+@@ -87,6 +88,7 @@
+     uint32_t     int_mask;
+     uint32_t     int_stat;
+     volatile long started;      /* the host thread is live */
++    volatile long stop_req;     /* patch 6504: SPU_RunCntl = 0 while the thread runs */
+     /* Contiguous LS runs filled by proxy GETs since the last start: a program
+      * streamed in this way is resolved by fingerprinting a run (raw_spu_start). */
+     spu_raw_get_runs gets;
+@@ -101,6 +103,21 @@
+ 
+ static raw_spu s_spu[SPU_RAW_COUNT];
+ 
++/* Patch 6504: SPU_RunCntl = 0 stops the SPU. Hardware stops it on the spot; the
++ * PPU may then rewrite local store and start it again at a new NPC (ToD's
++ * collision loader @0x005AAE60 / 0x0049DAF0 does exactly this for igCollBroadSpu
++ * at every level load). Before, the store only rewrote the status word: the
++ * host thread kept running the OLD program over the rewritten local store, and
++ * the next RunCntl = 1 found it "already up" and was dropped, so the program
++ * never restarted with the new level's parameters (Ratchet fell through the
++ * ground after every level load from a save; fixed in run tods-play-1114). */
++static int raw_stop_requested(spu_context* c)
++{
++    for (unsigned i = 0; i < SPU_RAW_COUNT; i++)
++        if (s_spu[i].ctx == c) return s_spu[i].stop_req != 0;
++    return 0;
++}
++
+ /* Fingerprint windows declared by the port (spu_raw.h, spu_raw_add_fp_window). */
+ spu_raw_fp_window g_spu_raw_fp_windows[SPU_RAW_FP_WINDOW_MAX];
+ unsigned          g_spu_raw_fp_window_count;
+@@ -250,6 +267,18 @@
+ 
+     int halted = spu_run_with_halt(s->entry, c);
+ 
++    if (s->stop_req) {   /* patch 6504: stopped by SPU_RunCntl = 0, not by `stop` */
++        c->status = SPU_STATUS_STOPPED;
++        be32_store(s->base + SPU_RAW_NPC, (uint32_t)(c->pc & SPU_LS_MASK));
++        publish(s);
++        fprintf(stderr, "[spu-raw] spu%u stopped by RunCntl at pc=0x%05X (steps=%llu)\n",
++                (unsigned)(s - s_spu), (unsigned)(c->pc & SPU_LS_MASK), (unsigned long long)c->steps);
++        fflush(stderr);
++        InterlockedExchange(&s->stop_req, 0);
++        InterlockedExchange(&s->started, 0);
++        return 0;
++    }
++
+     /* A raw SPU that returns has executed `stop`. Report it the way hardware
+      * does -- run bit clear, stop bit set, stop code in the high half -- so the
+      * PPU's status poll sees a real termination instead of a stuck 'running'. */
+@@ -300,7 +329,21 @@
+     }
+     s->current = img;
+ #ifdef _WIN32
+-    if (InterlockedCompareExchange(&s->started, 1, 0) != 0) return;  /* already up */
++    /* Patch 6504: a stop is pending (RunCntl = 0 came first): the old run ends at
++     * its next blocking channel read, which the wake below makes immediate for a
++     * parked SPU. Wait for that thread before starting the new program. */
++    if (s->stop_req && s->thread) {
++        if (s->ctx) spu_ch_wake(s->ctx);
++        WaitForSingleObject(s->thread, INFINITE);
++    }
++    if (s->thread && !s->started) { CloseHandle(s->thread); s->thread = NULL; }
++    if (InterlockedCompareExchange(&s->started, 1, 0) != 0) {   /* already up */
++        static int _n = 0;
++        if (_n++ < 8)
++            fprintf(stderr, "[spu-raw] spu%u run requested while running without a stop: ignored "
++                            "(image %d resolved)\n", n, img.image_id);
++        return;
++    }
+ #endif
+ 
+     if (!s->ctx) {
+@@ -359,6 +402,11 @@
+     switch (off) {
+     case SPU_RAW_RUNCNTL:
+         if (val == RUNCNTL_RUN) raw_spu_start(s);
++        else if (s->ctx && s->started) {   /* patch 6504: a real stop */
++            g_spu_stop_requested = raw_stop_requested;
++            InterlockedExchange(&s->stop_req, 1);
++            spu_ch_wake(s->ctx);
++        }
+         else if (s->ctx)        s->ctx->status = SPU_STATUS_STOPPED;
+         break;
+ 

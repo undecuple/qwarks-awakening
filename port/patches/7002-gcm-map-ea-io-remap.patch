@@ -1,0 +1,53 @@
+Let cellGcmMapEaIoAddress map a range again, as LV2 sys_rsx_context_iomap does (no already-mapped check): ToD maps
+pages of its IO window a second time at the NEW GAME level load and quit with exit code 1 on the ADDRESS_OVERWRAP
+return. A record with the same EA is replaced; the 1 MB tables follow LV2 page by page (an IO page moved to a new EA
+clears the old EA entry).
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -3849,22 +3849,35 @@
+         printf("[cellGcmSys] MapEaIoAddress REFUSED: size 0x%X is not a non-zero multiple of 1MB\n", size);
+         return CELL_GCM_ERROR_INVALID_ALIGNMENT;
+     }
+-    if (find_mapping_by_ea(ea) != NULL) {
+-        printf("[cellGcmSys] MapEaIoAddress REFUSED: ea 0x%08X is already mapped\n", ea);
+-        return CELL_GCM_ERROR_ADDRESS_OVERWRAP;
++    /* LV2's sys_rsx_context_iomap has no already-mapped check (RPCS3 sys_rsx.cpp): per 1 MB page it points the IO
++     * entry at the new EA, clears the reverse entry of the EA that IO page pointed at before, and writes the new
++     * reverse entry; cellGcmMapEaIoAddress then records the size under the EA (IoMapTable[ea] = size). So mapping a
++     * range again succeeds. Refusing it made ToD quit at its NEW GAME level load, which maps pages of its IO window
++     * a second time (exit code 1 on the ADDRESS_OVERWRAP return). Same here: a record with the same EA is replaced,
++     * other records stay as they are, and the tables follow LV2 page by page. */
++    IoMapping* mapping = find_mapping_by_ea(ea);
++    if (mapping) {
++        printf("[cellGcmSys] MapEaIoAddress: ea 0x%08X mapped again (was io 0x%08X size 0x%X)\n",
++               ea, mapping->io, mapping->size);
++    } else {
++        mapping = find_free_mapping();
++        if (!mapping) {
++            printf("[cellGcmSys] MapEaIoAddress REFUSED: no free IO mapping slots\n");
++            return CELL_GCM_ERROR_FAILURE;
++        }
++        s_io_mapping_count++;
+     }
+-
+-    IoMapping* mapping = find_free_mapping();
+-    if (!mapping) {
+-        printf("[cellGcmSys] MapEaIoAddress REFUSED: no free IO mapping slots\n");
+-        return CELL_GCM_ERROR_FAILURE;
++    for (u32 i = 0; i < (size >> 20); i++) {
++        u32 io_page = (io >> 20) + i, ea_page = (ea >> 20) + i;
++        u16 old_ea = io_page < 65536 ? s_ea_address_table[io_page] : 0xFFFF;
++        if (old_ea != 0xFFFF && old_ea != ea_page && s_io_address_table[old_ea] == io_page)
++            s_io_address_table[old_ea] = 0xFFFF;
+     }
+ 
+     mapping->ea     = ea;
+     mapping->io     = io;
+     mapping->size   = size;
+     mapping->active = 1;
+-    s_io_mapping_count++;
+ 
+     populate_offset_table(ea, io, size);
+ 
