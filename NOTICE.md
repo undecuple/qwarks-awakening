@@ -4,6 +4,7 @@
 |---|---|---|
 | [ps3recomp](https://github.com/sp00nznet/ps3recomp) | PPU/SPU recompiler and PS3 runtime (submodule `third_party/ps3recomp`, pinned at v0.18.0, commit 4e8f3ca; our changes are the patches in `port/patches/`) | MIT |
 | [RPCS3](https://github.com/RPCS3/rpcs3) | reference for PS3 behaviour and data layouts, read only; no RPCS3 code is included | (GPL-2.0, not used as code) |
+| [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | the optional FSR 1 upscaler, off by default (`RSX_UPSCALE=fsr1`): `ffx_a.h` and `ffx_fsr1.h` unmodified at commit a21ffb8, added to the renderer by patch 2145 (from the Killzone 3 series) under `libs/video/fsr1/` with their licence text; Copyright (c) 2021 Advanced Micro Devices, Inc. | MIT |
 | [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) (Jovanny Lemonad) | the wordmark in `assets/` (banner, social preview); the font itself is not included | SIL OFL 1.1 |
 | [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani) (Indian Type Foundry) | small text in `assets/`; the font itself is not included | SIL OFL 1.1 |
 
@@ -19,7 +20,11 @@ author's sister ports. Each patch header names its source.
   Killzone 2 port, MIT), through the Killzone 3 series: patches 1059 (design of the per-waiter `sys_lwcond` FIFO),
   1139 (console `sys_fs_open` flag values), 1143 (kernel wake events under Wine), 2088 and 2089 (`WPOS` and the clear
   scissor on antialiased targets), 2124 (fragment-program source precision modifiers), 2129 (idle wake at a FIFO
-  park) and 2141 (pipeline keys tied to the shader translator).
+  park), 2141 (pipeline keys tied to the shader translator), 1148 (a condition variable on per-thread events, so
+  timed waits stay out of ntdll's futex queue under Wine), 1150 (SPURS task ids passed as arguments), 2142 (a texture
+  level too large for the upload ring submits the list first instead of being skipped), 2143 (fragment-program DDX/DDY
+  derivatives decompiled instead of dropped) and 2144 (a draw that samples its own render target reads it when other
+  surfaces share the address).
 - **J-Stars Victory VS+ port** (MIT): its patch 0004, carried as patch 1145: the HLE fast path stores the caller's
   TOC in the ABI slot as the full path does.
 - **Toro Lets Party port** (same author): [PR #387](https://github.com/sp00nznet/ps3recomp/pull/387), the PPU

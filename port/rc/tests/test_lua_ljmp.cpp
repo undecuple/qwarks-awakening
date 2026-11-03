@@ -26,10 +26,18 @@
 #undef vm_read16
 #undef vm_read32
 #undef vm_read64
+#undef vm_write8   /* ps3recomp v0.18.0: the lifted code defines the stores as macros too (vm_write*_mm) */
+#undef vm_write16
+#undef vm_write32
+#undef vm_write64
 
 extern "C" {
 uint8_t* vm_base;
 int vm_inline_ok = 1;
+int vm_inline_st_ok = 1;                    /* ps3recomp v0.18.0 lifted code: inline stores, null-page sweep, */
+uint32_t g_null_sweep_hi = 0;               /* barrier probe and SPU coherency bitmap (off/empty here) */
+uint32_t g_barrier_sync_watch = 0;
+const unsigned char* g_spu_coh_bits = 0;
 uint32_t ppu_vm_size = 0;
 uint32_t ppu_hle_inject_base = 0xF0000000u;
 unsigned char g_ppu_vm_page[65536];

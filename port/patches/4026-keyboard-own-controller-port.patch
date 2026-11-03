@@ -1,5 +1,5 @@
 KZ3 patch 4026 (network pass 43): keyboard and mouse count as their own controller, so split-screen co-op needs one pad
-only (2026-10-22). Before, patch 2037 OR'ed the keys into port 0, so one pad + keyboard was one controller and the
+only. Before, patch 2037 OR'ed the keys into port 0, so one pad + keyboard was one controller and the
 co-op gate (numactivecontrollers < 2 -> dlg_controlerror) refused.
 
 New libs/input/pad_kbport.h (platform-free; host test tools/net/test_kb_port.c): the game's player-per-slot table

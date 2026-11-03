@@ -51,18 +51,18 @@ index 7e9abf0..620b674 100644
        # runtime/spu/tests/test_spu_int_neon.c and test_spu_float_neon.c check the
        # SIMD helper forms against the exact scalar references. linux.yml runs the
 diff --git a/runtime/spu/spu_raw.c b/runtime/spu/spu_raw.c
-index 89029a8..985e69d 100644
+index 2b4bc4e..ddd7987 100644
 --- a/runtime/spu/spu_raw.c
 +++ b/runtime/spu/spu_raw.c
-@@ -30,6 +30,7 @@
- #include "spu_context.h"
+@@ -31,6 +31,7 @@
  #include "spu_workload.h"
+ #include "spu_fpmode.h"   /* spu_fpmode_init_thread (KZ3 patch 1095) */
  #include "spu_lifted_job.h"
 +#include "spu_raw_resolve.h"   /* per-SPU image choice (patch 6503) */
  #include "../syscalls/lv2_syscall_table.h"
  #include "../../include/ps3emu/error_codes.h"
  #include "ps3emu/nid.h"      /* ps3_compute_nid */
-@@ -89,8 +90,11 @@ typedef struct raw_spu {
+@@ -90,8 +91,11 @@ typedef struct raw_spu {
      volatile long started;      /* the host thread is live */
      /* Contiguous LS runs filled by proxy GETs since the last start: a program
       * streamed in this way is resolved by fingerprinting a run (raw_spu_start). */
@@ -76,7 +76,7 @@ index 89029a8..985e69d 100644
  #ifdef _WIN32
      HANDLE       thread;
  #endif
-@@ -196,9 +200,10 @@ static void raw_out_mbox_hook(uint32_t group, uint32_t spu_id, int is_intr, uint
+@@ -197,9 +201,10 @@ static void raw_out_mbox_hook(uint32_t group, uint32_t spu_id, int is_intr, uint
   * length is derived from the section-header table end, which is where an SPU ELF
   * emitted by the SDK ends.
   * -----------------------------------------------------------------------*/
@@ -90,7 +90,7 @@ index 89029a8..985e69d 100644
  
  void spu_raw_note_image(uint32_t src_ea, uint32_t entry)
  {
-@@ -220,9 +225,9 @@ void spu_raw_note_image(uint32_t src_ea, uint32_t entry)
+@@ -221,9 +226,9 @@ void spu_raw_note_image(uint32_t src_ea, uint32_t entry)
      uint64_t fp = spu_workload_fingerprint(e, len);
      int image_id = 0;
      spu_lifted_entry_fn fn = spu_workload_find_img(fp, &image_id);
@@ -103,7 +103,7 @@ index 89029a8..985e69d 100644
  
      fprintf(stderr, "[spu-raw] image_import src=0x%08X len=%u entry=0x%05X "
                      "fp=0x%016llX -> %s\n",
-@@ -345,75 +350,24 @@ static void* raw_spu_thread(void* arg) { raw_spu_run((raw_spu*)arg); return NULL
+@@ -346,75 +351,24 @@ static void* raw_spu_thread(void* arg) { raw_spu_run((raw_spu*)arg); return NULL
  static void raw_spu_start(raw_spu* s)
  {
      uint32_t n = (uint32_t)(s - s_spu);
@@ -197,7 +197,7 @@ index 89029a8..985e69d 100644
      if (!entry) {
          fprintf(stderr, "[spu-raw] spu%u run requested but no lifted image is "
                          "registered -- the SPU cannot run. Lift the image and "
-@@ -421,6 +375,7 @@ static void raw_spu_start(raw_spu* s)
+@@ -422,6 +376,7 @@ static void raw_spu_start(raw_spu* s)
          fflush(stderr);
          return;
      }
@@ -205,7 +205,7 @@ index 89029a8..985e69d 100644
      if (RAW_CAS(&s->started, 1, 0) != 0) {        /* already up */
          fprintf(stderr, "[spu-raw] spu%u run requested while it is still running: "
                          "ignored\n", n);
-@@ -588,10 +543,7 @@ void spu_raw_reg_store(uint32_t ea, uint32_t val, int width)
+@@ -589,10 +544,7 @@ void spu_raw_reg_store(uint32_t ea, uint32_t val, int width)
          uint8_t* ls = vm_base + s->base + lsa;
          if (cmd & 0x40u) {                                      /* GET: EA -> LS */
              memcpy(ls, vm_base + ea, size);
@@ -217,7 +217,7 @@ index 89029a8..985e69d 100644
          }
          else if (cmd & 0x20u) memcpy(vm_base + ea, ls, size);   /* PUT: LS -> EA */
          if (dbg())
-@@ -670,6 +622,9 @@ static int64_t sc_raw_spu_create(ppu_context* ctx)
+@@ -671,6 +623,9 @@ static int64_t sc_raw_spu_create(ppu_context* ctx)
          if (s_spu[n].used) continue;
          s_spu[n].used = 1;
          s_spu[n].base = SPU_RAW_BASE + n * SPU_RAW_STRIDE;
@@ -227,7 +227,7 @@ index 89029a8..985e69d 100644
  
          /* Zero the problem state. Local store is left alone: the guest may have
           * already staged code there, and hardware does not clear it either. */
-@@ -820,6 +775,9 @@ static void hle_raw_spu_image_load(ppu_context* ctx)
+@@ -821,6 +776,9 @@ static void hle_raw_spu_image_load(ppu_context* ctx)
          else if (type == 2)   { memset(vm_base + base + lsa, 0, size); }
      }
      be32_store(base + SPU_RAW_NPC, entry);

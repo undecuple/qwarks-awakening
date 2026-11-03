@@ -1,45 +1,17 @@
-lv2 mutex/cond rules KZ3 patch 1122 (lv2_sync_core.h, which took the hand-off idea from this patch) does not carry:
-sys_cond_signal_to wakes only the named thread and returns EPERM when it does not wait on the cond (1122 kept upstream's
-broadcast); sys_mutex_create validates its arguments (EFAULT for a null id or attribute pointer, EINVAL for a protocol not
+lv2 mutex rules KZ3 patch 1122 (lv2_sync_core.h, which took the hand-off idea from this patch) does not carry:
+sys_mutex_create validates its arguments (EFAULT for a null id or attribute pointer, EINVAL for a protocol not
 FIFO/PRIORITY/PRIORITY_INHERIT or a recursive word not RECURSIVE/NOT_RECURSIVE); mutex slots are allocated next-fit, so a
 destroyed id is not handed out again at once; a recursive re-lock or trylock at count 0x7FFFFFFF is EKRESOURCE (checked in
 sys_mutex.c before the shared core counts up). Semantics per lv2 as RPCS3 models it (sys_mutex.cpp / sys_cond.cpp, read, no
 code copied). Host test: port/rc/tests/run_lv2_sync_test.sh. Upstream candidate.
-Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: shrunk to the four items above. The rest of the old patch is in 1122: the
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: shrunk to four items. Synced to KZ3 c985c9cd+, 2026-11-03: the sys_cond_signal_to item is dropped, KZ3's
+1122 now wakes only the named thread and returns EPERM (its core no longer falls back to the oldest waiter). The rest of the old patch is in 1122: the
 signal hands the bound mutex to the woken waiter (owned at once if free, else queued and handed over at the unlock; the
 waiter never re-locks it, which was the root cause of ToD's NEW GAME level-load stall), busy trylock EBUSY while waiters are
 queued, destroy ESRCH / EBUSY / EPERM, cond create/destroy count the binding, host locks persist across slot reuse,
 non-recursive re-lock EDEADLK, non-owner unlock EPERM, a timed-out cond wait takes the mutex back at its depth.
 ASSUMPTION (1122's): FIFO hand-off for every protocol (lv2 orders PRIORITY waiters).
 
-diff --git a/runtime/syscalls/sys_cond.c b/runtime/syscalls/sys_cond.c
-index fc3d027..9e6c760 100644
---- a/runtime/syscalls/sys_cond.c
-+++ b/runtime/syscalls/sys_cond.c
-@@ -170,8 +170,21 @@ static int64_t signal_cond(uint32_t id, int all)
- int64_t sys_cond_signal(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 0); }
- int64_t sys_cond_signal_all(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 1); }
- 
--/* Preserve upstream's current broadcast fallback for signal_to. */
--int64_t sys_cond_signal_to(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 1); }
-+/* R&C patch 7007: r4 = the guest thread to wake; only that thread (was a broadcast). EPERM when it does not wait on
-+ * this cond (lv2, RPCS3 sys_cond_signal_to, read, no code copied); the core's to_tid would fall back to the oldest
-+ * waiter, so the check is made here first. */
-+int64_t sys_cond_signal_to(ppu_context* ctx)
-+{
-+    const uint32_t to = LV2_ARG_U32(ctx, 1);
-+    sys_mutex_info* m = NULL;
-+    sys_cond_info* c = acquire_cond(LV2_ARG_U32(ctx, 0), &m);
-+    if (!c) return (int32_t)CELL_ESRCH;
-+    int found = 0;
-+    for (const lv2s_waiter* w = c->q.head; w && to; w = w->next) if (w->tid == to) { found = 1; break; }
-+    if (found) lv2s_cond_signal_locked(&m->core, &c->q, 0, to);
-+    lv2s_unlock(&m->core);
-+    return found ? CELL_OK : (int32_t)CELL_EPERM;
-+}
- 
- void sys_cond_init(lv2_syscall_table* tbl)
- {
 diff --git a/runtime/syscalls/sys_mutex.c b/runtime/syscalls/sys_mutex.c
 index bf3651b..b15025f 100644
 --- a/runtime/syscalls/sys_mutex.c

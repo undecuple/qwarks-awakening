@@ -40,8 +40,9 @@ static void one_draw(int nattr, const u32 types[], const u32 sizes[], const u32 
     rsx_vertex_ref refs[512];
     for (u32 i = 0; i < nref; i++) { refs[i].vertex_id = first + (rnd() % (nref * 2)); refs[i].base_index = base_index; }
     rsx_vertex_fetch_plan_prepare(&plan, refs, nref);
-    static float cpu[512][16][4];
-    if (!rsx_vertex_fetch_many(&plan, refs, nref, (u8*)cpu, (u32)sizeof cpu[0])) return;   /* slot s of vertex i at cpu[i][s] */
+    static u8 cpu[512 * 16 * 16];
+    /* ps3recomp v0.18.0: the output stride is the layout's (vertex i at cpu + i * layout.stride, slot s 16 bytes in) */
+    if (!rsx_vertex_fetch_many(&plan, refs, nref, cpu)) return;
     static rsx_vg_draw d;
     const int why = rsx_vg_plan(&plan, 8u << 20, &d);
     draws_checked++;
@@ -56,7 +57,7 @@ static void one_draw(int nattr, const u32 types[], const u32 sizes[], const u32 
             const rsx_vg_attr* t = &d.table[a];
             for (u32 c = 0; c < 4; c++) {
                 const float g = vg_fetch(t->base, t->stride, t->fmt, t->lim, t->dflt[c], e, c);
-                const float h = ((float*)cpu[i])[s * 4 + c];
+                float h; memcpy(&h, cpu + i * layout.stride + s * 16 + c * 4, 4);
                 if (memcmp(&g, &h, 4)) {
                     if (fails < 20) printf("MISMATCH %s ref %u (vid %u base %u) attr %u type %u size %u stride %u off %u comp %u: gpu %g cpu %g\n",
                                            tag, i, refs[i].vertex_id, refs[i].base_index, a, types[a], sizes[a], strides[a], offs[a], c, g, h);

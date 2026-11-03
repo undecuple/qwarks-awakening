@@ -9,7 +9,7 @@ negate. The decompiler ignored the field, so a source the program meant as satur
 reached the arithmetic unclamped. In KZ2 the soft-particle fade (MUL r2.w, r0, |r2| with SRC1 modifier 3) drew every
 smoke puff over distant scenery as saturated white.
 
-KZ3 (pass 116 scan of 99 unique fragment programs dumped from K2/K4 draws, work/rsx/r116/fpscan.py): 89 carry a
+KZ3 (pass 116 scan of 99 unique fragment programs dumped from K2/K4 draws, scan script of pass 116): 89 carry a
 non-zero field; the effective ones (1-4) are on MAD/MUL/ADD/DP3 sources (modifier 4 saturate on 38 instructions,
 3 fixed9 on 5); the most common value, 5 on NRM's SRC0 (268 instructions), is left unchanged as RPCS3 does.
 
