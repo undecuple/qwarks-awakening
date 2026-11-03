@@ -1,0 +1,55 @@
+LD_LOCAL_SYNC_WRITEBACK=all|<hex>[,<hex>...] (diagnostic A/B, default off): at the guest sync points where live draw writes dirty
+main-memory colour surfaces back (rsx_live_draw_before_guest_sync, patch 2017), also write back the local-memory colour surfaces
+the GPU drew (all, or the ones at those offsets, up to 8). Local surfaces otherwise reach guest memory only through an NV0039
+copy that reads them. For ToD's right-half cyan smear in Metropolis (R&C rounds 9-10): ToD's post chain samples the
+display buffer at 0xA000 (row 8 of the surface at 0x0), which aliases no surface and is read from guest VRAM. Without the
+variable nothing changes.
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: same logic; the index array follows KZ3 patch 2120 (MAX_SURFACES,
+never drops) instead of the old literal 64.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 565d25f..b634b2b 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -17996,10 +17996,38 @@ u32 rsx_live_draw_before_guest_sync(void)
+     static int en = -1;
+     if (en < 0) { const char* e = getenv("LD_MAIN_SURFACE_WRITEBACK"); en = e ? atoi(e) : 1; }
+     if (!en || !g.ready) return 0;
++    /* R&C patch 7004 (diagnostic A/B, default off): LD_LOCAL_SYNC_WRITEBACK=all also writes back every LOCAL-memory
++     * colour surface the GPU drew since its last write-back at the same sync points; =<hex>[,<hex>...] (up to 8, e.g.
++     * 0x0,0x438000) limits it to the local surfaces at those offsets. Local surfaces otherwise reach guest memory only
++     * through an NV0039 copy that reads them, so a CPU/SPU reader, or a texture whose offset is not a surface's own
++     * offset (no alias, read from guest bytes), sees stale VRAM. ToD's right-half cyan. Slow: a
++     * readback per dirty surface per sync point. */
++    static int lw_n = -1; static int lw_all = 0; static u32 lw_off[8];
++    if (lw_n < 0) {
++        lw_n = 0;
++        const char* e = getenv("LD_LOCAL_SYNC_WRITEBACK");
++        if (e && *e) {
++            if (!strcmp(e, "all")) lw_all = 1;
++            else for (const char* q = e; *q && lw_n < 8; ) {
++                char* end = NULL; const unsigned long v = strtoul(q, &end, 16);
++                if (end == q) break;
++                lw_off[lw_n++] = (u32)v;
++                q = end; while (*q == ',' || *q == ' ') q++;
++            }
++            fprintf(stderr, "[local-sync-writeback] on: %s (%d offsets)\n", e, lw_n);
++        }
++    }
+     u32 idx[MAX_SURFACES], n = 0;   /* patch 2120: sized for the whole table, never drops */
+-    for (u32 i = 0; i < g.n_surfaces && i < MAX_SURFACES; i++)
+-        if (g.surfaces[i].tex && g.surfaces[i].location == 1u && g.surfaces[i].gv_gpu_dirty)
+-            idx[n++] = i;
++    for (u32 i = 0; i < g.n_surfaces && i < MAX_SURFACES; i++) {
++        const surface_t* s = &g.surfaces[i];
++        if (!s->tex || !s->gv_gpu_dirty) continue;
++        int want = s->location == 1u;
++        if (!want && s->location == 0u) {
++            want = lw_all;
++            for (int k = 0; k < lw_n && !want; k++) want = s->offset == lw_off[k];
++        }
++        if (want) idx[n++] = i;
++    }
+     if (!n) return 0;
+     ld_wb_cap_note(n, 1);
+     LDW_T0(wb_t0);

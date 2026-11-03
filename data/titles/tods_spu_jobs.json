@@ -1,0 +1,1040 @@
+{
+ "images": [
+  {
+   "index": 0,
+   "va": "0x100e9980",
+   "header_words": [
+    "0x80",
+    "0x116e0",
+    "0x70",
+    "0x1820"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 71424,
+   "size_argument_at_registration": 71360,
+   "registering_function": "0x6f39b4",
+   "registration_call": "0x6f3a30",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "sp+0x70",
+   "module_name_string": "next-synth",
+   "strings_in_registering_function": [
+    "next-synth"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0x116e0",
+    "+0x18": "0x70",
+    "+0x1c": "0x1820",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0x989980",
+   "signature16_sha256_12": "21cd8ad81632",
+   "stored_size_for_lift": 71360,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 1,
+   "va": "0x100fb080",
+   "header_words": [
+    "0x80",
+    "0x10180",
+    "0x30",
+    "0x2d0"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 66304,
+   "size_argument_at_registration": null,
+   "registering_function": "0x6f6a38",
+   "registration_call": null,
+   "registration_callee": null,
+   "registry_object_arg_r3": null,
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0x10180",
+    "+0x18": "0x30",
+    "+0x1c": "0x2d0",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0x99b080",
+   "signature16_sha256_12": "90eaa67c7e18",
+   "stored_size_for_lift": null,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 2,
+   "va": "0x1010b380",
+   "header_words": [
+    "0x13728",
+    "0x1b130",
+    "0x21d0",
+    "0x0"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 111104,
+   "size_argument_at_registration": null,
+   "registering_function": "0x7033a8",
+   "registration_call": "0x7033ec",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": null,
+   "module_name_string": "LibMP3 stereo job",
+   "strings_in_registering_function": [
+    "LibMP3 stereo job",
+    "LibMP3 surround job",
+    "ps3/libmp3/libmp3_wwsjob.cpp",
+    "LibMP3 JobList"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x13728",
+    "+0x14_footprint": "0x1b130",
+    "+0x18": "0x21d0",
+    "+0x1c": "0x0",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x13728",
+   "entry_ls": "0x17728",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0x9ab380",
+   "signature16_sha256_12": "82d7d34030c7",
+   "stored_size_for_lift": null,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 3,
+   "va": "0x10126580",
+   "header_words": [
+    "0xa5e0",
+    "0xe8d0",
+    "0x790",
+    "0x1e20"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 124288,
+   "size_argument_at_registration": null,
+   "registering_function": "0x7033a8",
+   "registration_call": "0x703434",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": null,
+   "module_name_string": "LibMP3 surround job",
+   "strings_in_registering_function": [
+    "LibMP3 stereo job",
+    "LibMP3 surround job",
+    "ps3/libmp3/libmp3_wwsjob.cpp",
+    "LibMP3 JobList"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0xa5e0",
+    "+0x14_footprint": "0xe8d0",
+    "+0x18": "0x790",
+    "+0x1c": "0x1e20",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0xa5e0",
+   "entry_ls": "0xe5e0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0x9c6580",
+   "signature16_sha256_12": "46deb284aef2",
+   "stored_size_for_lift": null,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 4,
+   "va": "0x10144b00",
+   "header_words": [
+    "0x1bde8",
+    "0x1d510",
+    "0x30",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 120064,
+   "size_argument_at_registration": 120048,
+   "registering_function": "0x5ef558",
+   "registration_call": "0x5ef610",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x106f5800",
+   "module_name_string": null,
+   "strings_in_registering_function": [
+    "fxvis"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x1bde8",
+    "+0x14_footprint": "0x1d510",
+    "+0x18": "0x30",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x1bde8",
+   "entry_ls": "0x1fde8",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0x9e4b00",
+   "signature16_sha256_12": "fe09147e381b",
+   "stored_size_for_lift": 120048,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 5,
+   "va": "0x10162000",
+   "header_words": [
+    "0xdff8",
+    "0xe1c0",
+    "0x70",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 57856,
+   "size_argument_at_registration": 57760,
+   "registering_function": "0x5fb1e8",
+   "registration_call": "0x5fb2a0",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x10708600",
+   "module_name_string": null,
+   "strings_in_registering_function": [
+    "PhysColl"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0xdff8",
+    "+0x14_footprint": "0xe1c0",
+    "+0x18": "0x70",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0xdff8",
+   "entry_ls": "0x11ff8",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa02000",
+   "signature16_sha256_12": "f3f5df712d5f",
+   "stored_size_for_lift": 57760,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 6,
+   "va": "0x10170200",
+   "header_words": [
+    "0x2f88",
+    "0x30b20",
+    "0x160",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 13440,
+   "size_argument_at_registration": 13344,
+   "registering_function": "0x48d748",
+   "registration_call": "0x48d7cc",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x1036be00",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x2f88",
+    "+0x14_footprint": "0x30b20",
+    "+0x18": "0x160",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x2f88",
+   "entry_ls": "0x6f88",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa10200",
+   "signature16_sha256_12": "f9eda2a92d63",
+   "stored_size_for_lift": 13344,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 7,
+   "va": "0x10173680",
+   "header_words": [
+    "0xd38",
+    "0x396a0",
+    "0x70",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 3840,
+   "size_argument_at_registration": 3728,
+   "registering_function": "0x4be000",
+   "registration_call": "0x4be084",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x10615a00",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0xd38",
+    "+0x14_footprint": "0x396a0",
+    "+0x18": "0x70",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0xd38",
+   "entry_ls": "0x4d38",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa13680",
+   "signature16_sha256_12": "4738c5664a12",
+   "stored_size_for_lift": 3728,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 8,
+   "va": "0x10174580",
+   "header_words": [
+    "0x998",
+    "0xbb0",
+    "0x1c850",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 110592,
+   "size_argument_at_registration": 2960,
+   "registering_function": "0x608ab8",
+   "registration_call": "0x608b54",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x1071b000",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x998",
+    "+0x14_footprint": "0xbb0",
+    "+0x18": "0x1c850",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x998",
+   "entry_ls": "0x4998",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa14580",
+   "signature16_sha256_12": "50e59b847f6b",
+   "stored_size_for_lift": 2960,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 9,
+   "va": "0x1018f580",
+   "header_words": [
+    "0x31f0",
+    "0x46e0",
+    "0x30ab0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 18176,
+   "size_argument_at_registration": 18112,
+   "registering_function": "0x5bc838",
+   "registration_call": "0x5bc8c0",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x10690118",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x31f0",
+    "+0x14_footprint": "0x46e0",
+    "+0x18": "0x30ab0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x31f0",
+   "entry_ls": "0x71f0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa2f580",
+   "signature16_sha256_12": "5fd579523646",
+   "stored_size_for_lift": 18112,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 10,
+   "va": "0x10193c80",
+   "header_words": [
+    "0x1df0",
+    "0x36a0",
+    "0x20",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 9472,
+   "size_argument_at_registration": 9376,
+   "registering_function": "0x5cfc58",
+   "registration_call": "0x5cfd00",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x106ebf00",
+   "module_name_string": null,
+   "strings_in_registering_function": [
+    "dynamicjoint"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x1df0",
+    "+0x14_footprint": "0x36a0",
+    "+0x18": "0x20",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x1df0",
+   "entry_ls": "0x5df0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa33c80",
+   "signature16_sha256_12": "acfdec99c494",
+   "stored_size_for_lift": 9376,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 11,
+   "va": "0x10196180",
+   "header_words": [
+    "0x1cd8",
+    "0x1eb0",
+    "0x35dd0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 7936,
+   "size_argument_at_registration": 7824,
+   "registering_function": "0x5c1e80",
+   "registration_call": "0x5c1f50",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x10690798",
+   "module_name_string": null,
+   "strings_in_registering_function": [
+    "geomcullclip0",
+    "geomcullclip1"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x1cd8",
+    "+0x14_footprint": "0x1eb0",
+    "+0x18": "0x35dd0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x1cd8",
+   "entry_ls": "0x5cd8",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa36180",
+   "signature16_sha256_12": "1ca73b2b844d",
+   "stored_size_for_lift": 7824,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 12,
+   "va": "0x10198080",
+   "header_words": [
+    "0x960",
+    "0xc30",
+    "0x0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 3200,
+   "size_argument_at_registration": 3088,
+   "registering_function": "0x51f6f0",
+   "registration_call": "0x51f7a0",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x10650480",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x960",
+    "+0x14_footprint": "0xc30",
+    "+0x18": "0x0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x960",
+   "entry_ls": "0x4960",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa38080",
+   "signature16_sha256_12": "90013fb976e6",
+   "stored_size_for_lift": 3088,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 13,
+   "va": "0x10198d00",
+   "header_words": [
+    "0x18f0",
+    "0x8020",
+    "0x24ce0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 7296,
+   "size_argument_at_registration": 7216,
+   "registering_function": "0x6076b8",
+   "registration_call": "0x607754",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x1071ad00",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x18f0",
+    "+0x14_footprint": "0x8020",
+    "+0x18": "0x24ce0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x18f0",
+   "entry_ls": "0x58f0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa38d00",
+   "signature16_sha256_12": "807a351ff5a2",
+   "stored_size_for_lift": 7216,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 14,
+   "va": "0x1019a980",
+   "header_words": [
+    "0x16f0",
+    "0x18b0",
+    "0x24020",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 6400,
+   "size_argument_at_registration": 6288,
+   "registering_function": "0x51f6f0",
+   "registration_call": "0x51f7cc",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x10650580",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x16f0",
+    "+0x14_footprint": "0x18b0",
+    "+0x18": "0x24020",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x16f0",
+   "entry_ls": "0x56f0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa3a980",
+   "signature16_sha256_12": "b3297baf1198",
+   "stored_size_for_lift": 6288,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 15,
+   "va": "0x1019c280",
+   "header_words": [
+    "0x15a0",
+    "0x1c020",
+    "0x4b0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 6272,
+   "size_argument_at_registration": 6224,
+   "registering_function": "0x5cb898",
+   "registration_call": "0x5cb91c",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x106d1670",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x15a0",
+    "+0x14_footprint": "0x1c020",
+    "+0x18": "0x4b0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x15a0",
+   "entry_ls": "0x55a0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa3c280",
+   "signature16_sha256_12": "50c2d0a138fc",
+   "stored_size_for_lift": 6224,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 16,
+   "va": "0x1019db00",
+   "header_words": [
+    "0x9b0",
+    "0xbb0",
+    "0x0",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 3072,
+   "size_argument_at_registration": 2960,
+   "registering_function": "0x5cdc70",
+   "registration_call": "0x5cdcf4",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x106d1c00",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x9b0",
+    "+0x14_footprint": "0xbb0",
+    "+0x18": "0x0",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x9b0",
+   "entry_ls": "0x49b0",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa3db00",
+   "signature16_sha256_12": "142c7279cf6a",
+   "stored_size_for_lift": 2960,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 17,
+   "va": "0x1019e700",
+   "header_words": [
+    "0x2718",
+    "0x38e0",
+    "0x1f370",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 14592,
+   "size_argument_at_registration": 14528,
+   "registering_function": "0x5bdae0",
+   "registration_call": "0x5bdb64",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x10690398",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x2718",
+    "+0x14_footprint": "0x38e0",
+    "+0x18": "0x1f370",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x2718",
+   "entry_ls": "0x6718",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": false,
+   "file_offset_of_header": "0xa3e700",
+   "signature16_sha256_12": "e0f5d7229c00",
+   "stored_size_for_lift": 14528,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 18,
+   "va": "0x101a2000",
+   "header_words": [
+    "0x2a70",
+    "0x2cb0",
+    "0x2e150",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 11520,
+   "size_argument_at_registration": 11408,
+   "registering_function": "0x557a20",
+   "registration_call": "0x557aa4",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x10673580",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x2a70",
+    "+0x14_footprint": "0x2cb0",
+    "+0x18": "0x2e150",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x2a70",
+   "entry_ls": "0x6a70",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa42000",
+   "signature16_sha256_12": "a93bc38346db",
+   "stored_size_for_lift": 11408,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 19,
+   "va": "0x101a4d00",
+   "header_words": [
+    "0x1730",
+    "0x10720",
+    "0x50",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": 7936,
+   "size_argument_at_registration": 7840,
+   "registering_function": "0x595308",
+   "registration_call": "0x5953a4",
+   "registration_callee": "0x2529f8",
+   "registry_object_arg_r3": "0x10673d00",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x1730",
+    "+0x14_footprint": "0x10720",
+    "+0x18": "0x50",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 8,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x1730",
+   "entry_ls": "0x5730",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa44d00",
+   "signature16_sha256_12": "3cc4773bf432",
+   "stored_size_for_lift": 7840,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  },
+  {
+   "index": 20,
+   "va": "0x101a6c00",
+   "header_words": [
+    "0x7a60",
+    "0x28dc0",
+    "0x640",
+    "0x40"
+   ],
+   "load_addr_word": "0x4000",
+   "version_word": "0x4",
+   "gap_to_next_bytes": null,
+   "size_argument_at_registration": 33440,
+   "registering_function": "0x5c98f0",
+   "registration_call": "0x5c9974",
+   "registration_callee": "0x7e7838",
+   "registry_object_arg_r3": "0x106d1100",
+   "module_name_string": null,
+   "strings_in_registering_function": [],
+   "header_fields": {
+    "+0x10_entry_offset": "0x7a60",
+    "+0x14_footprint": "0x28dc0",
+    "+0x18": "0x640",
+    "+0x1c": "0x40",
+    "+0x20_marker": "0xc0dec0de",
+    "+0x24_count": 12,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x4"
+   },
+   "entry_offset": "0x7a60",
+   "entry_ls": "0xba60",
+   "entry_status": "verified: PM computes codeBuffer + hdr[+0x10]; entry lands on a 4-instruction stqd run (function prologue); entry < stored size",
+   "entry_4_aligned": true,
+   "entry_16_aligned": true,
+   "file_offset_of_header": "0xa46c00",
+   "signature16_sha256_12": "e71a916aa158",
+   "stored_size_for_lift": 33440,
+   "lift_size_rule": "registered size if known; else min(footprint, gap to next header)"
+  }
+ ],
+ "workload_attribute_sites_in_wrapper": [
+  {
+   "call": "0x7e57e0",
+   "caller": "0x7e5718",
+   "args": {
+    "r10": "0x1",
+    "r4": "0x1",
+    "r5": "0x190002"
+   }
+  },
+  {
+   "call": "0x7e58c4",
+   "caller": "0x7e5718",
+   "args": {
+    "r10": "0x1",
+    "r4": "0x1",
+    "r5": "0x190002"
+   }
+  }
+ ],
+ "workload_creation_wrapper": {
+  "function": "0x7e5718",
+  "note": "calls _cellSpursWorkloadAttributeInitialize, cellSpursWorkloadAttributeSetName, cellSpursAddWorkloadWithAttribute, cellSpursRequestIdleSpu(\u2026,7), cellSpursSetExceptionEventHandler; policy module EA and size come from helper functions 0x7eb710/0x7eb718 reading TOC slots (pm EA 0x10053d00, size 0x2b48 rounded to 128, name string 'Wws_Job')",
+  "policy_module": {
+   "ea": "0x10053d00",
+   "size": "0x2b48",
+   "file_offset": "0x8f3d00",
+   "segment": "first LOAD (read-only data, va 0x10000000)"
+  },
+  "callers": [
+   {
+    "caller": "0x5ac650",
+    "call": "0x5ac690",
+    "args": {
+     "r3": "0x1067bc00",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5ac650",
+    "call": "0x5ac6bc",
+    "args": {
+     "r3": "0x1067bc24",
+     "r5": "0x10028d18",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5ac650",
+    "call": "0x5ac6e8",
+    "args": {
+     "r3": "0x1067bc48",
+     "r5": "0x10028d20",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5c20c8",
+    "call": "0x5c2114",
+    "args": {
+     "r5": "0x10028eb8",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5c20c8",
+    "call": "0x5c2140",
+    "args": {
+     "r5": "0x10028ec0",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5d00e0",
+    "call": "0x5d013c",
+    "args": {
+     "r3": "0x106d1d04",
+     "r5": "0x10028fb8",
+     "r6": "0x4",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5f0680",
+    "call": "0x5f06e8",
+    "args": {
+     "r3": "0x106ef0d8",
+     "r5": "0x10029280",
+     "r6": "0x4",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5f2418",
+    "call": "0x5f2594",
+    "args": {
+     "r5": "0x10029280",
+     "r6": "0x4",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x5fb6e0",
+    "call": "0x5fb740",
+    "args": {
+     "r3": "0x10701c00",
+     "r5": "0x100292c8",
+     "r6": "0x4",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x607e60",
+    "call": "0x607eb0",
+    "args": {
+     "r3": "0x1071a9e0",
+     "r5": "sp+0x70",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x608e58",
+    "call": "0x60915c",
+    "args": {
+     "r5": "sp+0x70",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0"
+    }
+   },
+   {
+    "caller": "0x6f39b4",
+    "call": "0x6f3ae8",
+    "args": {
+     "r3": "0x10738cac",
+     "r5": "sp+0x78",
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0",
+     "r9": "0x1067bf6c"
+    }
+   },
+   {
+    "caller": "0x7033a8",
+    "call": "0x7034d8",
+    "args": {
+     "r6": "0x1",
+     "r7": "0x10",
+     "r8": "0x0",
+     "r9": "0x10850210"
+    }
+   }
+  ]
+ },
+ "module_registry": {
+  "function": "0x7e7838",
+  "glue_from_other_toc": "0x2529f8",
+  "table_slot_value": "0x10862170",
+  "entries": 32,
+  "entry_bytes": 40,
+  "entry_layout": "u32 ea, u32 refcount, char name[32]",
+  "direct_callers": 15,
+  "glue_callers": 6
+ },
+ "entry_rule": {
+  "formula": "entry_ls = LS[0x1330] + u32(header+0x10), with LS[0x1330] = job code buffer = (buffer page) << 10; the PM does lqa r2,0x1330 / lqd r3,0x10(r2) / a r5,r3,r2 / bisl r0,r5",
+  "pm_addresses": {
+   "load_code_buffer": "0xa00+... lqa 0x1330 at LS 0x3024",
+   "read_entry_offset": "lqd 0x10(r2) at LS 0x3044",
+   "add": "LS 0x3060",
+   "branch": "bisl at LS 0x30a4",
+   "store_code_buffer": "stqa 0x1330 at LS 0x21ac (value = page<<10 via roti 10 at 0x2190)",
+   "job_context_passed_in_r3": "0x1340"
+  },
+  "pm_load_address": "0xa00",
+  "pm_ea": "0x10053d00",
+  "pm_size": "0x2b48",
+  "alignment": "none applied; offsets are 4-aligned (all 21), 16-aligned for 13 of 21",
+  "flags_field": "PM never reads header +0x24/+0x28/+0x2c; all 21 have base 0x4000 and flags 4 (KZ3: 5 or 0x80000005)"
+ }
+}

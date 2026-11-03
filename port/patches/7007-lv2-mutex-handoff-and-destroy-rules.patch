@@ -1,0 +1,125 @@
+lv2 mutex/cond rules KZ3 patch 1122 (lv2_sync_core.h, which took the hand-off idea from this patch) does not carry:
+sys_cond_signal_to wakes only the named thread and returns EPERM when it does not wait on the cond (1122 kept upstream's
+broadcast); sys_mutex_create validates its arguments (EFAULT for a null id or attribute pointer, EINVAL for a protocol not
+FIFO/PRIORITY/PRIORITY_INHERIT or a recursive word not RECURSIVE/NOT_RECURSIVE); mutex slots are allocated next-fit, so a
+destroyed id is not handed out again at once; a recursive re-lock or trylock at count 0x7FFFFFFF is EKRESOURCE (checked in
+sys_mutex.c before the shared core counts up). Semantics per lv2 as RPCS3 models it (sys_mutex.cpp / sys_cond.cpp, read, no
+code copied). Host test: port/rc/tests/run_lv2_sync_test.sh. Upstream candidate.
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: shrunk to the four items above. The rest of the old patch is in 1122: the
+signal hands the bound mutex to the woken waiter (owned at once if free, else queued and handed over at the unlock; the
+waiter never re-locks it, which was the root cause of ToD's NEW GAME level-load stall), busy trylock EBUSY while waiters are
+queued, destroy ESRCH / EBUSY / EPERM, cond create/destroy count the binding, host locks persist across slot reuse,
+non-recursive re-lock EDEADLK, non-owner unlock EPERM, a timed-out cond wait takes the mutex back at its depth.
+ASSUMPTION (1122's): FIFO hand-off for every protocol (lv2 orders PRIORITY waiters).
+
+diff --git a/runtime/syscalls/sys_cond.c b/runtime/syscalls/sys_cond.c
+index fc3d027..9e6c760 100644
+--- a/runtime/syscalls/sys_cond.c
++++ b/runtime/syscalls/sys_cond.c
+@@ -170,8 +170,21 @@ static int64_t signal_cond(uint32_t id, int all)
+ int64_t sys_cond_signal(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 0); }
+ int64_t sys_cond_signal_all(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 1); }
+ 
+-/* Preserve upstream's current broadcast fallback for signal_to. */
+-int64_t sys_cond_signal_to(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 1); }
++/* R&C patch 7007: r4 = the guest thread to wake; only that thread (was a broadcast). EPERM when it does not wait on
++ * this cond (lv2, RPCS3 sys_cond_signal_to, read, no code copied); the core's to_tid would fall back to the oldest
++ * waiter, so the check is made here first. */
++int64_t sys_cond_signal_to(ppu_context* ctx)
++{
++    const uint32_t to = LV2_ARG_U32(ctx, 1);
++    sys_mutex_info* m = NULL;
++    sys_cond_info* c = acquire_cond(LV2_ARG_U32(ctx, 0), &m);
++    if (!c) return (int32_t)CELL_ESRCH;
++    int found = 0;
++    for (const lv2s_waiter* w = c->q.head; w && to; w = w->next) if (w->tid == to) { found = 1; break; }
++    if (found) lv2s_cond_signal_locked(&m->core, &c->q, 0, to);
++    lv2s_unlock(&m->core);
++    return found ? CELL_OK : (int32_t)CELL_EPERM;
++}
+ 
+ void sys_cond_init(lv2_syscall_table* tbl)
+ {
+diff --git a/runtime/syscalls/sys_mutex.c b/runtime/syscalls/sys_mutex.c
+index bf3651b..b15025f 100644
+--- a/runtime/syscalls/sys_mutex.c
++++ b/runtime/syscalls/sys_mutex.c
+@@ -116,15 +116,31 @@ static void mtx_table_unlock(void)
+ #endif
+ }
+ 
++/* R&C patch 7007: next-fit allocation. A destroyed slot is not handed out again at once, so a stale id held by a
++ * slow thread does not name a brand-new mutex straight away (lv2 ids are not reused immediately either). */
+ static int mtx_find_free(void)
+ {
+-    for (int i = 0; i < SYS_MUTEX_MAX; i++) {
+-        if (!g_sys_mutexes[i].active)
+-            return i;
++    static int next = 0;
++    for (int k = 0; k < SYS_MUTEX_MAX; k++) {
++        const int i = (next + k) % SYS_MUTEX_MAX;
++        if (!g_sys_mutexes[i].active) { next = (i + 1) % SYS_MUTEX_MAX; return i; }
+     }
+     return -1;
+ }
+ 
++static uint32_t rd_be32(uint32_t addr)
++{
++    const uint8_t* p = (const uint8_t*)vm_to_host(addr);
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++
++/* R&C patch 7007: a recursive re-lock at the maximum count is EKRESOURCE (lv2), checked before the shared core
++ * (lv2_sync_core.h) counts it up. Core lock held. */
++static int mtx_recursion_full_locked(const sys_mutex_info* m, uint32_t tid)
++{
++    return m->core.owner == tid && m->core.recursive && m->core.count >= 0x7FFFFFFFu;
++}
++
+ /* Byteswap helper for writing u32 to guest memory */
+ static void write_be32(uint32_t addr, uint32_t val)
+ {
+@@ -161,11 +177,21 @@ static sys_mutex_info* mtx_acquire(uint32_t mutex_id)
+  *
+  * r3 = pointer to receive mutex ID (u32*)
+  * r4 = pointer to attribute struct
++ * R&C patch 7007, lv2 (RPCS3 sys_mutex_create, read, no code copied): EFAULT for a null pointer; protocol
++ * FIFO/PRIORITY/PRIORITY_INHERIT and recursive RECURSIVE/NOT_RECURSIVE, anything else EINVAL.
+  * -----------------------------------------------------------------------*/
+ int64_t sys_mutex_create(ppu_context* ctx)
+ {
+     uint32_t id_out_addr = LV2_ARG_PTR(ctx, 0);
+     uint32_t attr_addr   = LV2_ARG_PTR(ctx, 1);
++    if (!id_out_addr || !attr_addr) return (int64_t)(int32_t)CELL_EFAULT;
++    {
++        const uint32_t protocol = rd_be32(attr_addr + 0), rec = rd_be32(attr_addr + 4);
++        if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_PRIORITY && protocol != SYS_SYNC_PRIORITY_INHERIT)
++            return (int64_t)(int32_t)CELL_EINVAL;
++        if (rec != SYS_SYNC_RECURSIVE && rec != SYS_SYNC_NOT_RECURSIVE)
++            return (int64_t)(int32_t)CELL_EINVAL;
++    }
+ 
+     mtx_table_lock();
+ 
+@@ -332,6 +358,10 @@ int64_t sys_mutex_lock(ppu_context* ctx)
+     sys_mutex_info* m = mtx_acquire(mutex_id);
+     if (!m)
+         return (int64_t)(int32_t)CELL_ESRCH;
++    if (mtx_recursion_full_locked(m, (uint32_t)ctx->thread_id)) {   /* R&C patch 7007 */
++        lv2s_unlock(&m->core);
++        return (int64_t)(int32_t)CELL_EKRESOURCE;
++    }
+     lv2_sync_phase(ctx->thread_id, 1, mutex_id);   /* R&C patch 7006 */
+     uint32_t rc = lv2s_lock_locked(&m->core, (uint32_t)ctx->thread_id, timeout_us);
+     lv2s_unlock(&m->core);
+@@ -350,6 +380,10 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
+     sys_mutex_info* m = mtx_acquire(mutex_id);
+     if (!m)
+         return (int64_t)(int32_t)CELL_ESRCH;
++    if (mtx_recursion_full_locked(m, (uint32_t)ctx->thread_id)) {   /* R&C patch 7007 */
++        lv2s_unlock(&m->core);
++        return (int64_t)(int32_t)CELL_EKRESOURCE;
++    }
+     uint32_t rc = lv2s_trylock_locked(&m->core, (uint32_t)ctx->thread_id);
+     lv2s_unlock(&m->core);
+     return (int64_t)(int32_t)rc;

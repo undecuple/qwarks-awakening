@@ -1,0 +1,108 @@
+Report readback with reused offsets (on top of KZ3 patch 2027). 2027 writes a ZPASS report twice: at walk time the
+offset's last real count, a frame later this query's count. ToD reuses report offsets for different objects, so the
+walk-time value can be another (hidden) object's 0, and an older readback can land over a newer GET_REPORT at the same
+offset: wrong zeros the game culls by -- the character flicker (Ratchet missing, his shadow drawn; gone with
+LD_OQ_READBACK=0 in tods-play-1137, back in 1140). Now the walk-time value is "visible" (0xFFFF, cellGcmSys's answer
+without a count) and a readback reaches the guest only if it is the newest walked GET_REPORT for its offset
+(rsx_oq_rb.h). LD_OQ_RB_BASE=1 restores 2027's behaviour. Log: "[report-readback] 7017 on: superseded=N walk-pending=N"
+next to 2027's line. Host test: R&C port/rc/tests/run_oq_readback_test.sh (base: 39 of 80 reads give Ratchet 0; now 0).
+
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -12723,7 +12723,7 @@
+     u64 open_serial;
+     u32 segs;                     /* segments since CLEAR_REPORT_VALUE(ZPASS) */
+     u64 last_serial;              /* the newest closed segment */
+-    struct { u32 off; u8 used, state, has_val; u32 val; u64 serial, rb; } slot[LD_OQ_SLOTS];   /* val/has_val/rb: patch 2027 */
++    struct { u32 off; u8 used, state, has_val; u32 val; u64 serial, rb, guest_rb; } slot[LD_OQ_SLOTS];   /* val/has_val/rb: patch 2027; guest_rb: R&C 7017 */
+     u64 n_pred, n_skip, n_always, n_resolve, n_reports, n_segments;
+ } g_oq = { .on = -1 };
+ 
+@@ -12751,13 +12751,17 @@
+     u64 head, tail, unsubmitted;  /* ring indices, monotonic: [tail, unsubmitted) stamped, [unsubmitted, head) not */
+     struct { u64 fence; u32 off; u8 guest; } e[LD_RB_N];
+     u64 n_queued, n_written, n_zero, n_dropped, n_never, n_walk_last;
++    u64 n_superseded, n_walk_pending;   /* R&C patch 7017 */
++    int fixed;                          /* R&C patch 7017: 1 unless LD_OQ_RB_BASE=1 */
+ } g_rb = { .on = -1 };
++#include "rsx_oq_rb.h"   /* R&C patch 7017 */
+ 
+ static int ld_rb_enabled(void)
+ {
+     if (g_rb.on >= 0) return g_rb.on;
+     const char* e = getenv("LD_OQ_READBACK");
+     g_rb.on = !(e && e[0] == '0');
++    { const char* b = getenv("LD_OQ_RB_BASE"); g_rb.fixed = !(b && b[0] == '1'); }   /* R&C patch 7017 */
+     if (!g_rb.on) { fprintf(stderr, "[report-readback] off (LD_OQ_READBACK=0)\n"); return 0; }
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+     D3D12_RESOURCE_DESC bd = {0};
+@@ -12797,7 +12801,10 @@
+         const u32 v = c > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)c;
+         const int i = ld_oq_slot(g_rb.e[k].off, 0);
+         if (i >= 0) { g_oq.slot[i].val = v; g_oq.slot[i].has_val = 1; }
+-        if (g_rb.e[k].guest) {
++        const int to_guest = ld_rbk_drain_to_guest(g_rb.fixed, g_rb.e[k].guest, g_rb.tail,
++                                                   i >= 0 ? g_oq.slot[i].guest_rb : 0u);   /* R&C patch 7017 */
++        if (g_rb.e[k].guest && !to_guest) g_rb.n_superseded++;
++        if (to_guest) {
+             u8* p = (u8*)guest_ptr(1u, g_rb.e[k].off, 16u);   /* location 1: IO offset in main memory */
+             if (p) {
+                 p[8] = (u8)(v >> 24); p[9] = (u8)(v >> 16); p[10] = (u8)(v >> 8); p[11] = (u8)v;
+@@ -12817,7 +12824,12 @@
+     if (i < 0) return dflt;
+     if (g_oq.slot[i].state == OQ_NEVER) { g_rb.n_never++; return 0u; }
+     if (g_oq.slot[i].state != OQ_PENDING) return dflt;
+-    if (g_oq.slot[i].rb) { g_rb.e[(g_oq.slot[i].rb - 1u) % LD_RB_N].guest = 1; g_oq.slot[i].rb = 0; }
++    if (g_oq.slot[i].rb) {
++        g_rb.e[(g_oq.slot[i].rb - 1u) % LD_RB_N].guest = 1;
++        g_oq.slot[i].guest_rb = g_oq.slot[i].rb;   /* R&C patch 7017: the newest walked entry for this offset */
++        g_oq.slot[i].rb = 0;
++    }
++    if (g_rb.fixed) { g_rb.n_walk_pending++; return ld_rbk_walk_value(1, g_oq.slot[i].has_val, g_oq.slot[i].val, dflt); }
+     if (!g_oq.slot[i].has_val) return dflt;
+     g_rb.n_walk_last++;
+     return g_oq.slot[i].val;
+@@ -12827,6 +12839,9 @@
+ {
+     out[0] = g_rb.n_queued; out[1] = g_rb.n_written; out[2] = g_rb.n_zero;
+     out[3] = g_rb.n_dropped; out[4] = g_rb.n_never; out[5] = g_rb.n_walk_last;
++    if (g_rb.on == 1)   /* R&C patch 7017 */
++        fprintf(stderr, "[report-readback] 7017 %s: superseded=%llu walk-pending=%llu\n", g_rb.fixed ? "on" : "base (LD_OQ_RB_BASE=1)",
++                (unsigned long long)g_rb.n_superseded, (unsigned long long)g_rb.n_walk_pending);
+ }
+ 
+ static int ld_oq_enabled(void)
+--- /dev/null
++++ b/libs/video/rsx_oq_rb.h
+@@ -0,0 +1,31 @@
++/* R&C patch 7017: report-readback bookkeeping for ZPASS reports (KZ3 patch 2027) when a report offset is reused.
++ *
++ * 2027 answers a GET_REPORT in two steps: at walk time the guest report gets the offset's LAST real count, and a
++ * frame later the readback ring writes this query's count. Both assume one report offset = one object. ToD reuses
++ * offsets for different objects from frame to frame, so
++ *  (1) the walk-time value is another object's count (a hidden object's 0 for Ratchet), and
++ *  (2) an older readback for the offset lands after a newer GET_REPORT at the same offset was walked, writing the
++ *      previous object's count over it.
++ * Either is a wrong 0 the title culls by: the flicker (tods-play-1140; gone with LD_OQ_READBACK=0, tods-play-1137).
++ * Now the walk-time value is the "no count yet" answer cellGcmSys already uses (0xFFFF, visible), and a readback
++ * reaches the guest only if it is the newest GET_REPORT walked for that offset. A count the guest sees is then always
++ * the count of the query it asked for, or "visible". */
++#ifndef RSX_OQ_RB_H
++#define RSX_OQ_RB_H
++#include <stdint.h>
++
++/* Walk-time value for a PENDING report. base (2027): the slot's last count when it has one. */
++static inline uint32_t ld_rbk_walk_value(int fixed, int has_val, uint32_t last_val, uint32_t dflt)
++{
++    if (fixed) return dflt;
++    return has_val ? last_val : dflt;
++}
++
++/* Does the readback ring entry `entry` (0-based ring index) go to the guest? guest_flag: 2027's per-entry mark
++ * (set when its GET_REPORT was walked); newest_guest: index + 1 of the newest walked entry for the same offset. */
++static inline int ld_rbk_drain_to_guest(int fixed, int guest_flag, uint64_t entry, uint64_t newest_guest)
++{
++    if (!guest_flag) return 0;
++    return fixed ? (entry + 1u == newest_guest) : 1;
++}
++#endif

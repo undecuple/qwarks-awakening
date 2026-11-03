@@ -1,0 +1,33 @@
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -335,6 +335,29 @@
+     }
+     rsx->seen[idx]++;
+     rsx->regs[idx] = arg;
++    /* Patch 6007 (diagnostic, off by default): RSX_BE_LOG=<n> prints the methods of the first <n> BEGIN/END groups that
++     * carry no VB_VERTEX_BATCH, VB_INDEX_BATCH or INLINE_ARRAY (immediate-mode vertex writes are listed, not counted),
++     * the candidates for the live renderer's empty groups. R&C ToD's menu has two such groups per frame. */
++    { static int be_cap = -1, be_n = 0, be_any = 0; static u32 be_m[16], be_cnt[16], be_k = 0, be_prim = 0;
++      if (be_cap < 0) { const char* e = getenv("RSX_BE_LOG"); be_cap = e ? atoi(e) : 0; }
++      if (be_cap > 0 && be_n < be_cap) {
++          if (method == M_VERTEX_BEGIN_END) {
++              if (arg) { be_k = 0; be_any = 0; be_prim = arg; }
++              else if (!be_any) {
++                  be_n++;
++                  fprintf(stderr, "[be-empty] #%d prim=%u methods:", be_n, be_prim);
++                  for (u32 i = 0; i < be_k; i++) fprintf(stderr, " 0x%04X*%u", be_m[i], be_cnt[i]);
++                  fprintf(stderr, "%s\n", be_k == 16 ? " ..." : "");
++              }
++          } else if (rsx->in_begin_end) {
++              if (method == M_VB_VERTEX_BATCH || method == M_VB_INDEX_BATCH || method == M_INLINE_ARRAY)
++                  be_any = 1;
++              u32 i = 0;
++              while (i < be_k && be_m[i] != method) i++;
++              if (i < be_k) be_cnt[i]++;
++              else if (be_k < 16) { be_m[be_k] = method; be_cnt[be_k] = 1; be_k++; }
++          }
++      } }
+     if ((method >= 0x1500 && method < 0x1A00) || (method >= 0x1E40 && method < 0x1E80) ||
+         (method >= 0x0A80 && method < 0x0B00))
+         vtx_const_fold(rsx, method, arg);

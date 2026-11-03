@@ -1,0 +1,43 @@
+{
+ "title": "Tools of Destruction",
+ "note": "The two raw SPU programs of ToD (BCUS98127). Numbers recovered from the decrypted EBOOT. Image ids 40/41 are free in ps3recomp's runtime (no hardcoded image_id test uses them). extra_funcs: the one .ctors entry of each image (crt0 at LS 0x100 calls it through bisl from the table ending at the ila r80 constant). data_ranges 0x60-0x90: the 0x30-byte block the loader reads (its first 16 bytes decode as ila but are never executed: entry is 0x100). code_end: one past the last code word (igcollspu: the crt exit stub wrch/stop 0x102/bi ends at 0x1333C, rodata and .ctors follow; igCollBroadSpu: the last function returns at 0x6C84, shufb masks, .ctors/.dtors, data and the parameter block follow). The image interleaves code and shufb tables below code_end; the lifter only seeds where branches and function-pointer tables point there.",
+ "loader": {
+  "create": "0x005AB320 sys_raw_spu_create wrapper (syscall 160)",
+  "setup": "0x005AB198 instance setup (desc at inst+0x80, size at +0x88, entry desc[+0x10] at +0xA8)",
+  "params": "0x005AAEA0 parameter block = image EA + desc[+0x20] + 0x30, size desc[+0x24], written by the caller into the image in main memory",
+  "load": "0x005AB460 proxy GETs of image EA -> LS desc[+0x1C]-0x30 in 0x4000 chunks",
+  "start": "0x005AAE08 NPC = desc[+0x10], RunCntl = 1"
+ },
+ "programs": [
+  {
+   "name": "igcollspu",
+   "elf_name_ea": "0x10027818",
+   "ea": "0x1017bf80",
+   "size": "0x135d0",
+   "image_id": 40,
+   "caller": "0x004A8208 (TOC 0x89ff20: +0x6D50 image, +0x6D54 size, +0x6D58 name)",
+   "data_ranges": [
+    "0x60-0x90"
+   ],
+   "extra_funcs": [
+    "0x131a0"
+   ],
+   "code_end": "0x13340"
+  },
+  {
+   "name": "igcollbroadspu",
+   "elf_name_ea": "0x10027728",
+   "ea": "0x10175180",
+   "size": "0x6da0",
+   "image_id": 41,
+   "caller": "0x0049DAF0 (TOC 0x89ff20: +0x6C98 image, +0x6C9C size, +0x6CA0 name)",
+   "data_ranges": [
+    "0x60-0x90"
+   ],
+   "extra_funcs": [
+    "0x5a80"
+   ],
+   "code_end": "0x6c88"
+  }
+ ]
+}

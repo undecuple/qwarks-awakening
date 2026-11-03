@@ -1,0 +1,95 @@
+LD_VTX_GPU_VERIFY=1 (diagnostic, default off): every GPU-fetch draw (KZ3 patch 2076, LD_VTX_GPU=1) is also decoded on the CPU,
+once through the shared decode of rsx_vtx_gpu.h compiled as C over the exact block the walker uploads and once through the CPU
+fetch, and the first draws whose floats differ are logged as [vtx-gpu-verify] (frame, ref, vertex id, base index, attribute
+type/size/stride/offset/location, both values, stable range, spans, block size), with a count every 65,536 draws. For R&C ToD's
+straight cyan lines with LD_VTX_GPU=1 (R&C pass 16): the host test (R&C port/rc/tests/run_vtx_gpu_test.sh) finds the
+decode bit-exact for every format, so this checks the in-game element plumbing without a capture tool (those turn LD_VTX_GPU off).
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02 (at the first v0.18.0 build): v0.18.0's rsx_vertex_fetch_many takes no
+output stride (it writes at plan->layout.stride, and the plan is built from the same layout), so the stride argument is dropped.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -9666,6 +9666,74 @@
+     }
+     return g_vg.on;
+ }
++/* R&C patch 7012 (diagnostic, default off): LD_VTX_GPU_VERIFY=1 decodes every GPU-fetch draw on the CPU twice -- through
++ * the shared decode in rsx_vtx_gpu.h compiled as C over the block the walker uploads, and through the CPU fetch
++ * (rsx_vertex_fetch_many) -- and logs the first draws whose floats differ (`[vtx-gpu-verify]`). The host test
++ * port/rc/tests/run_vtx_gpu_test.sh finds no difference for any format (ToD's included); this checks the in-game data and
++ * element plumbing (refs, base index, spans) of ToD's draws without a capture tool that turns LD_VTX_GPU off. Slow. */
++static const u8* g_vgv_blk; static const float* g_vgv_lut;
++static float* g_vgv_lut_host;
++#define VG_FN static inline
++#define VG_RAW(a) (*(const u32*)(g_vgv_blk + (a)))
++#define VG_LUT(i) g_vgv_lut[i]
++#define uint u32
++static inline float asfloat(u32 w) { float f; memcpy(&f, &w, sizeof f); return f; }
++static inline int asint(u32 w) { int i; memcpy(&i, &w, sizeof i); return i; }
++RSX_VG_SHARED(RSX_VG_CODE)
++#undef uint
++#undef VG_FN
++#undef VG_RAW
++#undef VG_LUT
++static int ld_vg_verify_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_VTX_GPU_VERIFY"); on = e && e[0] == '1';
++                  if (on) fprintf(stderr, "[vtx-gpu-verify] on: every GPU-fetch draw is decoded on the CPU too\n"); }
++    return on;
++}
++static void ld_vg_verify(const rsx_vertex_layout_plan* layout)
++{
++    static unsigned long long n_draws, n_bad;
++    if (!g_vgv_lut_host) {
++        g_vgv_lut_host = (float*)malloc(RSX_VG_LUT_WORDS * sizeof(float));
++        if (!g_vgv_lut_host) return;
++        rsx_vg_lut_build(g_vgv_lut_host);
++    }
++    const u32 n = dc.n_refs, stride = layout->stride;
++    u8* cpu = (u8*)malloc((size_t)n * stride + 16);
++    u8* blk = (u8*)malloc((size_t)dc.vg_d.block_bytes + 16);
++    if (!cpu || !blk) { free(cpu); free(blk); return; }
++    n_draws++;
++    if (rsx_vertex_fetch_many(&dc.fetch_plan, dc.refs, n, cpu)) {  /* v0.18.0: out stride = plan->layout.stride */
++        rsx_vg_write_block(&dc.vg_d, blk);
++        g_vgv_blk = blk; g_vgv_lut = g_vgv_lut_host;
++        u32 bad = 0, first_i = 0, first_s = 0, first_c = 0; float fg = 0, fc = 0;
++        for (u32 i = 0; i < n; i++) {
++            const u32 e = rsx_vg_element(&dc.refs[i]);
++            for (u32 sl = 0; sl < layout->count; sl++) {
++                const rsx_vg_attr* t = &dc.vg_d.table[layout->attrs[sl]];
++                for (u32 c = 0; c < 4; c++) {
++                    const float gv = vg_fetch(t->base, t->stride, t->fmt, t->lim, t->dflt[c], e, c);
++                    float cv; memcpy(&cv, cpu + (size_t)i * stride + sl * 16u + c * 4u, 4);
++                    if (memcmp(&gv, &cv, 4)) { if (!bad++) { first_i = i; first_s = sl; first_c = c; fg = gv; fc = cv; } }
++                }
++            }
++        }
++        if (bad && n_bad++ < 32) {
++            const u32 a = layout->attrs[first_s];
++            const rsx_vertex_fetch_attr* f = &dc.fetch_plan.attr[a];
++            fprintf(stderr, "[vtx-gpu-verify] frame=%u draw: %u refs, %u floats differ; first ref %u (vid %u base %u) attr %u "
++                            "type %u size %u stride %u off 0x%X loc %u comp %u: gpu %g cpu %g (stable %u..%u, spans %u, block %u B)\n",
++                    g_ld_frames, n, bad, first_i, dc.refs[first_i].vertex_id, dc.refs[first_i].base_index, a,
++                    f->desc.type, f->desc.size, f->stride, f->desc.offset, f->desc.location, first_c, fg, fc,
++                    f->stable_first, f->stable_last, dc.vg_d.n_span, dc.vg_d.block_bytes);
++        }
++    }
++    if ((n_draws & 0xFFFFu) == 0)
++        fprintf(stderr, "[vtx-gpu-verify] %llu GPU-fetch draws checked, %llu differ\n", n_draws, n_bad);
++    free(cpu); free(blk);
++}
++
+ static void ld_vg_frame(void)   /* at each flip */
+ {
+     if (g_vg.on <= 0) return;
+@@ -10040,6 +10108,7 @@
+             u32* out = (u32*)dc.compact_verts;
+             for (u32 i = 0; i < dc.n_refs; i++) out[i] = rsx_vg_element(&dc.refs[i]);
+             dc.vg = 1;
++            if (ld_vg_verify_on()) ld_vg_verify(layout);   /* R&C patch 7012 */
+             g_vg.draws++; g_vg.verts += dc.n_refs; g_vg.block_bytes += dc.vg_d.block_bytes;
+             dc.n_verts = dc.n_refs;
+             if (fetch_t0) {

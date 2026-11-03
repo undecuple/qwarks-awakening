@@ -1,0 +1,15 @@
+# port/rc/tods/ppu_overrides.txt (ps3recomp ppu_lifter.py --overrides, patch 1018): PPU functions the host replaces.
+# Their lifted bodies become func_<addr>__lifted; port/rc/tods/tods_ppu_overrides.cpp defines func_<addr>. R&C rounds 11-12.
+007E3FA0  # edgeZlibAddInflateQueueElement(queue, eaIn, compressedSize, eaOut, outSize, eaCounter, eaEventFlag, eventBits, mode): host inflate (mode 1 = raw deflate) or stored copy (mode 0), decrement the counter, set the event-flag bits when it reaches 0, no LFQueue push (semantics read in the SPU task, pass 12) (ASSUMPTION: Sony Edge name; shape read at 0x7e3fa0-0x7e4064)
+# R&C pass 4 (T5 diagnostic, tods_bink_dump.inc, default off RC_BINK_DUMP): wrappers around the Bink decoder, they call the lifted body.
+00801E88  # Bink plane decoder (R&C pass 23 naming, ASSUMPTION)
+007FD2C8  # bundle/tree init
+007FCCD8  # read_dcs
+007FC188  # read_colors, version >= 'i'
+007FC550  # read_colors, version < 'i'
+0080FC48  # memset16
+# R&C pass 5 (tods_lua_ljmp.inc, default on, TODS_LUA_LJMP=0 = off): guest setjmp/longjmp. The lifted longjmp returned to its caller, so every
+# caught Lua error fell into luaD_throw's no-handler branch (NULL panic call, exit(1)): the NEW GAME exit.
+00671CA8  # luaD_rawrunprotected (Lua 5.0.2), the only setjmp call site (@0x671CE0): host frame for the guest jmp_buf
+00826B34  # libc longjmp: lifted body, then a host longjmp to the frame recorded for that jmp_buf
+006670C8  # R&C pass 6: the game's execute loader (compile a string as chunk "execute", pcall it): wrapped to print the chunk text with a caught error (RC_LUA_SRC=1 logs all)

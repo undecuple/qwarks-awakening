@@ -1,0 +1,25 @@
+Patch 6004: a joined thread's slot stays FREE (ESRCH from sys_ppu_thread_get_priority).
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: shrunk to one hunk. v0.18.0 already has next-fit slots
+(sys_ppu_thread.c find_free_slot, s_next), joinable from the create flags (t->joinable = flags & 1), the non-joinable
+self-free in ppu_host_thread_proc and the get_priority ESRCH for an exited thread. Left: the thread proc epilogue set
+FINISHED unconditionally for a joinable thread, so a thread already joined (FREE; on Windows the join does not wait
+for the host thread) looked alive again. Now only RUNNING becomes FINISHED.
+
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 1020379..7d91fcf 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -268,7 +268,12 @@ static void* ppu_host_thread_proc(void* param)
+         return NULL;
+ #endif
+     }
+-    info->state = PPU_THREAD_STATE_FINISHED;
++    /* R&C patch 6004: only a thread that returned from its entry (still RUNNING) becomes FINISHED here. One that ended
++     * in sys_ppu_thread_exit is FINISHED already and may have been joined (FREE) before this epilogue runs: on Windows
++     * the join does not wait for the host thread, so setting FINISHED unconditionally turned a joined, freed slot back
++     * into a live-looking FINISHED thread (sys_ppu_thread_get_priority never said ESRCH). */
++    if (info->state == PPU_THREAD_STATE_RUNNING)
++        info->state = PPU_THREAD_STATE_FINISHED;
+     table_unlock();
+ 
+     /* Signal anyone waiting for join */

@@ -1,0 +1,43 @@
+R&C patch 6505 (2026-11-02, coordinator; follow-up to 6500): on MinGW the WWS code-buffer slot table has one definition.
+6500 defines g_spu_wws_code_buf_slot[] in spu_context.h with SPU_GATE, which is `__attribute__((weak))` off MSVC.
+MinGW's GNU ld does not merge weak data (KZ3 patch 1130's finding for g_spu_coh_bits): x86_64-w64-mingw32-nm on the
+v0.18.0 tods.exe lists 40 `.weak.g_spu_wws_code_buf_slot.<symbol>` tables, one per object. The port's SPU registration
+wrote the slot into its own copy and spu_indirect_branch read another: in the first v0.18.0 NEW GAME run (Metropolis,
+about 174 s in) the read returned 0xFFFFFFFF, and spu_wws_code_buffer read LS base + 0xFFFFFFFF on a raw SPU thread
+(access violation in spu_indirect_branch, spu_context.h spu_wws_code_buffer_slot). The pre-v0.18.0 6500 had the same
+header definition, so on MinGW its registered slot (0x1330 for ToD) was probably never the one read (a zero copy falls
+back to 0x1320); not checked on the old exe. Fix as 1130: on MinGW the header declares the table extern and spu_channels.c defines it once;
+MSVC (selectany) and ELF (weak, merged) are unchanged. Every other SPU_GATE variable in this header has the same per-object
+copies on MinGW; those are diagnostic gates each copy sets from the same environment variable, so they are left as they are
+(noted for KZ3 and upstream).
+
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -20,6 +20,10 @@
+ #include "spu_interp.h"    /* spu_lifted_fn / spu_lifted_lookup -- defined below */
+ #include "ps3emu/ps3_ftrace.h"
+ #include "spu_overlay_residency.h"
++
++#if defined(_WIN32) && !defined(_MSC_VER)
++SPU_READ_MOSTLY uint32_t g_spu_wws_code_buf_slot[SPU_WWS_SLOT_IMAGES];   /* R&C patch 6505: the one definition on MinGW */
++#endif
+ #include <stdint.h>
+ #include <stdatomic.h>
+ #include <stdio.h>
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -725,7 +725,14 @@
+  * workload runs. */
+ #define SPU_WWS_CODE_BUF_SLOT_DEFAULT 0x1320u
+ #define SPU_WWS_SLOT_IMAGES 256
++#if defined(_WIN32) && !defined(_MSC_VER)
++/* R&C patch 6505: MinGW's GNU ld (PE/COFF weak externals) does not merge weak definitions (KZ3 patch 1130's finding):
++ * every object that includes this header got its own `.weak.g_spu_wws_code_buf_slot.<symbol>` table, so the slot the
++ * port's SPU registration set was never the table spu_indirect_branch read. One strong definition in spu_channels.c. */
++extern uint32_t g_spu_wws_code_buf_slot[SPU_WWS_SLOT_IMAGES];
++#else
+ SPU_GATE SPU_READ_MOSTLY uint32_t g_spu_wws_code_buf_slot[SPU_WWS_SLOT_IMAGES];
++#endif
+ static inline void spu_wws_set_code_buffer_slot(int pm_image_id, uint32_t lsa)
+ {
+     if ((unsigned)pm_image_id < SPU_WWS_SLOT_IMAGES)

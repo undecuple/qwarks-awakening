@@ -1,0 +1,62 @@
+Live draw: INLINE_ARRAY vertices ignore the frequency divider. Vertex n of an inline stream reads element n; the RSX applies
+no divider, modulo or base index to inline data (RPCS3 RSXDrawCommands.cpp analyse_inputs_interleaved: the inlined branch
+registers every attribute with frequency 1, no modulo, and returns before frequency_divider_mask is read). A divider left in
+an attribute's format word by an earlier array draw made every inline vertex read element vertex/f (or vertex%f): upstream
+issue #457 item E1 (feanor-noldorin). Every fetch path: fetch_attr (rsx_live_draw.c), rsx_vertex_fetch_attr_one
+(rsx_vertex_compact.c) and rsx_vertex_fetch_many's block loop. Host test:
+port/rc/tests/run_inline_divider_test.sh (R&C).
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: rsx_vertex_fetch_many no longer falls back to the per-vertex fetch for a
+divided attribute: KZ3 2040/2073's block loop (RSX_FETCH_LOOP) computes the element itself, with the divider. It gets
+the same rule (inline: element = vertex_id); found by the host test, whose fetch_many cases read 0 0 0 0 1 1 1 1 without
+it. The test's fetch_many call follows v0.18.0's signature (the stride is the plan's).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index df3b7f2..f68b7af 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10786,7 +10786,12 @@ static int fetch_attr(u32 i, u32 base, u32 vertex_id, u32 base_index,
+     const u32 divider_mask = rsx_dsp_reg(&g.rsx, 0x1FC0);
+     if (a.frequency >= 2)
+         g_ld_divider_fetches++;
+-    const u32 source_element = rsx_vertex_element_index(
++    /* R&C patch 7009: an INLINE_ARRAY vertex n reads element n of the stream. The RSX applies no frequency divider,
++     * modulo or base index to inline data (RPCS3 RSXDrawCommands.cpp analyse_inputs_interleaved: the inlined branch
++     * registers every attribute with frequency 1 and no modulo and returns before frequency_divider_mask is read;
++     * read, not copied). A divider left by an earlier array draw made every inline vertex read element 0 or
++     * vertex_id/f (upstream issue #457 E1). */
++    const u32 source_element = dc.inl ? vertex_id : rsx_vertex_element_index(
+         vertex_id, base_index, a.frequency,
+         (divider_mask >> i) & 1u);
+     const u8* p;
+diff --git a/libs/video/rsx_vertex_compact.c b/libs/video/rsx_vertex_compact.c
+index 1c7801d..c31efd4 100644
+--- a/libs/video/rsx_vertex_compact.c
++++ b/libs/video/rsx_vertex_compact.c
+@@ -364,7 +364,8 @@ static int rsx_vertex_fetch_attr_value(
+         return 1;
+     }
+ 
+-    const u32 element = rsx_vertex_element_index(
++    /* R&C patch 7009: inline vertices are consecutive; no divider, modulo or base index (see fetch_attr). */
++    const u32 element = plan->inline_data ? ref->vertex_id : rsx_vertex_element_index(
+         ref->vertex_id, ref->base_index, fetch->desc.frequency,
+         (plan->divider_mask >> attr) & 1u);
+     const u8* source = NULL;
+@@ -416,7 +417,8 @@ int rsx_vertex_fetch_one(
+ #define RSX_FETCH_LOOP(decode)                                                  \
+     for (u32 i = 0; i < count; i++) {                                           \
+         float* v = (float*)(out + (size_t)i * stride + slot * 16u);             \
+-        const u32 element = plain                                               \
++        const u32 element = inl ? refs[i].vertex_id /* R&C patch 7009 */      \
++            : plain                                                             \
+             ? ((refs[i].vertex_id + refs[i].base_index) & 0x000FFFFFu)          \
+             : rsx_vertex_element_index(refs[i].vertex_id, refs[i].base_index,   \
+                                        fetch->desc.frequency, modulo);          \
+@@ -472,6 +474,7 @@ int rsx_vertex_fetch_many(
+     if (!plan || (!refs && count) || (!out && plan->layout.stride && count))
+         return 0;
+     const u32 stride = plan->layout.stride;
++    const int inl = plan->inline_data != NULL;   /* R&C patch 7009: inline vertex n reads element n */
+     const int cmp32_batch = rsx_vtx_switch(&rsx_vtx_cmp32_batch, "LD_VTX_CMP32");   /* patch 2073 */
+     const int f16_fast = rsx_vtx_switch(&rsx_vtx_f16_fast, "LD_VTX_F16");   /* patch 2074 */
+     for (u32 slot = 0; slot < plan->layout.count; slot++) {

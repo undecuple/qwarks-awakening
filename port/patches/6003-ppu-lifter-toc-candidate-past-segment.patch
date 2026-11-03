@@ -1,0 +1,23 @@
+Patch 6003: the TOC candidate harvest in ppu_lifter accepts a TOC base up to 0x8000 past the end of the segment holding its
+OPD pairs (R&C pass 10, 2026-10-19). Tools of Destruction has three TOCs; the third (0x8afe5c) lies past its segment (ends
+0x8ad4e8), so its 119 jump-table dispatchers were never tried and their cases fell to ps3_indirect_call (first Proton start: unresolved
+indirect call -> 0x00821F20). General; upstream candidate.
+
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 0be2efb..d4d3151 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -5199,8 +5199,12 @@ def main() -> None:
+                 for o in range(0, len(d) - 7, 8):
+                     c = int.from_bytes(d[o:o+4], 'big')
+                     t = int.from_bytes(d[o+4:o+8], 'big')
++                    # The TOC register points 0x8000 into its .toc table, so a
++                    # TOC whose table ends a segment lies up to 0x8000 past the
++                    # segment's end (R&C ToD: third TOC 0x8afe5c, segment ends
++                    # 0x8ad4e8; its 119 dispatchers stayed unresolved).
+                     if text_lo <= c < text_hi and (c & 3) == 0 and \
+-                       v0 <= t < v1 and (t & 3) == 0:
++                       v0 <= t < v1 + 0x8000 and (t & 3) == 0:
+                         toc_freq[t] += 1
+             for t, n in toc_freq.most_common(8):
+                 if n >= 64 and t not in toc_candidates:

@@ -1,0 +1,139 @@
+Patch 6001: spu_lifter.py --data-range, lift_jobmods.py --table, SPU_ABI on the workload
+registry's extern entry declarations.
+
+spu_lifter.py --data-range START-END (repeatable) drops functions that start inside an embedded data range and caps a
+function that runs into one at the range start (like --code-end, for islands). lift_jobmods.py --table TSV reads a
+per-module lift table keyed on the module hash: mode=tail -> --code-end, head/island -> one --data-range per range,
+drop_seed_base_plus_0x30=1 omits the base+0x30 seed. build_spu_workloads.py declares the lifted entries SPU_ABI so
+the registry's calls match their definitions on Win64.
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: upstream split lift_jobmods.py main() into lift_module() and
+module_seeds() (PR #444 verified regions, 7d8d507f link base from the header); the table lookup now lives in
+lift_module() (TABLE is module-level, filled by main), the seed drop is a module_seeds() argument, and an explicit
+code end (CODE_END or --engine-elf's reachability end) still wins over the table, as CODE_END did before.
+spu_lifter.py and build_spu_workloads.py hunks unchanged (offsets only).
+
+diff --git a/tools/build_spu_workloads.py b/tools/build_spu_workloads.py
+index 2eef378..b49af66 100644
+--- a/tools/build_spu_workloads.py
++++ b/tools/build_spu_workloads.py
+@@ -219,7 +219,7 @@ def write_registry(args, imgs, text_fps, image_ids=None):
+     L.append("")
+     L.append("/* per-image extern decls (prefixed entry fn + recomp_register) */")
+     for img, prefix, fp, ent in imgs:
+-        L.append(f"extern void {prefix}spu_func_{ent:08X}(spu_context*);")
++        L.append(f"extern SPU_ABI void {prefix}spu_func_{ent:08X}(spu_context*);")
+         L.append(f"extern void {prefix}spu_recomp_register(void);")
+     L.append("")
+     L.append(f"void {args.register_fn}(void)")
+diff --git a/tools/lift_jobmods.py b/tools/lift_jobmods.py
+index f878379..86e88a1 100644
+--- a/tools/lift_jobmods.py
++++ b/tools/lift_jobmods.py
+@@ -77,6 +77,9 @@ CODE_END = {
+ EXTRA_FUNCS = [a.strip() for a in
+                os.environ.get("LBP_JOBMOD_EXTRA_FUNCS", "").split(",") if a.strip()]
+ 
++# Per-module lift table rows (--table), keyed on the module hash.
++TABLE = {}
++
+ 
+ def manual_link_targets(raw, base=BASE):
+     """Return targets built into the link register by hand:
+@@ -223,7 +226,7 @@ def module_code_end(raw, name, base=BASE):
+     return max(seen) + 4
+ 
+ 
+-def module_seeds(raw, base=BASE):
++def module_seeds(raw, base=BASE, seed_base_plus_0x30=True):
+     """Extra function entries offered to the lifter for one module."""
+     # Only offer addresses that fall inside THIS module's image.
+     inside = [a for a in EXTRA_FUNCS if base <= int(a, 0) < base + len(raw)]
+@@ -237,7 +240,8 @@ def module_seeds(raw, base=BASE):
+     # corrupted stack (drain-mismatch return_pc=0x50C8 pc=0xA800, jobmod
+     # ef33c6c99dc7). Seeding it is exact, not a heuristic: every module's
+     # first instruction is at +0x30.
+-    inside.append(hex(base + 0x30))
++    if seed_base_plus_0x30:
++        inside.append(hex(base + 0x30))
+     inside += [hex(a) for a in manual_link_targets(raw, base)]
+     inside += [hex(a) for a in switch_table_targets(raw, base)]
+     return inside
+@@ -263,12 +267,18 @@ def lift_module(raw, name, outdir, tmp_elf, merge_chunks, code_end=None,
+     cmd = [sys.executable, LIFTER, "--auto-functions", tmp_elf, "--base", hex(base),
+            "--symbol-prefix", prefix, "-o", outsub,
+            "--source-name", "spu_recomp.c", "--header-name", "spu_recomp.h"]
++    trow = TABLE.get(name.split("_")[1]) if "_" in name else None
+     end = code_end or CODE_END.get(name)
+     if end:
+         cmd += ["--code-end", hex(end)]
++    elif trow and trow["mode"] == "tail" and trow["code_end"]:
++        cmd += ["--code-end", trow["code_end"]]
++    elif trow and trow["data_ranges"]:
++        for rng in trow["data_ranges"].split(";"):
++            cmd += ["--data-range", rng]
+     if merge_chunks:
+         cmd += ["--merge-chunks"]
+-    inside = module_seeds(raw, base)
++    inside = module_seeds(raw, base, not (trow and trow["drop_seed_base_plus_0x30"] == "1"))
+     if code_end:
+         inside = [a for a in inside if int(a, 0) < code_end]
+     if inside:
+@@ -349,7 +359,19 @@ def main():
+                     help="Pass --merge-chunks to spu_lifter.py: each run of chunks "
+                          "between call targets becomes one C function with gotos "
+                          "instead of chunks linked by trampolines.")
++    ap.add_argument("--table", default=None, metavar="TSV",
++                    help="Per-module lift table (module hash, entry, mode, code_end, data_ranges, extra_seeds, "
++                         "drop_seed_base_plus_0x30, ...). Rows are matched on the hash in the file name (field 1 of "
++                         "jobmod_<hash>_e<entry>). mode=tail sets --code-end (same as a CODE_END entry); mode=head/island "
++                         "passes one --data-range per range; drop_seed_base_plus_0x30=1 omits the base+0x30 seed. "
++                         "A module with an explicit code end (CODE_END, or --engine-elf's reachability end) keeps it.")
+     args = ap.parse_args()
++    if args.table:
++        with open(args.table) as tf:
++            hdr = tf.readline().rstrip("\n").split("\t")
++            for line in tf:
++                row = dict(zip(hdr, line.rstrip("\n").split("\t")))
++                TABLE[row["module"]] = row
+     OUTDIR  = args.out
+     register_c = args.register or os.path.join(OUTDIR, "jobmods_register.c")
+ 
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+index 6871ebc..5606a42 100644
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -1239,6 +1239,11 @@ def main() -> None:
+                         "0x10F8,0x808) to add as boundaries -- for indirect-branch "
+                         "targets that --auto-functions can't detect statically. "
+                         "Splits the containing auto-detected function at each addr.")
++    p.add_argument("--data-range", action="append", default=[], metavar="START-END",
++                   help="Half-open address range [START, END) of embedded data inside the code (e.g. a shufb mask "
++                        "table or a constant pool). Repeatable. Drops every function starting inside a range and caps "
++                        "a function that runs into one at the range start, like --code-end for a tail but for "
++                        "islands; code after the range is kept.")
+     p.add_argument("--code-end", type=lambda x: int(x, 0), default=0,
+                    help="Address where executable code ends and an embedded "
+                         "rodata/const tail begins. Drops any auto-detected "
+@@ -1347,6 +1352,22 @@ def main() -> None:
+                          "data tail left un-disassembled\n"
+                          % (ce, len(bounds), before))
+ 
++    if args.data_range:
++        rngs = []
++        for spec in args.data_range:
++            lo, hi = (int(v, 0) for v in spec.split("-", 1))
++            rngs.append((lo, hi))
++        kept = []
++        for (s, e) in bounds:
++            if any(lo <= s < hi for lo, hi in rngs):
++                continue
++            for lo, hi in rngs:
++                if s < lo < e:
++                    e = lo
++            kept.append((s, e))
++        sys.stderr.write("[spu_lifter] data-range: kept %d/%d bound(s)\n" % (len(kept), len(bounds)))
++        bounds = kept
++
+     insns = disassemble_spu(data, base)
+ 
+     lifter = SPULifter(trace=args.trace, prefix=args.symbol_prefix)

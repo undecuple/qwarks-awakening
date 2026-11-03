@@ -1,0 +1,98 @@
+# Third-party components and credits
+
+| Component | Use | Licence |
+|---|---|---|
+| [ps3recomp](https://github.com/sp00nznet/ps3recomp) | PPU/SPU recompiler and PS3 runtime (submodule `third_party/ps3recomp`, pinned at v0.18.0, commit 4e8f3ca; our changes are the patches in `port/patches/`) | MIT |
+| [RPCS3](https://github.com/RPCS3/rpcs3) | reference for PS3 behaviour and data layouts, read only; no RPCS3 code is included | (GPL-2.0, not used as code) |
+| [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) (Jovanny Lemonad) | the wordmark in `assets/` (banner, social preview); the font itself is not included | SIL OFL 1.1 |
+| [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani) (Indian Type Foundry) | small text in `assets/`; the font itself is not included | SIL OFL 1.1 |
+
+## Upstream contributors and sister ports
+
+Our ps3recomp patches (`port/patches/`) carry work from other ps3recomp pull requests and forks (MIT) and from the
+author's sister ports. Each patch header names its source.
+
+- **Project Helghast** ([undecuple/project-helghast](https://github.com/undecuple/project-helghast), the author's
+  Killzone 3 port, MIT): patches `0xxx`-`5xxx`, `9633` and `9933`, carried from that port's patch series, unchanged
+  or rebased. Most of the entries below reach this port through that series.
+- **Project Pyrrhus** ([undecuple/project-pyrrhus](https://github.com/undecuple/project-pyrrhus), the author's
+  Killzone 2 port, MIT), through the Killzone 3 series: patches 1059 (design of the per-waiter `sys_lwcond` FIFO),
+  1139 (console `sys_fs_open` flag values), 1143 (kernel wake events under Wine), 2088 and 2089 (`WPOS` and the clear
+  scissor on antialiased targets), 2124 (fragment-program source precision modifiers), 2129 (idle wake at a FIFO
+  park) and 2141 (pipeline keys tied to the shader translator).
+- **J-Stars Victory VS+ port** (MIT): its patch 0004, carried as patch 1145: the HLE fast path stores the caller's
+  TOC in the ABI slot as the full path does.
+- **Toro Lets Party port** (same author): [PR #387](https://github.com/sp00nznet/ps3recomp/pull/387), the PPU
+  lifter's far jump-table bounds compare, carried until it was merged into ps3recomp (v0.16.0).
+- **tekulvw:** [PR #304](https://github.com/sp00nznet/ps3recomp/pull/304),
+  [#289](https://github.com/sp00nznet/ps3recomp/pull/289), [#434](https://github.com/sp00nznet/ps3recomp/pull/434),
+  [#445](https://github.com/sp00nznet/ps3recomp/pull/445), [#449](https://github.com/sp00nznet/ps3recomp/pull/449),
+  [#420](https://github.com/sp00nznet/ps3recomp/pull/420), [#481](https://github.com/sp00nznet/ps3recomp/pull/481)
+  and [#484](https://github.com/sp00nznet/ps3recomp/pull/484) (patches 2055, 1061, 1120, 1118, 1119, 1123, 1124,
+  1125): framebuffer output sRGB for half exports; the interrupt-enable bit in the SPU machine status (opt-in here);
+  POSIX `_setjmp`/`_longjmp` for SPU jumps; one gate for the SPU local-store diagnostics; a bounded EA-to-IO lookup
+  behind the SPU put hook; one owner order for every lifted-code lookup; the SPU dispatch cache; and a PUT that
+  touches a reserved line copying only the reserved lines under the lock.
+- **NoahBPeterson:** [PR #287](https://github.com/sp00nznet/ps3recomp/pull/287),
+  [PR #213](https://github.com/sp00nznet/ps3recomp/pull/213) and his fork's commits e68e567, b709a08 and e3ab49d
+  (patches 1071, 1134, 1074, 1055, 1056): exact per-element code for SPU extended-range single precision and its
+  integer `fi` (#287), the per-SPU SPURS kernel with ready-count admission (#213, `libs/spurs/spurs_kernel.c`), and
+  the ideas behind the hashed HLE NID lookup, the striped lock-line lock and the seqlock GETLLAR (fork commits).
+- **erikomis:** [PR #333](https://github.com/sp00nznet/ps3recomp/pull/333),
+  [#334](https://github.com/sp00nznet/ps3recomp/pull/334), [#338](https://github.com/sp00nznet/ps3recomp/pull/338),
+  [#372](https://github.com/sp00nznet/ps3recomp/pull/372), [#489](https://github.com/sp00nznet/ps3recomp/pull/489)
+  and [#474](https://github.com/sp00nznet/ps3recomp/pull/474), merged into ps3recomp: `PS3_LANG` system-language
+  selection, the row-at-a-time unscaled NV3089 blit, `PS3_GAMEDATA_ROOT`, pad rumble that lasts until it changes, a
+  guest stack of its own for each host thread's callbacks, and `MUTEX_WATCH`. Patch 9933 builds on #333, patches
+  2080, 2083 and 2140 use #334's row-copy idea, patch 5004 adapts `PS3_GAMEDATA_ROOT` to its trophy store, patch 4010
+  holds and renews a rumble request as #372 does, patch 1126 carries #489, and patch 1122 takes #474's idea of naming
+  the owner of a lock a thread is stuck on.
+- **Kurtisone:** [PR #340](https://github.com/sp00nznet/ps3recomp/pull/340) and
+  [#243](https://github.com/sp00nznet/ps3recomp/pull/243), merged into ps3recomp: the atomic update of a task's
+  signalled bit against SPU commits, which patch 1067 relies on, and reading a diagnostic switch once instead of on
+  every call, which patch 1127 applies to the other hot paths.
+- **rigaz29:** [PR #633](https://github.com/sp00nznet/ps3recomp/pull/633) (patch 9633, part of it): the wall clock
+  on Windows in seconds since 1970.
+- **n0madic:** [PR #485](https://github.com/sp00nznet/ps3recomp/pull/485) (patch 2100): vertex-program branches on
+  the transform branch bits, and block starts past instruction 512.
+- **JonathanDC64:** fork PRs [#38](https://github.com/JonathanDC64/ps3recomp/pull/38) and
+  [#47](https://github.com/JonathanDC64/ps3recomp/pull/47) (from the Demon's Souls port), adapted in patches 1111 and
+  2085: PPU stores that stay coherent with SPU lock-line reservations, and colour-mask writes with reserved bits.
+- **soyjxck:** [soyjxck/ps3recomp](https://github.com/soyjxck/ps3recomp) (from the Drakengard 3 port): patch 1091's
+  inline guest loads follow its per-page access byte (`ppu_vm_page.h`).
+- **robbe1912:** [robbe1912/ps3recomp](https://github.com/robbe1912/ps3recomp) commit 0d03c8b5 (patch 2057, from the
+  MotorStorm: Monument Valley port): the fragment decoder's third-source absolute modifier.
+- **feanor-noldorin:** item E1 of [issue #457](https://github.com/sp00nznet/ps3recomp/issues/457), the report that
+  inline-array vertices ignore the frequency divider, which patch 7009 (this port's own) fixes.
+
+Ratchet & Clank and the names of its games and characters are trademarks of Sony Interactive Entertainment. This
+project is not affiliated with or endorsed by Sony Interactive Entertainment, Insomniac Games or the studios that
+remastered the PS2 games. The names are used only to say which games the port runs; no logos or other marks are used.
+
+The MIT licence in LICENSE covers this port's own source code, tools and documentation only. It grants no rights to
+Ratchet & Clank or any other software, data or trademark of Sony Interactive Entertainment or Insomniac Games.
+
+**No game content is distributed.** This repository contains no part of the games: no disc files, no decrypted or
+translated game code, no assets and no keys. Players supply their own copy of each game.
+
+## Rights holders
+
+- **No circumvention tools.** This repository ships no decryption or copy-protection circumvention tools, no keys
+  and no instructions for decrypting game files. The port only reads a decrypted executable that players make
+  themselves from their own copy of the game.
+- **Contact.** If you hold rights in material you believe is in this repository, report it privately through this
+  repository's *Security* tab (*Report a vulnerability*). Anything identified as infringing is removed while it is
+  checked.
+- **Formal notices** under the DMCA go to GitHub as described in
+  [GitHub's DMCA Takedown Policy](https://docs.github.com/en/site-policy/content-removal-policies/dmca-takedown-policy).
+
+## Reuse and attribution (including AI and automated use)
+
+- **Licence:** the port's own code, tools and documentation are MIT ([LICENSE](LICENSE)), for automated use exactly
+  as for any other: copies or substantial portions, including code an AI model reproduces from this repository, must
+  include the copyright notice "Copyright (c) 2026 undecuple" and the MIT permission notice.
+- **Attribution we ask for:** "Qwark's Awakening by undecuple", with a link to
+  <https://github.com/undecuple/qwarks-awakening>.
+- **Not covered by any licence here:** the games themselves. Recovered names, numbers and formats are documented for
+  interoperability only.
+- **Accuracy:** findings are dated and marked as verified or assumed; do not restate an `ASSUMPTION:` as fact.

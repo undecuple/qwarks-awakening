@@ -1,0 +1,28 @@
+Patch 7000: LD_TEX_RAW_DUMP_FROM=<frame> (diagnostic, default off). LD_TEX_RAW_DUMP (patch 2005) spends its
+64-file cap on the first changing textures; on Tools of Destruction that is the movie's fade-in (g_ld_frames 503-762 of
+about 4000), so no frame with Ratchet's green legs was dumped. With the variable set, texture binds before that
+g_ld_frames value neither dump nor update the change memory, so the cap counts from it and the first bind at or after
+it dumps. Unset: identical behaviour. No host test fits (the code is inside the D3D12 file); checked by applying the
+series with git apply and a MinGW syntax check of rsx_live_draw.c.
+
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3852,11 +3852,15 @@
+      * reads them) to scratch/texraw_<loc>_<offset>_<n>_<w>x<h>_f<fmt>_r<remap>_m<mips>.bin when first seen and
+      * each time they change (max 64 files), so a texture can be inspected offline
+      * (tools/smoke/texraw_to_png.py; LD_TEXRGBA_DUMP skips DXT). "all" dumps every texture. */
+-    { static int on = -1, all = 0, n = 0; static u32 want = 0;
++    { static int on = -1, all = 0, n = 0; static u32 want = 0, from = 0;
+       static struct { u32 off, w, h, fmt; u64 hash; } seen[256]; static int ns = 0;
+       if (on < 0) { const char* e = getenv("LD_TEX_RAW_DUMP"); on = e ? 1 : 0;
+-                    all = e && !strcmp(e, "all"); want = (e && !all) ? (u32)strtoul(e, NULL, 16) : 0; }
+-      if (on && n < 64 && (all || t->offset == want)) {
++                    all = e && !strcmp(e, "all"); want = (e && !all) ? (u32)strtoul(e, NULL, 16) : 0;
++                    /* patch 7000: LD_TEX_RAW_DUMP_FROM=<frame> (decimal, the frame= of the [live-draw]/[tex-raw] lines,
++                     * g_ld_frames): nothing is dumped or remembered before that frame, so the 64-file cap counts from
++                     * it and the first bind at or after it dumps the texture. Unset = 0 = unchanged behaviour. */
++                    { const char* ff = getenv("LD_TEX_RAW_DUMP_FROM"); from = ff ? (u32)strtoul(ff, NULL, 10) : 0; } }
++      if (on && n < 64 && g_ld_frames >= from && (all || t->offset == want)) {
+           int k = -1;
+           for (int q = 0; q < ns; q++)
+               if (seen[q].off == t->offset && seen[q].w == t->width && seen[q].h == t->height &&

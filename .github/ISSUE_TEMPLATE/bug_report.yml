@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in the port does not work as it should
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Please do **not** attach game files, decrypted binaries, saves or keys: only logs and screenshots.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, in order.
+  - type: input
+    id: version
+    attributes:
+      label: Port build
+      description: "The commit (`git rev-parse --short HEAD`) of the build you ran."
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: "OS (Windows version, or Linux distribution and Proton version), CPU, GPU and driver version."
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game and disc
+      description: "Which game and title ID (for example BCUS98127), and where in the game it happened."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log file
+      description: "Attach the newest log file the program wrote, if any. Before attaching, open it and remove your Windows or Linux user name, home folder paths and any host name (search for your user name). Never attach game files, decrypted binaries, saves or keys."

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Ratchet & Clank Future: Tools of Destruction",
+  "system": "PS3",
+  "type": "recomp",
+  "original": {
+    "region": "US",
+    "serial": "BCUS98127",
+    "revision": "02.00 (disc, no update)"
+  },
+  "project": "Qwark's Awakening",
+  "status": "in-progress",
+  "targets": [
+    "PC (Windows)"
+  ],
+  "toolchain": [
+    "ps3recomp"
+  ],
+  "approach": "Static recompilation of the PPU code to C with ps3recomp and of the SPU programs, HLE system libraries, Direct3D 12 RSX backend",
+  "maintainers": [
+    {
+      "name": "undecuple",
+      "link": "https://github.com/undecuple"
+    }
+  ],
+  "links": [
+    {
+      "label": "Repository",
+      "url": "https://github.com/undecuple/qwarks-awakening"
+    },
+    {
+      "label": "Building",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md"
+    },
+    {
+      "label": "Requirements",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md"
+    },
+    {
+      "label": "Roadmap",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md"
+    },
+    {
+      "label": "Releases",
+      "url": "https://github.com/undecuple/qwarks-awakening/releases"
+    }
+  ],
+  "help": [
+    "Testing on real Windows with NVIDIA GPUs"
+  ],
+  "tags": [
+    "cell",
+    "spurs",
+    "d3d12"
+  ],
+  "notes": "Early work: the first game starts as a Windows program and can be played by hand with a controller from its first level, with known bugs; it has not been played through and is not playable yet. Needs your own copy of the game and the decrypted EBOOT made from it; the build happens on your PC."
+}

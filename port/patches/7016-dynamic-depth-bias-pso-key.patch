@@ -1,0 +1,181 @@
+Polygon offset as dynamic state (D3D12_OPTIONS16.DynamicDepthBiasSupported + ID3D12GraphicsCommandList9::RSSetDepthBias).
+The PSO key held the raw float bits of POLY_OFFSET_SCALE/BIAS (KZ3 patch 2006) and D3D12 baked them into the PSO, so a
+title that changes its shadow bias every frame built (and the walker awaited) new PSOs every frame: ToD Fastoon,
+tods-play-1140, 1,132 PSOs over frames 2559-2815 from 18 new shaders, 42 s of creates, ~1 s walk per frame. Now, when the
+device supports it, an offset-on PSO carries D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS and only "offset on" in its key
+(rsx_dyn_bias.h), and the draw passes the values (as 2006 baked them) to RSSetDepthBias. Otherwise, or with LD_NO_DYN_BIAS=1,
+everything is as before. The pipeline stream path gets a FLAGS subobject. LD_PSO_KEYLOG lines gain the raw offset words.
+Log: "[caps] list9=.. dynamic-depth-bias=..". Host test: R&C port/rc/tests/run_dyn_bias_test.sh.
+Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: unchanged; it applies with a 3-way merge only (line offsets). Checked
+that the render-state hash (ld_hash_structural_render_state, KZ3 2141 era) is still fed from ld_pso_key_tail's local
+copy that ld_dynb_key_bits rewrites, so the key carries "offset on" only.
+
+diff --git a/libs/video/rsx_dyn_bias.h b/libs/video/rsx_dyn_bias.h
+new file mode 100644
+index 0000000..0fd7ef7
+--- /dev/null
++++ b/libs/video/rsx_dyn_bias.h
+@@ -0,0 +1,41 @@
++/* R&C patch 7016: polygon offset as dynamic state (ID3D12GraphicsCommandList9::RSSetDepthBias).
++ *
++ * The PSO key held the raw float bits of POLY_OFFSET_SCALE / POLY_OFFSET_BIAS (patch 2006), and D3D12 bakes
++ * the depth bias into the PSO. A title that recomputes its shadow bias every frame (ToD's character shadow
++ * maps from frame ~2616 on Fastoon, tods-play-1140) then gets a new key, a new PSO and a create wait (~37 ms)
++ * on every changed value: 1,132 PSOs over 256 frames, 42 s of creates, no new shaders. With
++ * D3D12_OPTIONS16.DynamicDepthBiasSupported the PSO carries D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS and
++ * only "offset on" in its key; the values go to RSSetDepthBias per draw. Without the feature (or with
++ * LD_NO_DYN_BIAS=1) the key and the PSO are as before. Pure functions here so a host test can check them. */
++#ifndef RSX_DYN_BIAS_H
++#define RSX_DYN_BIAS_H
++#include <stdint.h>
++#include <string.h>
++
++#define LD_DYNB_KEY_TAG   0x44594E42u   /* "DYNB": key value for "offset on, values dynamic" */
++#define LD_PSO_FLAG_DYNAMIC_DEPTH_BIAS 0x4u   /* D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS (Agility 1.608+) */
++
++/* The key's view of the offset words: unchanged without dynamic bias; with it, one tag when the offset is on
++ * (any non-zero word) and zero when it is off, so every bias value maps to the same PSO. */
++static inline void ld_dynb_key_bits(uint32_t* scale_bits, uint32_t* bias_bits, int dynamic)
++{
++    if (!dynamic) return;
++    const int on = (*scale_bits | *bias_bits) != 0;
++    *scale_bits = on ? LD_DYNB_KEY_TAG : 0u;
++    *bias_bits = 0u;
++}
++
++/* The values patch 2006 bakes into D3D12_RASTERIZER_DESC, as RSSetDepthBias arguments: DepthBias is the
++ * units term rounded to an integer (the PSO field is an INT), SlopeScaledDepthBias the factor, no clamp.
++ * NaN or out-of-range words leave the term 0, as the PSO path does. */
++static inline void ld_dynb_values(uint32_t scale_bits, uint32_t bias_bits, float* depth_bias, float* slope)
++{
++    float scale, bias;
++    memcpy(&scale, &scale_bits, 4);
++    memcpy(&bias, &bias_bits, 4);
++    *slope = (scale == scale) ? scale : 0.0f;
++    *depth_bias = 0.0f;
++    if (bias == bias && bias > -2.0e9f && bias < 2.0e9f)
++        *depth_bias = (float)(int32_t)(bias < 0.0f ? bias - 0.5f : bias + 0.5f);
++}
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 3053b65..da0589f 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -1726,6 +1726,8 @@ static struct {
+     ID3D12Device2* dev2;     /* pipeline state streams (DEPTH_STENCIL1/2) */
+     ID3D12GraphicsCommandList1* list1;
+     void* list8;             /* ID3D12GraphicsCommandList8 (no MinGW declaration; see ld_set_stencil_refs) */
++    void* list9;             /* R&C patch 7016: ID3D12GraphicsCommandList9 (RSSetDepthBias) */
++    int dyn_bias;            /* R&C patch 7016: D3D12_OPTIONS16.DynamicDepthBiasSupported + list 9 */
+     int logged_face_fallback;
+ } g_ld_caps;
+ 
+@@ -1828,6 +1830,7 @@ static void decode_render_state(render_state_t* rs)
+ 
+ /* GL stencil-op enums (the NV4097 payload) -> D3D12. Zero (never seeded by
+  * the game before first use) and GL_KEEP both map to KEEP. */
++#include "rsx_dyn_bias.h"   /* R&C patch 7016 */
+ static D3D12_STENCIL_OP gcm_stencil_op(u32 op)
+ {
+     switch (op) {
+@@ -1892,6 +1895,8 @@ static void apply_render_state(D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd,
+      * 24-bit depth buffer. D3D12 on a float DSV: DepthBias * 2^(e - 23) with e the exponent of the
+      * largest depth in the primitive, which is 2^-24 for depths in [0.5, 1) -- where scene geometry sits.
+      * ASSUMPTION: KZ3 uses Z24S8 zeta (Z16 would want units * 256); nearer depths get a smaller bias. */
++    if (g_ld_caps.dyn_bias && (rs->poly_scale_bits || rs->poly_bias_bits))   /* R&C patch 7016 */
++        pd->Flags |= (D3D12_PIPELINE_STATE_FLAGS)LD_PSO_FLAG_DYNAMIC_DEPTH_BIAS;
+     if (rs->poly_scale_bits || rs->poly_bias_bits) {
+         float scale, bias;
+         memcpy(&scale, &rs->poly_scale_bits, 4);
+@@ -1967,6 +1972,11 @@ typedef struct { DXGI_FORMAT RTFormats[8]; UINT NumRenderTargets; } ld_rt_format
+ static const GUID ld_IID_ID3D12GraphicsCommandList8 =
+     { 0xee936ef9, 0x599d, 0x4d28, { 0x93, 0x8e, 0x23, 0xc4, 0xad, 0x05, 0xce, 0x51 } };
+ typedef void (STDMETHODCALLTYPE* ld_om_set_front_back_ref_fn)(void* self, UINT front, UINT back);
++/* R&C patch 7016: ID3D12GraphicsCommandList9 {34ed2808-ffe6-4c2b-b11a-cabd2b0c59e1} (present in vkd3d-proton's
++ * d3d12core.dll); RSSetDepthBias is its first method, after list 8's one (OMSetFrontAndBackStencilRef). */
++static const GUID ld_IID_ID3D12GraphicsCommandList9 =
++    { 0x34ed2808, 0xffe6, 0x4c2b, { 0xb1, 0x1a, 0xca, 0xbd, 0x2b, 0x0c, 0x59, 0xe1 } };
++typedef void (STDMETHODCALLTYPE* ld_rs_set_depth_bias_fn)(void* self, FLOAT bias, FLOAT clamp, FLOAT slope);
+ 
+ /* Pipeline state stream subobject: type tag, then the payload at its natural alignment; each subobject
+  * pointer-aligned (the d3dx12 CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT layout). */
+@@ -1998,6 +2008,19 @@ static void ld_caps_init(void)
+     g_ld_caps.depth_bounds = g_ld_caps.dev2 && g_ld_caps.list1 && have_o2 && o2.DepthBoundsTestSupported;
+     g_ld_caps.per_face_stencil = g_ld_caps.dev2 && g_ld_caps.list8 && have_o14 &&
+                                  o14.IndependentFrontAndBackStencilRefMaskSupported;
++    {   /* R&C patch 7016 */
++        D3D12_FEATURE_DATA_D3D12_OPTIONS16 o16;
++        memset(&o16, 0, sizeof(o16));
++        const int have_o16 = SUCCEEDED(g.dev->lpVtbl->CheckFeatureSupport(
++            g.dev, D3D12_FEATURE_D3D12_OPTIONS16, &o16, sizeof(o16)));
++        if (FAILED(g.list->lpVtbl->QueryInterface(g.list, &ld_IID_ID3D12GraphicsCommandList9,
++                                                     &g_ld_caps.list9)))
++            g_ld_caps.list9 = NULL;
++        const char* nd = getenv("LD_NO_DYN_BIAS");
++        g_ld_caps.dyn_bias = g_ld_caps.list9 && have_o16 && o16.DynamicDepthBiasSupported && !(nd && nd[0] == '1');
++        fprintf(stderr, "[caps] list9=%d dynamic-depth-bias=%d%s\n", g_ld_caps.list9 != NULL, g_ld_caps.dyn_bias,
++                (nd && nd[0] == '1') ? " (LD_NO_DYN_BIAS=1)" : "");
++    }
+     D3D12_FEATURE_DATA_D3D12_OPTIONS13 o13;
+     memset(&o13, 0, sizeof(o13));
+     g_ld_alpha_factor = SUCCEEDED(g.dev->lpVtbl->CheckFeatureSupport(
+@@ -2073,6 +2096,7 @@ static HRESULT ld_create_pso(const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd, const
+         LD_PSS(ld_rt_format_array) rtv;
+         LD_PSS(DXGI_FORMAT) dsv;
+         LD_PSS(DXGI_SAMPLE_DESC) sample;
++        LD_PSS(D3D12_PIPELINE_STATE_FLAGS) flags;   /* R&C patch 7016 (before ds: ds may be the shorter DEPTH_STENCIL1) */
+         LD_PSS(ld_depth_stencil_desc2) ds;   /* DEPTH_STENCIL2, or DEPTH_STENCIL1 (a prefix of it) */
+     } st;
+     memset(&st, 0, sizeof(st));
+@@ -2089,6 +2113,7 @@ static HRESULT ld_create_pso(const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd, const
+     for (u32 r = 0; r < 8; r++) st.rtv.inner.RTFormats[r] = pd->RTVFormats[r];
+     st.dsv.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT; st.dsv.inner = pd->DSVFormat;
+     st.sample.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC;     st.sample.inner = pd->SampleDesc;
++    st.flags.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS;            st.flags.inner = pd->Flags;
+     const D3D12_DEPTH_STENCIL_DESC* d = &pd->DepthStencilState;
+     ld_depth_stencil_desc2* o = &st.ds.inner;
+     o->DepthEnable = d->DepthEnable; o->DepthWriteMask = d->DepthWriteMask; o->DepthFunc = d->DepthFunc;
+@@ -8898,7 +8923,8 @@ static u64 ld_pso_key_tail(u64 key, const ld_xl_in* xi, int packed_payload, u64*
+     const u32 shadow_mask = xi->shadow_mask, argb_mask = xi->argb_mask, unnorm_mask = xi->unnorm_mask;
+     const u8* shadow_zfunc = xi->shadow_zfunc; const u16* argb_remap = xi->argb_remap; const u32 (*unnorm_dim)[3] = xi->unnorm_dim;
+     const rsx_vertex_layout_plan* masked_layout = xi->layout;
+-    const render_state_t rs = *xi->rs;
++    render_state_t rs = *xi->rs;
++    ld_dynb_key_bits(&rs.poly_scale_bits, &rs.poly_bias_bits, g_ld_caps.dyn_bias);   /* R&C patch 7016 */
+     u64 dummy; if (!kl_pre_rs) kl_pre_rs = &dummy;
+     const u32 fp_ctrl_key = fp_ctrl & 0x4Eu;   /* patch 2021: + depth export */
+     key = fnv1a(&fp_ctrl_key, sizeof(fp_ctrl_key), key);
+@@ -10481,13 +10507,15 @@ static ID3D12PipelineState* get_pso(
+           if (kf == (FILE*)-1) { const char* e = getenv("LD_PSO_KEYLOG"); kf = (e && *e) ? fopen(e, "w") : NULL; }
+           if (kf) {
+               fprintf(kf, "key=%016llx vp=%016llx vpn=%u fp=%016llx fpn=%u ctl=%02x cube=%08x vtex=%08x gam=%012llx"
+-                          " shadow=%04x argb=%04x unn=%04x lay=%04x/%u/%d pre_rs=%016llx vs=%016llx/%u ps=%016llx/%u f=%u\n",
++                          " shadow=%04x argb=%04x unn=%04x lay=%04x/%u/%d pre_rs=%016llx vs=%016llx/%u ps=%016llx/%u f=%u"
++                          " poly=%08x/%08x dynb=%d\n",   /* R&C patch 7016: the offset words, raw */
+                       (unsigned long long)key, (unsigned long long)vp_h, vp_instrs, (unsigned long long)kl_fp, fp_size,
+                       fp_ctrl_key, cube_mask, vtex_mask, (unsigned long long)gamma_mask, shadow_mask, argb_mask,
+                       unnorm_mask, masked_layout ? masked_layout->mask : 0xFFFFu,
+                       masked_layout && packed_payload ? masked_layout->stride : VERT_STRIDE, packed_payload,
+                       (unsigned long long)kl_pre_rs, (unsigned long long)g_ld_pl_last_vs_hash, g_ld_pl_last_vs_len,
+-                      (unsigned long long)g_ld_pl_last_ps_hash, g_ld_pl_last_ps_len, g_ld_frames);
++                      (unsigned long long)g_ld_pl_last_ps_hash, g_ld_pl_last_ps_len, g_ld_frames,
++                      rs.poly_scale_bits, rs.poly_bias_bits, g_ld_caps.dyn_bias);
+               fflush(kf);
+           } }
+         if (bp_t0) { LDW_ADD(RSX_PERF_W_PSO_NEW_T, bp_t0); rsx_perf_add(RSX_PERF_W_PSO_NEW_N, 1); }
+@@ -15376,6 +15404,15 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     LDW_ADD(RSX_PERF_W_CONST_T, vcb_t0);
+ 
+     if (!sm_on || g_ld_sm.pso != pso) { g.list->lpVtbl->SetPipelineState(g.list, pso); g_ld_sm.pso = pso; }
++    if (g_ld_caps.dyn_bias && (rsx_dsp_reg(&g.rsx, M_POLY_OFFSET_FILL_ENABLE) & 1u)) {   /* R&C patch 7016 */
++        const u32 sb = rsx_dsp_reg(&g.rsx, M_POLY_OFFSET_SCALE), bb = rsx_dsp_reg(&g.rsx, M_POLY_OFFSET_BIAS);
++        if (sb | bb) {
++            enum { LD_LIST8_SLOTS = sizeof(ID3D12GraphicsCommandList7Vtbl) / sizeof(void*) + 1 };
++            float db, ss;
++            ld_dynb_values(sb, bb, &db, &ss);
++            ((ld_rs_set_depth_bias_fn)(*(void***)g_ld_caps.list9)[LD_LIST8_SLOTS])(g_ld_caps.list9, db, 0.0f, ss);
++        }
++    }
+     if (!sm_on || !g_ld_sm.rootsig) { g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x); g_ld_sm.rootsig = 1; }
+     g.list->lpVtbl->SetGraphicsRootConstantBufferView(
+         g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + g.cb_used);
