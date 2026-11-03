@@ -1,0 +1,9 @@
+{
+ "title": "Ratchet & Clank: A Crack in Time",
+ "note": "Per-title inputs of tools/spu/spu_lift.py (see tods_spu_config.json). pm_seed 0xa2c: the policy module's interrupt handler (same address as ToD's: lnop at 0xa2c, handler stores from 0xa34). No wws_code_slot: the policy module reads the job code buffer at LS 0x1320, the runtime default. lift_table: code ends and data islands of the two job modules (tools/survey/lift_table.py, 150 unsupported words in the first lift).",
+ "symbol_prefix": "acit",
+ "lift_table": "acit_spu_lift_table.tsv",
+ "edge_image_id": 30,
+ "pm_image_id": 2,
+ "pm_seed": "0xa2c"
+}

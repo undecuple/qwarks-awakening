@@ -93,6 +93,12 @@ def main():
     elf, ps3, out = sys.argv[1:4]
     here = os.path.dirname(os.path.abspath(__file__))
     table = json.load(open(sys.argv[4] if len(sys.argv) > 4 else os.path.join(here, "tods_raw_spu.json")))
+    if not table.get("programs"):
+        # a title without raw SPU programs (ACiT, Nexus: no sys_raw_spu_create call, no program names): nothing to lift or register
+        os.makedirs(out, exist_ok=True)
+        json.dump({"title": table["title"], "programs": []}, open(os.path.join(out, "rawspu_manifest.json"), "w"), indent=1)
+        print("no raw SPU programs in the table for %s" % table["title"])
+        return
     tools = os.path.join(ps3, "tools")
     sys.path.insert(0, tools)
     bsw = load(os.path.join(tools, "build_spu_workloads.py"), "bsw")

@@ -1,0 +1,18 @@
+cellSaveData: register cellSaveDataListAutoLoad (NID 0x21425307) as a ctx handler.
+
+What: ps3_savedata_list_auto_load (the ctx wrapper that reads the ninth argument, userdata, from the guest parameter save
+area at SP+112) existed in libs/system/cellSaveData.c but nothing registered it, so the call went through the generated
+8-argument adapter and the title's userdata reached funcFixed/funcStat/funcFile as NULL.
+How: one ps3_hle_register_ctx line next to its siblings (ListAutoSave, UserListAutoLoad/AutoSave from patch 7020).
+Test: port/rc/tests/test_savedata_list_auto.c (registered NID check; userdata 0xFACE reaches cbResult->userdata).
+
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1737,6 +1737,7 @@
+                          hle_cellSaveDataUserAutoLoad);
+     ps3_hle_register_ctx(0x52AAC4FAu, "cellSaveDataUserAutoSave",
+                          hle_cellSaveDataUserAutoSave);
++    ps3_hle_register_ctx(0x21425307u, "cellSaveDataListAutoLoad", ps3_savedata_list_auto_load);
+     ps3_hle_register_ctx(0x4DD03A4Eu, "cellSaveDataListAutoSave", hle_cellSaveDataListAutoSave);
+     ps3_hle_register_ctx(0x0E091C36u, "cellSaveDataUserListAutoSave", hle_cellSaveDataUserListAutoSave);
+     ps3_hle_register_ctx(0x248BD1D8u, "cellSaveDataUserListAutoLoad", hle_cellSaveDataUserListAutoLoad);

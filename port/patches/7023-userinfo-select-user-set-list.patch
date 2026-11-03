@@ -1,0 +1,24 @@
+cellUserInfo: cellUserInfoSelectUser_SetList (NID 0x55123A25).
+
+Imported by Into the Nexus 1.01, Full Frontal Assault 1.05 and All 4 One 1.03. (const CellUserInfoListSet* listSet)
+configures the user-selection list that a following SelectUser_ListGet/ListSet works on. A NULL listSet is
+CELL_USERINFO_ERROR_PARAM; otherwise the (guest) address is kept (ps3_userinfo_list_set()) and CELL_OK returned. With one
+user the selection is always that user, so the stored set changes nothing a title can observe (reference: RPCS3).
+
+--- a/libs/system/cellUserInfo.c
++++ b/libs/system/cellUserInfo.c
+@@ -125,3 +125,14 @@
+
+     return CELL_OK;
+ }
++
++/* ---- patch 7023 ---- */
++static u32 s_userinfo_list_set;
++u32 ps3_userinfo_list_set(void) { return s_userinfo_list_set; }
++
++s32 cellUserInfoSelectUser_SetList(const CellUserInfoListSet* listSet)
++{
++    if (!listSet) return CELL_USERINFO_ERROR_PARAM;
++    s_userinfo_list_set = (u32)(uintptr_t)listSet;   /* guest EA */
++    return CELL_OK;
++}

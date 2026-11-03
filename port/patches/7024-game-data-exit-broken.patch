@@ -1,0 +1,24 @@
+cellGame: cellGameDataExitBroken (NID 0x9949BF82), A Crack in Time 1.20.
+
+(const char* dirName): the title found its game data corrupt; on a console the system shows "the game data is corrupted"
+and then ends the application back to the XMB, so the call does not return control to the title in any useful way.
+Here it logs the directory and asks the host to quit through ps3_host_quit() (cellSysutil.c: the same path as the PS-button
+quit), returns CELL_OK. ENHANCEMENT NOT included: the system message box (cellMsgDialog is not wired in for it).
+ASSUMPTION: the quit is the correct end of the call (documented SDK behaviour, nothing on disc contradicts it).
+
+--- a/libs/system/cellGame.c
++++ b/libs/system/cellGame.c
+@@ -829,3 +829,13 @@
+
+     return CELL_OK;
+ }
++
++/* ---- patch 7024 ---- */
++extern void ps3_host_quit(const char* why);
++s32 cellGameDataExitBroken(const char* dirName)
++{
++    printf("[cellGame] DataExitBroken('%s'): game data broken, ending the application\n",
++           dirName ? (const char*)(vm_base + (uint32_t)(uintptr_t)dirName) : "<null>");
++    ps3_host_quit("cellGameDataExitBroken");
++    return CELL_OK;
++}

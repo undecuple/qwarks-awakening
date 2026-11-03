@@ -1,0 +1,17 @@
+{
+ "edge_zlib_inflate_elf": {
+  "count": 1,
+  "size": 38760,
+  "entry": "0x3050",
+  "file_offset": "0xbe3c80",
+  "note": "ELF32 SPU, 14 section headers (end of the section header table = size), name string edgezlib_inflate_task.spu.elf at file offset 0xbeca44"
+ },
+ "raw_job_binaries_in_ebooot": {
+  "count": 2,
+  "extent_min_max": [46576, 56400],
+  "load_addr": [["0x4000", 2]],
+  "offsets_first_last": [12506240, 12565376]
+ },
+ "raw_spu_programs": {"count": 0, "note": "no sys_raw_spu_create call (syscall 160) in the lifted PPU code, no 'PS3_SPU' program name string"},
+ "psarc_scan": "not run (job modules the game loads from its archives are not liftable from the EBOOT)"
+}

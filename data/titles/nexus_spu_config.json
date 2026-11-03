@@ -1,0 +1,9 @@
+{
+ "title": "Ratchet & Clank: Into the Nexus",
+ "note": "Per-title inputs of tools/spu/spu_lift.py (see tods_spu_config.json). pm_seed 0xa2c: the policy module's interrupt handler (same address as ToD's and ACiT's). No wws_code_slot: the policy module reads the job code buffer at LS 0x1320, the runtime default.",
+ "symbol_prefix": "nexus",
+ "lift_table": "nexus_spu_lift_table.tsv",
+ "edge_image_id": 30,
+ "pm_image_id": 2,
+ "pm_seed": "0xa2c"
+}

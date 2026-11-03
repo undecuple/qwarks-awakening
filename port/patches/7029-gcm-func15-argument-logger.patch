@@ -1,0 +1,91 @@
+cellGcmSys: _cellGcmFunc15 (NID 0x3A33C1FD), TEMP argument logger.
+
+Imported by A Crack in Time 1.20, Into the Nexus 1.01, Full Frontal Assault 1.05 and All 4 One 1.03; there was no handler (the
+dispatcher faked CELL_OK). What libgcm does with the call is not known publicly.
+ASSUMPTION/TEMP: the handler logs every distinct argument set once (r3-r10, plus RC_F15_PTR_WORDS words behind each argument
+that looks like a main-memory pointer: 0x10000..0x2FFFFFFF, word aligned; stack/RSX values are printed raw, never read) and
+returns CELL_OK, so a first run shows what the games pass. Bounded to RC_F15_SEEN_MAX (64) distinct sets, then one
+"table full" line. Replace with the real behaviour once the log is read; until then CELL_OK stays the assumed result.
+The logic is in the header libs/video/gcm_func15_log.h (host test: port/rc/tests/test_gcm_func15_log.c); the exported
+function is named like the NID database entry, so tools/gen_hle_nids.py registers it (all eight argument registers).
+
+--- /dev/null
++++ b/libs/video/gcm_func15_log.h
+@@ -0,0 +1,62 @@
++/* patch 7029: TEMP argument logger behind _cellGcmFunc15 (NID 0x3A33C1FD).
++ * ASSUMPTION/TEMP: what libgcm does with this call is not known publicly (imported by A Crack in Time, Into the Nexus,
++ * Full Frontal Assault, All 4 One). Until a first run shows what the games pass, the handler logs every distinct argument
++ * set once (r3-r10, plus the first words behind each argument that looks like a main-memory pointer) and returns CELL_OK.
++ * Bounded: at most RC_F15_SEEN_MAX distinct sets are logged, then one "table full" line and silence. */
++#ifndef RC_GCM_FUNC15_LOG_H
++#define RC_GCM_FUNC15_LOG_H
++#include <stdint.h>
++#include <stdio.h>
++#include <inttypes.h>
++
++#define RC_F15_SEEN_MAX   64
++#define RC_F15_PTR_WORDS  8      /* words dumped behind each pointer-looking argument */
++
++static uint64_t s_f15_seen[RC_F15_SEEN_MAX];
++static int s_f15_n;
++static unsigned long s_f15_calls;
++
++/* Main-memory window of the guest (0x00010000..0x2FFFFFFF), word aligned, the whole dump inside it. Stack, RSX and I/O
++ * addresses are logged as plain values only: reading them could fault in a diagnostic. */
++static int rc_f15_is_main_ptr(uint64_t v)
++{
++    return v >= 0x10000u && v + 4u * RC_F15_PTR_WORDS <= 0x30000000u && !(v & 3u);
++}
++
++/* Returns 1 when this argument set was new and has been logged, 0 for a repeat, -1 once the table is full. */
++static int rc_gcm_func15_log(const uint64_t r[8])
++{
++    uint32_t words[8][RC_F15_PTR_WORDS];
++    uint64_t h = 1469598103934665603ull;                          /* FNV-1a over the registers and the pointed words */
++    for (int i = 0; i < 8; i++) {
++        h = (h ^ r[i]) * 1099511628211ull;
++        if (rc_f15_is_main_ptr(r[i]))
++            for (int w = 0; w < RC_F15_PTR_WORDS; w++) {
++                words[i][w] = vm_read32((uint32_t)r[i] + 4u * w);
++                h = (h ^ words[i][w]) * 1099511628211ull;
++            }
++    }
++    unsigned long call = __atomic_add_fetch(&s_f15_calls, 1, __ATOMIC_RELAXED);
++    int n = __atomic_load_n(&s_f15_n, __ATOMIC_ACQUIRE);
++    for (int i = 0; i < n && i < RC_F15_SEEN_MAX; i++)
++        if (s_f15_seen[i] == h) return 0;
++    int slot = __atomic_fetch_add(&s_f15_n, 1, __ATOMIC_ACQ_REL);
++    if (slot >= RC_F15_SEEN_MAX) {
++        if (slot == RC_F15_SEEN_MAX)
++            printf("[cellGcm] _cellGcmFunc15 (ASSUMPTION/TEMP): %d distinct argument sets logged, further ones are not (call #%lu)\n",
++                   RC_F15_SEEN_MAX, call);
++        return -1;
++    }
++    s_f15_seen[slot] = h;
++    printf("[cellGcm] _cellGcmFunc15 (ASSUMPTION/TEMP) call #%lu:", call);
++    for (int i = 0; i < 8; i++) printf(" r%d=0x%" PRIx64, 3 + i, r[i]);
++    printf("\n");
++    for (int i = 0; i < 8; i++) {
++        if (!rc_f15_is_main_ptr(r[i])) continue;
++        printf("[cellGcm] _cellGcmFunc15   r%d ->", 3 + i);
++        for (int w = 0; w < RC_F15_PTR_WORDS; w++) printf(" %08" PRIx32, words[i][w]);
++        printf("\n");
++    }
++    return 1;
++}
++#endif
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -5648,3 +5648,12 @@
+     s_fifo_getoff  = get;
+     s_fifo_calloff = 0;
+ }
++
++/* ---- patch 7029: _cellGcmFunc15 (NID 0x3A33C1FD), ASSUMPTION/TEMP argument logger ---- */
++#include "gcm_func15_log.h"
++s32 _cellGcmFunc15(u64 r3, u64 r4, u64 r5, u64 r6, u64 r7, u64 r8, u64 r9, u64 r10)
++{
++    const u64 r[8] = { r3, r4, r5, r6, r7, r8, r9, r10 };
++    rc_gcm_func15_log(r);
++    return CELL_OK;
++}

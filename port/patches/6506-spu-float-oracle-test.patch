@@ -1,0 +1,350 @@
+SPU single-precision differential oracle test (2026-11-03): runtime/spu/tests/test_spu_float_oracle.c.
+Integer/bigint oracle of SPU ISA v1.2 s.9 against the spu_* helpers; built and run by tools/spu/run_float_oracle.sh.
+
+---
+diff --git a/runtime/spu/tests/test_spu_float_oracle.c b/runtime/spu/tests/test_spu_float_oracle.c
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_float_oracle.c
+@@ -0,0 +1,340 @@
++/* Differential oracle for the SPU single-precision helpers (spu_helpers.h), 2026-11-03.
++ *
++ * Build/run: tools/spu/run_float_oracle.sh (default and FTZ|DAZ MXCSR, with and without -mfma).
++ *   gcc -O2 -std=gnu17 -msse4.1 -ffp-contract=off -I runtime/spu -I include test_spu_float_oracle.c -lm
++ *   ./a.out [ftz] [report]       exit 0 always unless 'strict' is given (then 1 when any "other" mismatch is found)
++ *
++ * The oracle (the o_* functions) is written from SPU ISA v1.2 chapter 9 and uses only integer arithmetic (a 640-bit
++ * unsigned bigint for exact sums), never host float. Rules: biased exponent 255 is an ordinary binade (no Inf/NaN); the
++ * largest magnitude is 0x7FFFFFFF; a result above it saturates to +-0x7FFFFFFF; biased exponent 0 (zero and denormals)
++ * is zero as an operand, and a result below 2^-126 is +0; results truncate toward zero (fa/fs/fm/fma/fms/fnms, csflt,
++ * cuflt); cflts/cfltu truncate and saturate. ASSUMPTION: the fused fma family truncates the exact a*b+c (the ISA text
++ * says truncation for all single-precision arithmetic); fesd of zero/denormal is +0; frds rounds the double to nearest
++ * even, flushes below 2^-126 to +0 and saturates (also Inf/NaN doubles) to +-0x7FFFFFFF. The estimates (frest,
++ * frsqest) are not modelled: the helper's own estimate word is fed to both fi implementations, and the chain is judged
++ * by its accuracy (bits), reported only. */
++#include "spu_helpers.h"
++#include <stdio.h>
++#include <stdint.h>
++#include <string.h>
++#include <xmmintrin.h>
++
++int g_kz3_spu_xr = 1, g_kz3_spu_xrq = 1, g_kz3_xr_stats = 0, g_kz3_spu_slowcg = 0, g_kz3_fma_stats = 0;
++
++/* statistics hooks that spu_drain.c provides in the runtime; the gates above are off here */
++void kz3_spu_xr_note(int op, unsigned m, const uint32_t* a, const uint32_t* b, const uint32_t* c, const uint32_t* r, const void* ra)
++{ (void)op; (void)m; (void)a; (void)b; (void)c; (void)r; (void)ra; }
++void kz3_spu_fma_note(const double s[4], int ftz) { (void)s; (void)ftz; }
++
++/* ---------------------------------------------------------------- bigint oracle */
++#define NL 10
++typedef struct { uint64_t w[NL]; } big;
++static big b_zero(void) { big b; memset(&b, 0, sizeof b); return b; }
++static big b_from(uint64_t m, int sh) {           /* m << sh */
++    big b = b_zero(); int l = sh >> 6, s = sh & 63;
++    b.w[l] |= m << s; if (s && l + 1 < NL) b.w[l + 1] |= m >> (64 - s);
++    return b;
++}
++static big b_add(big a, big b) { big r; unsigned c = 0; for (int i = 0; i < NL; i++) { uint64_t t = a.w[i] + b.w[i]; unsigned c1 = t < a.w[i]; r.w[i] = t + c; c = c1 | (r.w[i] < t); } return r; }
++static big b_sub(big a, big b) { big r; unsigned c = 0; for (int i = 0; i < NL; i++) { uint64_t t = a.w[i] - b.w[i]; unsigned c1 = a.w[i] < b.w[i]; r.w[i] = t - c; c = c1 | (t < c); } return r; }
++static int b_cmp(big a, big b) { for (int i = NL - 1; i >= 0; i--) if (a.w[i] != b.w[i]) return a.w[i] > b.w[i] ? 1 : -1; return 0; }
++static int b_top(big a) { for (int i = NL - 1; i >= 0; i--) if (a.w[i]) return i * 64 + 63 - __builtin_clzll(a.w[i]); return -1; }
++static int b_bit(big a, int i) { return i < 0 || i >= NL * 64 ? 0 : (int)(a.w[i >> 6] >> (i & 63) & 1); }
++
++/* value = B * 2^E, truncated to a 24-bit significand, packed with the SPU range rules */
++static uint32_t o_pack(uint32_t sign, big B, int E) {
++    const int top = b_top(B);
++    if (top < 0) return 0;
++    const int biased = top + E + 127;
++    if (biased > 255) return sign | 0x7FFFFFFFu;
++    if (biased < 1) return 0;
++    uint32_t m = 0; for (int k = 0; k < 23; k++) m |= (uint32_t)b_bit(B, top - 1 - k) << (22 - k);
++    return sign | ((uint32_t)biased << 23) | m;
++}
++typedef struct { int zero; uint32_t sign; uint64_t M; int E; } dec;
++static dec o_dec(uint32_t x) { dec d; const uint32_t e = x >> 23 & 0xFF; d.zero = !e; d.sign = x & 0x80000000u; d.M = d.zero ? 0 : ((x & 0x7FFFFF) | 0x800000); d.E = (int)e - 150; return d; }
++/* exact signed sum of s1*M1*2^E1 and s2*M2*2^E2 (a zero term has M = 0), packed */
++static uint32_t o_sum(uint32_t s1, uint64_t M1, int E1, uint32_t s2, uint64_t M2, int E2) {
++    if (!M1 && !M2) return 0;
++    if (!M1) E1 = E2; if (!M2) E2 = E1;
++    const int Em = E1 < E2 ? E1 : E2;
++    const big A = b_from(M1, E1 - Em), B = b_from(M2, E2 - Em);
++    if (s1 == s2) return o_pack(s1, b_add(A, B), Em);
++    const int c = b_cmp(A, B);
++    if (!c) return 0;
++    return c > 0 ? o_pack(s1, b_sub(A, B), Em) : o_pack(s2, b_sub(B, A), Em);
++}
++static uint32_t o_fa(uint32_t x, uint32_t y) { dec a = o_dec(x), b = o_dec(y); return o_sum(a.sign, a.M, a.E, b.sign, b.M, b.E); }
++static uint32_t o_fs(uint32_t x, uint32_t y) { return o_fa(x, y ^ 0x80000000u); }
++static uint32_t o_fm(uint32_t x, uint32_t y) { dec a = o_dec(x), b = o_dec(y); if (a.zero || b.zero) return 0; return o_pack(a.sign ^ b.sign, b_from(a.M * b.M, 0), a.E + b.E); }
++/* fma: (+-a*b) + (+-c): negp flips the product, negc flips c */
++static uint32_t o_fma(uint32_t x, uint32_t y, uint32_t z, uint32_t negp, uint32_t negc) {
++    dec a = o_dec(x), b = o_dec(y), c = o_dec(z);
++    uint64_t Mp = (a.zero || b.zero) ? 0 : a.M * b.M;
++    return o_sum((a.sign ^ b.sign) ^ negp, Mp, a.E + b.E, c.sign ^ negc, c.M, c.E);
++}
++static int o_sgn(uint32_t x) { return !(x >> 23 & 0xFF) ? 0 : (x >> 31 ? -1 : 1); }
++static int o_cmp(uint32_t x, uint32_t y, int abs) {
++    int sx = o_sgn(x), sy = o_sgn(y); if (abs) { sx = sx != 0; sy = sy != 0; }
++    if (sx != sy) return sx < sy ? -1 : 1;
++    if (!sx) return 0;
++    const uint32_t mx = x & 0x7FFFFFFF, my = y & 0x7FFFFFFF;
++    const int c = mx == my ? 0 : (mx > my ? 1 : -1);
++    return sx < 0 ? -c : c;
++}
++/* conversions. value * 2^scale -> integer, truncated, saturated */
++static uint32_t o_cfl(uint32_t x, int scale, int uns) {
++    dec a = o_dec(x); if (a.zero) return 0;
++    const int sh = a.E + scale;                       /* integer = M * 2^sh truncated */
++    if (uns && a.sign) return 0;
++    if (sh >= 9) return uns ? 0xFFFFFFFFu : (a.sign ? 0x80000000u : 0x7FFFFFFFu);   /* M >= 2^23: >= 2^32 */
++    uint64_t v = sh >= 0 ? a.M << sh : (sh <= -24 ? 0 : a.M >> -sh);
++    if (uns) return v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v;
++    if (a.sign) return v >= 0x80000000u ? 0x80000000u : (uint32_t)(0u - (uint32_t)v);
++    return v > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)v;
++}
++static uint32_t o_csfl(uint32_t x, int scale, int uns) {     /* int * 2^scale -> single, truncated */
++    uint32_t sign = 0; uint64_t m = x;
++    if (!uns && (x >> 31)) { sign = 0x80000000u; m = 0x100000000ull - x; }
++    return o_pack(sign, b_from(m, 0), scale);
++}
++static uint64_t o_fesd(uint32_t x) {
++    const uint32_t e = x >> 23 & 0xFF; if (!e) return 0;
++    return ((uint64_t)(x >> 31) << 63) | ((uint64_t)(e - 127 + 1023) << 52) | ((uint64_t)(x & 0x7FFFFF) << 29);
++}
++static uint32_t o_frds(uint64_t d) {
++    const uint32_t sign = (uint32_t)(d >> 63) << 31; const int e = (int)(d >> 52 & 0x7FF);
++    if (e == 0) return 0;
++    if (e == 0x7FF) return sign | 0x7FFFFFFFu;
++    uint64_t sig = (d & 0xFFFFFFFFFFFFFull) | (1ull << 52); int be = e - 1023 + 127;
++    uint64_t m = sig >> 29, rem = sig & 0x1FFFFFFF;          /* keep 24 bits, round to nearest even */
++    if (rem > 0x10000000ull || (rem == 0x10000000ull && (m & 1))) { m++; if (m == (1ull << 24)) { m >>= 1; be++; } }
++    if (be > 255) return sign | 0x7FFFFFFFu;
++    if (be < 1) return 0;
++    return sign | ((uint32_t)be << 23) | (uint32_t)(m & 0x7FFFFF);
++}
++/* fi: ISA p.219 formulation: estimate word = sign | exp(8) | base(13) | step(10); interpolates 1.base - step*y */
++static uint32_t o_fi(uint32_t ra, uint32_t est) {
++    int e = est >> 23 & 0xFF; if (!e) return 0;
++    const uint64_t base = est >> 10 & 0x1FFF, step = est & 0x3FF, y = ra & 0x7FFFF;
++    uint64_t m = ((0x2000ull | base) << 19) - step * y;      /* 32 or 33 significant bits */
++    if (!(m >> 32)) { m <<= 1; if (--e == 0) return 0; }
++    return (est & 0x80000000u) | ((uint32_t)e << 23) | (uint32_t)(m >> 9 & 0x7FFFFF);
++}
++
++/* ---------------------------------------------------------------- harness */
++enum { F_FA, F_FS, F_FM, F_FMA, F_FMS, F_FNMS, F_FCEQ, F_FCGT, F_FCMEQ, F_FCMGT, F_FI_REST, F_FI_RSQ,
++       F_CFLTS, F_CFLTU, F_CSFLT, F_CUFLT, F_FESD, F_FRDS, F_NF };
++static const char* const fname[F_NF] = { "fa", "fs", "fm", "fma", "fms", "fnms", "fceq", "fcgt", "fcmeq", "fcmgt",
++    "frest+fi", "frsqest+fi", "cflts", "cfltu", "csflt", "cuflt", "fesd", "frds" };
++static const int fin[F_NF] = { 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1 };
++enum { C_ZSIGN, C_DENIN, C_DENOUT, C_ULP1, C_E255, C_OTHER, C_NCLS };
++static const char* const cname[C_NCLS] = { "zero-sign", "denormal-in", "denormal-out", "1ulp-or-edge", "exp255-widen", "other" };
++typedef struct { uint32_t in[3]; uint64_t got, want; int scale; int cls; } ex_t;
++typedef struct { long n, bad, cls[C_NCLS]; ex_t ex[C_NCLS][3]; long nex[C_NCLS]; } stat_t;
++static stat_t st[F_NF];
++static int is_den(uint32_t x) { return !(x >> 23 & 0xFF) && (x & 0x7FFFFF); }
++static int is_zero_cls(uint32_t x) { return !(x & 0x7FFFFFFF); }
++
++static void record(int f, const uint32_t* in, int scale, uint64_t got, uint64_t want, int isfloat, int dbl_in) {
++    stat_t* s = &st[f]; s->n++;
++    if (got == want) return;
++    int cls;
++    int denin = 0; if (!dbl_in && f != F_CSFLT && f != F_CUFLT) for (int k = 0; k < fin[f]; k++) denin |= is_den(in[k]);   /* csflt/cuflt read integers */
++    if (f == F_FESD) {
++        cls = !(got << 1) && !(want << 1) ? C_ZSIGN : denin ? C_DENIN : (in[0] >> 23 & 0xFF) == 255 ? C_E255 : C_OTHER;
++    } else if (f == F_FRDS) {
++        const uint32_t g = (uint32_t)got, w = (uint32_t)want;
++        if (is_zero_cls(g) && is_zero_cls(w)) cls = C_ZSIGN;
++        else if (!(g >> 23 & 0xFF) && (g & 0x7FFFFF)) cls = C_DENOUT;
++        else if ((g >> 23 & 0xFF) == 255 || (w >> 23 & 0xFF) == 255) cls = C_E255;
++        else if ((w & 0x7FFFFFFF) == 0 && (g & 0x7FFFFFFF) == 0x800000) cls = C_ULP1;   /* rounds up into the smallest normal; the oracle flushes before rounding */
++        else if ((g ^ w) >> 31 == 0 && ((int64_t)(g & 0x7FFFFFFF) - (int64_t)(w & 0x7FFFFFFF) == 1 || (int64_t)(w & 0x7FFFFFFF) - (int64_t)(g & 0x7FFFFFFF) == 1)) cls = C_ULP1;
++        else cls = C_OTHER;
++    } else if (isfloat) {
++        const uint32_t g = (uint32_t)got, w = (uint32_t)want;
++        const int64_t mg = g & 0x7FFFFFFF, mw = w & 0x7FFFFFFF;
++        if (is_zero_cls(g) && is_zero_cls(w)) cls = C_ZSIGN;
++        else if (!(g >> 23 & 0xFF) && (g & 0x7FFFFF)) cls = C_DENOUT;
++        else if (denin) cls = C_DENIN;
++        else if ((g ^ w) >> 31 == 0 && (mg - mw == 1 || mw - mg == 1)) cls = C_ULP1;
++        else if (mw == 0 && mg == 0x800000) cls = C_ULP1;     /* nearest rounds up into the smallest normal, truncation underflows */
++        else cls = C_OTHER;
++    } else cls = denin ? C_DENIN : C_OTHER;
++    s->bad++; s->cls[cls]++;
++    if (s->nex[cls] < 3) { ex_t* e = &s->ex[cls][s->nex[cls]++]; memcpy(e->in, in, 12); e->got = got; e->want = want; e->scale = scale; e->cls = cls; }
++}
++
++static uint64_t rng_s = 0x9E3779B97F4A7C15ull;
++static uint64_t rnd(void) { rng_s ^= rng_s << 13; rng_s ^= rng_s >> 7; rng_s ^= rng_s << 17; return rng_s; }
++static const uint32_t edge_mag[] = { 0, 1, 0x7FFFFF, 0x800000, 0x800001, 0x1000000, 0x3F000000, 0x3F7FFFFF, 0x3F800000, 0x3F800001,
++    0x3F800002, 0x40000000, 0x40490FDB, 0x4B000000, 0x4B000001, 0x4B7FFFFF, 0x4B800000, 0x33800000, 0x33000000, 0x5F800000,
++    0x60000000, 0x7E800000, 0x7F000000, 0x7F000001, 0x7F7FFFFF, 0x7F800000, 0x7F800001, 0x7FC00000, 0x7FFFFFFE, 0x7FFFFFFF,
++    0x01000001, 0x00FFFFFF, 0x4EFFFFFF, 0x4F000000, 0x4F800000, 0x2F800000, 0x0000FFFF, 0x7FFFFF00 };
++#define NEDGE (sizeof edge_mag / sizeof edge_mag[0])
++static const int exps[] = { 0, 1, 2, 253, 254, 255 };
++static uint32_t gen_word(void) {
++    const uint64_t r = rnd(); const uint32_t w = (uint32_t)(r >> 8), sgn = (uint32_t)(r & 1) << 31;
++    switch (r >> 61) {
++    case 0: return (uint32_t)rnd();
++    case 1: case 2: case 3: return sgn | ((uint32_t)exps[(r >> 4) % 6] << 23) | (w & 0x7FFFFF);
++    case 4: case 5: return sgn | ((uint32_t)(120 + (r >> 4) % 15) << 23) | (w & 0x7FFFFF);
++    default: return sgn | edge_mag[(r >> 4) % NEDGE];
++    }
++}
++typedef struct { uint32_t a, b, c; } tup;
++static tup* T; static long nT, nEdgeT;
++static void tpush(uint32_t a, uint32_t b, uint32_t c) { T[nT].a = a; T[nT].b = b; T[nT].c = c; nT++; }
++static long NRAND = 1 << 20;
++static void build_tuples(void) {
++    T = malloc(sizeof(tup) * (2 * NEDGE * 2 * NEDGE * 2 * NEDGE + (size_t)NRAND * 3 + 64)); nT = 0;
++    for (size_t i = 0; i < 2 * NEDGE; i++) for (size_t j = 0; j < 2 * NEDGE; j++) {
++        const uint32_t a = edge_mag[i >> 1] | ((uint32_t)(i & 1) << 31), b = edge_mag[j >> 1] | ((uint32_t)(j & 1) << 31);
++        for (size_t k = 0; k < 2 * NEDGE; k++) tpush(a, b, edge_mag[k >> 1] | ((uint32_t)(k & 1) << 31));
++    }
++    nEdgeT = nT;
++    for (long i = 0; i < NRAND; i++) {
++        uint32_t a = gen_word(), b = gen_word(), c = gen_word();
++        const long m = i & 3;
++        if (m == 1) b = (a ^ 0x80000000u) + (uint32_t)((int)(rnd() % 7) - 3);          /* cancellation / near equal */
++        else if (m == 2) c = o_fm(a, b) ^ 0x80000000u, c += (uint32_t)((int)(rnd() % 5) - 2);   /* fma cancels the product */
++        tpush(a, b, c);
++    }
++}
++
++static u128 mk(const tup* t, int n, int which) {
++    u128 r = spu_zero();
++    for (int i = 0; i < n; i++) r._u32[i] = which == 0 ? t[i].a : which == 1 ? t[i].b : t[i].c;
++    return r;
++}
++static void run_batch(int f, const tup* t, int n, int scale) {
++    const u128 A = mk(t, n, 0), B = mk(t, n, 1), C = mk(t, n, 2);
++    u128 R = spu_zero();
++    for (int i = 0; i < n; i++) {
++        uint32_t in[3] = { t[i].a, t[i].b, t[i].c }; uint32_t want = 0; int fl = 1;
++        (void)fl;
++        switch (f) {
++        case F_FA:  if (!i) R = spu_fa(A, B);  want = o_fa(in[0], in[1]); break;
++        case F_FS:  if (!i) R = spu_fs(A, B);  want = o_fs(in[0], in[1]); break;
++        case F_FM:  if (!i) R = spu_fm(A, B);  want = o_fm(in[0], in[1]); break;
++        case F_FMA: if (!i) R = spu_fma(A, B, C);  want = o_fma(in[0], in[1], in[2], 0, 0); break;
++        case F_FMS: if (!i) R = spu_fms(A, B, C);  want = o_fma(in[0], in[1], in[2], 0, 0x80000000u); break;
++        case F_FNMS: if (!i) R = spu_fnms(A, B, C); want = o_fma(in[0], in[1], in[2], 0x80000000u, 0); break;
++        case F_FCEQ: if (!i) R = spu_fceq(A, B);  want = o_cmp(in[0], in[1], 0) == 0 ? ~0u : 0; break;
++        case F_FCGT: if (!i) R = spu_fcgt(A, B);  want = o_cmp(in[0], in[1], 0) > 0 ? ~0u : 0; break;
++        case F_FCMEQ: if (!i) R = spu_fcmeq(A, B); want = o_cmp(in[0], in[1], 1) == 0 ? ~0u : 0; break;
++        case F_FCMGT: if (!i) R = spu_fcmgt(A, B); want = o_cmp(in[0], in[1], 1) > 0 ? ~0u : 0; break;
++        case F_FI_REST: if (!i) R = spu_fi(A, spu_frest(A)); { u128 e = spu_frest(A); want = o_fi(in[0], e._u32[i]); } break;
++        case F_FI_RSQ: if (!i) R = spu_fi(A, spu_frsqest(A)); { u128 e = spu_frsqest(A); want = o_fi(in[0], e._u32[i]); } break;
++        case F_CFLTS: if (!i) R = spu_cflts(A, scale); want = o_cfl(in[0], 173 - scale, 0); fl = 0; break;
++        case F_CFLTU: if (!i) R = spu_cfltu(A, scale); want = o_cfl(in[0], 173 - scale, 1); fl = 0; break;
++        case F_CSFLT: if (!i) R = spu_csflt(A, scale); want = o_csfl(in[0], scale - 155, 0); break;
++        case F_CUFLT: if (!i) R = spu_cuflt(A, scale); want = o_csfl(in[0], scale - 155, 1); break;
++        default: return;
++        }
++        record(f, in, scale, R._u32[i], want, f < F_FCEQ || (f >= F_FI_REST && f <= F_FI_RSQ) || f == F_CSFLT || f == F_CUFLT, 0);
++    }
++}
++static void run_dp(void) {
++    /* fesd: words in lanes 0 and 2; frds: the doubles those produce, plus edge/random doubles */
++    for (long i = 0; i < nT; i += 2) {
++        u128 A = spu_zero(); A._u32[0] = T[i].a; A._u32[2] = i + 1 < nT ? T[i + 1].a : 0;
++        const u128 R = spu_fesd(A);
++        for (int k = 0; k < 2; k++) {
++            const uint32_t in[3] = { A._u32[2 * k], 0, 0 }; double d = spu__dget(R, k); uint64_t got; memcpy(&got, &d, 8);
++            record(F_FESD, in, 0, got, o_fesd(in[0]), 0, 0);
++        }
++    }
++    static const uint64_t dedge[] = { 0, 1, 0xFFFFFFFFFFFFFull, 0x10000000000000ull, 0x3FF0000000000000ull, 0x3FF0000010000000ull,
++        0x3FF0000030000000ull, 0x3FF000000FFFFFFFull, 0x47EFFFFFE0000000ull, 0x47F0000000000000ull, 0x47FFFFFFF0000000ull,
++        0x4800000000000000ull, 0x7FEFFFFFFFFFFFFFull, 0x7FF0000000000000ull, 0x7FF8000000000000ull, 0x3810000000000000ull,
++        0x380FFFFFFFFFFFFFull, 0x37E0000000000000ull, 0x3800000000000000ull, 0x380FFFFFF0000000ull };
++    long nd = 0; const long ND = 1 << 20; uint64_t* D = malloc(sizeof(uint64_t) * (ND + 2 * 20 + 4));
++    for (size_t i = 0; i < sizeof dedge / 8; i++) { D[nd++] = dedge[i]; D[nd++] = dedge[i] | (1ull << 63); }
++    for (long i = 0; i < ND; i++) {
++        const uint64_t r = rnd();
++        D[nd++] = (r & 3) == 0 ? rnd() : (r & 3) == 1 ? o_fesd(gen_word()) : (r & 3) == 2 ? o_fesd(gen_word()) + (rnd() & 0xFFFFFFFF) - 0x7FFFFFFF
++                : ((rnd() & 0x800FFFFFFFFFFFFFull) | ((uint64_t)(0x370 + rnd() % 0x90) << 52));
++    }
++    for (long i = 0; i < nd; i += 2) {
++        u128 A = spu_zero(); spu__dset(&A, 0, 0); spu__dset(&A, 1, 0);
++        double d0, d1; memcpy(&d0, &D[i], 8); memcpy(&d1, &D[i + 1 < nd ? i + 1 : i], 8);
++        spu__dset(&A, 0, d0); spu__dset(&A, 1, d1);
++        const u128 R = spu_frds(A);
++        for (int k = 0; k < 2 && i + k < nd; k++) {
++            uint32_t in[3] = { (uint32_t)(D[i + k] >> 32), (uint32_t)D[i + k], 0 };
++            record(F_FRDS, in, 0, R._u32[2 * k], o_frds(D[i + k]), 1, 1);
++        }
++    }
++    free(D);
++}
++/* reciprocal / rsqrt chain accuracy: bits of agreement of the refined result (helper fi vs oracle fi), report only */
++static uint32_t chain_worst; static int chain_lo = 999, chain_hi = -1;   /* exponent range of the inaccurate helper lanes */
++static void chain_acc(int rsq, int* minbits_h, int* minbits_o, long* nlow_h, long* nlow_o, long* nskip) {
++    *minbits_h = *minbits_o = 99; *nlow_h = *nlow_o = *nskip = 0;
++    for (long i = 0; i < 200000; i++) {
++        uint32_t x = ((uint32_t)(2 + rnd() % 248) << 23) | (uint32_t)(rnd() & 0x7FFFFF);
++        u128 A = spu_zero(); A._u32[0] = x;
++        const u128 E = rsq ? spu_frsqest(A) : spu_frest(A);
++        const uint32_t yh = spu_fi(A, E)._u32[0], yo = o_fi(x, E._u32[0]);
++        const uint32_t ys[2] = { yh, yo };
++        for (int w = 0; w < 2; w++) {
++            const dec a = o_dec(x), y = o_dec(ys[w]);
++            if (y.zero) { (*nskip)++; continue; }
++            unsigned __int128 P = (unsigned __int128)a.M * y.M; int s = -(a.E + y.E);
++            if (rsq) { P *= y.M; s = -(a.E + 2 * y.E); }
++            if (s < 0 || s > 126) { (*nskip)++; continue; }
++            const unsigned __int128 one = (unsigned __int128)1 << s, err = P > one ? P - one : one - P;
++            int eb = 0; for (unsigned __int128 t = err; t; t >>= 1) eb++;
++            const int bits = err ? s - eb : 99;
++            if (w == 0) { if (bits < *minbits_h) { *minbits_h = bits; chain_worst = x; } if (bits < 11) { (*nlow_h)++; const int xe = (int)(x >> 23); if (xe < chain_lo) chain_lo = xe; if (xe > chain_hi) chain_hi = xe; } }
++            else { if (bits < *minbits_o) *minbits_o = bits; if (bits < 11) (*nlow_o)++; }
++        }
++    }
++}
++
++int main(int argc, char** argv) {
++    int ftz = 0, strict = 0;
++    for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "ftz")) ftz = 1; if (!strcmp(argv[i], "strict")) strict = 1; }
++    _mm_setcsr(0x1F80 | (ftz ? 0x8040 : 0));
++    build_tuples();
++    static const int scales[] = { 0, 1, 127, 155, 173, 254, 255 };
++    for (int f = 0; f < F_FESD; f++) {
++        const int ns = f >= F_CFLTS ? 7 : 1;
++        for (int si = 0; si < ns; si++)
++            { tup b4[4]; long k = 0;   /* edge tuples: skip repeats of the unused operands */
++              for (long i = 0; i < nT; i++) {
++                if (i < nEdgeT && ((fin[f] < 3 && T[i].c != 0) || (fin[f] < 2 && T[i].b != 0))) continue;
++                b4[k++] = T[i];
++                if (k == 4 || i == nT - 1) { run_batch(f, b4, (int)k, scales[si]); k = 0; }
++              }
++              if (k) run_batch(f, b4, (int)k, scales[si]); }
++    }
++    run_dp();
++    printf("# SPU float oracle: MXCSR %s, %s, tuples %ld, xr gate %d\n", ftz ? "FTZ|DAZ" : "default",
++#ifdef __FMA__
++        "-mfma",
++#else
++        "no -mfma",
++#endif
++        nT, g_kz3_spu_xr);
++    long other = 0;
++    for (int f = 0; f < F_NF; f++) {
++        printf("%-11s n=%-9ld mismatch=%-8ld", fname[f], st[f].n, st[f].bad);
++        for (int c = 0; c < C_NCLS; c++) printf(" %s=%ld", cname[c], st[f].cls[c]);
++        printf("\n");
++        other += st[f].cls[C_OTHER];
++        for (int c = 0; c < C_NCLS; c++) for (long k = 0; k < st[f].nex[c]; k++) {
++            const ex_t* e = &st[f].ex[c][k];
++            printf("  eg %-12s in=%08x,%08x,%08x scale=%d helper=%0*llx oracle=%0*llx\n", cname[c], e->in[0], e->in[1], e->in[2], e->scale,
++                   f == F_FESD ? 16 : 8, (unsigned long long)e->got, f == F_FESD ? 16 : 8, (unsigned long long)e->want);
++        }
++    }
++    for (int rsq = 0; rsq < 2; rsq++) {
++        int mh, mo; long lh, lo, sk; chain_acc(rsq, &mh, &mo, &lh, &lo, &sk);
++        printf("%s chain accuracy (normal x, exp 2..249): helper fi min %d bits (%ld below 11), oracle fi min %d bits (%ld below 11), skipped %ld, worst helper x=%08x, inaccurate lanes x exp %d..%d\n",
++               rsq ? "frsqest+fi" : "frest+fi", mh, lh, mo, lo, sk, chain_worst, chain_lo, chain_hi);
++        chain_lo = 999; chain_hi = -1;
++    }
++    return strict && other ? 1 : 0;
++}

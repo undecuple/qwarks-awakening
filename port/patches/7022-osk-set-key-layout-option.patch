@@ -1,0 +1,26 @@
+cellOskDialog: cellOskDialogSetKeyLayoutOption (NID 0xB53C54FA).
+
+Imported by all four later games (A Crack in Time 1.20, Into the Nexus 1.01, Full Frontal Assault 1.05, All 4 One 1.03).
+(u32 option): a bit set of CELL_OSKDIALOG_10KEY_PANEL (1) and CELL_OSKDIALOG_FULLKEY_PANEL (2); other bits are a
+parameter error. The value is kept for the dialog (ps3_osk_key_layout_option()), like the other SetInitial* setters.
+ASSUMPTION: the error code 0x8002B504 (CELL_OSKDIALOG_ERROR_PARAM) and rejecting unknown bits (reference: RPCS3).
+
+--- a/libs/misc/cellOskDialog.c
++++ b/libs/misc/cellOskDialog.c
+@@ -275,3 +275,16 @@
+
+     return CELL_OK;
+ }
++
++/* ---- patch 7022 ---- */
++#define RC_OSK_ERROR_PARAM ((s32)0x8002B504)
++static u32 s_osk_key_layout_option;
++u32 ps3_osk_key_layout_option(void) { return s_osk_key_layout_option; }
++
++s32 cellOskDialogSetKeyLayoutOption(u32 option)
++{
++    if (option & ~3u) return RC_OSK_ERROR_PARAM;
++    s_osk_key_layout_option = option;
++    printf("[cellOskDialog] SetKeyLayoutOption(0x%X)\n", option);
++    return CELL_OK;
++}

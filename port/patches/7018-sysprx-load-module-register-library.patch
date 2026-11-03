@@ -1,0 +1,82 @@
+Subject: sysPrxForUser: sys_prx_load_module, sys_prx_load_module_on_memcontainer, sys_prx_register_library
+
+What: three PRX entry points, with a small module table behind them.
+  * sys_prx_load_module(path, flags, opt)                   NID 0x26090058
+  * sys_prx_load_module_on_memcontainer(path, mc, flags, opt) NID 0xAA6D9BFF
+  * sys_prx_register_library(library_entry)                 NID 0x42B23552
+Why: A Crack in Time 1.20, Into the Nexus 1.01, Full Frontal Assault 1.05 and All 4 One 1.03 import them; ps3recomp had
+no handler (the HLE dispatcher faked CELL_OK, which for a load returns "module id 0", an id that indexes nothing).
+Behaviour: a PRX loaded from /dev_flash/ is a firmware module and the runtime already provides those libraries as HLE,
+so the load succeeds and returns a fresh module id (0x23000000 + n, same id again for the same path). A path anywhere
+else (no game ships a .sprx on its disc) is a missing file: CELL_ENOENT. NULL path: CELL_EFAULT; non-zero flags or a
+non-.sprx name: CELL_EINVAL. register_library records the library entry (NULL: CELL_EFAULT).
+ASSUMPTION: ids and the dedupe-by-path rule; the exact error codes of firmware for a bad path (RPCS3 used as behaviour
+reference only; nothing copied).
+
+--- a/libs/system/sysPrxForUser.c
++++ b/libs/system/sysPrxForUser.c
+@@ -1173,3 +1173,64 @@
+     memset(yz_g2h(buf), 0, 256);
+     return CELL_OK;
+ }
++
++/* ---------------------------------------------------------------------------
++ * PRX loading (patch 7018). Firmware modules only; see the patch header.
++ * -----------------------------------------------------------------------*/
++#define RC_PRX_ID_BASE 0x23000000u
++#define RC_PRX_MAX     64
++#define RC_PRX_ENOENT  ((s32)0x80010006)
++#define RC_PRX_EINVAL  ((s32)0x80010002)
++#define RC_PRX_EFAULT  ((s32)0x8001000D)
++static char s_prx_path[RC_PRX_MAX][128];
++static int  s_prx_count;
++static u32  s_prx_libs[RC_PRX_MAX];
++static int  s_prx_nlibs;
++
++/* Shared by both loaders; `path` is a guest EA. Returns the module id (> 0) or a negative error. */
++static s32 rc_prx_load(const char* path, u64 flags, const char* fn)
++{
++    const char* p = path ? (const char*)yz_g2h(path) : NULL;
++    if (!p) return RC_PRX_EFAULT;
++    size_t n = strnlen(p, 127);
++    if (n >= 127 || flags != 0 || n < 6 || strcmp(p + n - 5, ".sprx") != 0) {
++        printf("[sysPrxForUser] %s('%.60s', flags=0x%llX) -> EINVAL\n", fn, p, (unsigned long long)flags);
++        return RC_PRX_EINVAL;
++    }
++    if (strncmp(p, "/dev_flash/", 11) != 0) {
++        printf("[sysPrxForUser] %s('%s') -> ENOENT (not a firmware module)\n", fn, p);
++        return RC_PRX_ENOENT;
++    }
++    for (int i = 0; i < s_prx_count; i++)
++        if (strcmp(s_prx_path[i], p) == 0) return (s32)(RC_PRX_ID_BASE + (u32)i + 1);
++    if (s_prx_count >= RC_PRX_MAX) return RC_PRX_EINVAL;
++    strcpy(s_prx_path[s_prx_count], p);
++    printf("[sysPrxForUser] %s('%s') -> firmware module id 0x%08X\n", fn, p, RC_PRX_ID_BASE + (u32)s_prx_count + 1);
++    return (s32)(RC_PRX_ID_BASE + (u32)++s_prx_count);
++}
++
++/* NID 0x26090058: (const char* path, u64 flags, sys_prx_load_module_option_t* opt) -> id */
++s32 sys_prx_load_module(const char* path, u64 flags, void* opt)
++{
++    (void)opt;
++    return rc_prx_load(path, flags, "sys_prx_load_module");
++}
++
++/* NID 0xAA6D9BFF: (const char* path, sys_memory_container_t mc, u64 flags, opt*) -> id */
++s32 sys_prx_load_module_on_memcontainer(const char* path, u32 container, u64 flags, void* opt)
++{
++    (void)container; (void)opt;
++    return rc_prx_load(path, flags, "sys_prx_load_module_on_memcontainer");
++}
++
++/* NID 0x42B23552: (sys_prx_library_t* entry) -> CELL_OK; the entry is kept so a repeat registration is idempotent. */
++s32 sys_prx_register_library(void* library_entry)
++{
++    u32 ea = (u32)(uintptr_t)library_entry;
++    if (!ea) return RC_PRX_EFAULT;
++    for (int i = 0; i < s_prx_nlibs; i++)
++        if (s_prx_libs[i] == ea) return CELL_OK;
++    if (s_prx_nlibs < RC_PRX_MAX) s_prx_libs[s_prx_nlibs++] = ea;
++    printf("[sysPrxForUser] sys_prx_register_library(0x%08X)\n", ea);
++    return CELL_OK;
++}

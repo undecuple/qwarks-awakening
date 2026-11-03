@@ -1,0 +1,198 @@
+cellSpurs: _cellSpursLFQueuePushBody (NID 0x8A85674D) and the guest queue layout written by _cellSpursLFQueueInitialize.
+
+Games: A Crack in Time 1.20 imports _cellSpursLFQueuePushBody (Edge job push: func_00717068 non-blocking, func_00717358
+blocking) and had no handler (the dispatcher faked CELL_OK, so pushed jobs never reached the SPU consumer). Tools of Destruction
+uses the same import (submit 0x616da8, wait 0x6173c8) and the same Initialize.
+Spec and evidence: work/reports/lfqueue-layout-acit.md (main checkout; SPU consumer lifts ACiT elf_00be3800, ToD elf_008ea200).
+RPCS3 cellSync is a behaviour reference only (GPL-2, nothing copied).
+
+Initialize: +0x00..+0x0F stay zero (the old code wrote the depth at +0x0C, which is the h7 "waiting" flag and, for direction 3, a
+waiting-producer pack); depth at +0x14, size +0x10, buffer EA +0x18, direction +0x24, init flag +0x2C, eaSignal +0x70, rest zero.
+Push (isBlocking, queue 128-aligned, element 16-aligned): NULL -> 0x80410111, misaligned -> 0x80410110, direction not 2/3 ->
+0x80410109, full and non-blocking -> 0x80410901, full and blocking -> wait (1 ms sleeps; optional g_rc_lfq_stop_requested hook, never
+drops the element), else 0. Per element: reserve (h8 at +0x0E, full if (h8-h1) mod 2*depth >= depth), copy the element to
+buffer + size*(slot >= depth ? slot-depth : slot), publish h5 (+0x08) with the out-of-order bitmap h6 (+0x0A) after the data, then
+wake one waiting consumer through spu_taskset_signal_task(eaSignal & ~1, id). Reserve and publish each run under the line's
+lock-line lock (the SPU's GETLLAR/PUTLLC serialise on it) with raw stores and one spu_coh_notify_write, i.e. one atomic update of
+the 128-byte line; patch 1111's store path is not changed. The first 3 pushes dump the whole line before and after.
+Also adds the NID name to tools/nid_database.py.
+
+ASSUMPTIONs:
+ - direction numbering SPU2SPU 0, SPU2PPU 1, PPU2SPU 2, ANY2ANY 3 (ACiT passes 3, ToD 2);
+ - 0x80410901 (TASK-series AGAIN) is what a full non-blocking push returns (only evidence: the game tests exactly that);
+ - isBlocking != 0 waits for a slot (no lv2 event queue: Attach is log-only);
+ - waiting-consumer ring: pack u16 at +0x30 (direction 2) or +0x04 (direction 3, inferred from the SPU shuffle, no producer code
+   exists), ids u16 x15 at +0x32; tail = bits 0-4, head = bits 10-14, indices 0..29, wrap 29 -> 0, id slot = idx mod 15;
+ - a producer never sets the waiting-producer flag (+0x0C bit 1 / pack at +0x0C or +0x50): it polls instead;
+ - the buffer EA low bit is set for direction 3 (the ACiT consumer masks it) and masked on push;
+ - init flag value 1 at +0x2C; +0x20 bs[4] and +0x28 stay zero;
+ - bitmap h6: bit k = slot h5+1+k completed ahead of h5 (the SPU consumer never reads it);
+ - the signal target `eaSignal & ~1` is a taskset and the waiter id is a taskset task id.
+
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -4463,23 +4463,19 @@
+     uint32_t q = (uint32_t)queue_ea;
+     for (uint32_t o = 0; o < 128; o += 4) vm_write32(q + o, 0);
+
+-    /* W3 at +0x0C is the ring modulus the consumer reduces indices by: the
+-     * empty test is (W1-W0) mod 2*W3 and the buffer slot is index mod W3
+-     * (derived at 0x12914..0x129B8). Leaving it zero degenerated both and made
+-     * the queue look permanently empty no matter what a producer wrote. */
+-    vm_write32(q + 0x0C, depth);
++    /* patch 7030: +0x00..+0x0F stay zero (pop1/push1: index words and
++     * the waiting flag h7 at +0x0C -- NOT the depth; the consumer lift reads the
++     * depth at +0x14 only). Direction at +0x24 (ACiT's consumer tests it for 3),
++     * init flag at +0x2C. The earlier "bytes march through +0x20..+0x2F" trace
++     * came from the non-zero +0x0C, ASSUMPTION (report lfqueue-layout-acit.md 4). */
+     vm_write32(q + 0x10, size);
+     vm_write32(q + 0x14, depth);
+-    vm_write64(q + 0x18, (u64)(uint32_t)buffer_ea);   /* bcptr<void,u64> */
+-    /* NOT direction at +0x24 and NOT init at +0x2C. Both sit inside the
+-     * 16-byte group at +0x20..+0x2F that the consumer owns and shifts wholesale
+-     * (shlqbyi <group>,1 at 0x12A0C). The trace shows the two values we used to
+-     * write there marching through it one byte per dequeue --
+-     *   +0x24: 00000002 -> 00000200 -> 00020000 -> 02000000
+-     *   +0x2C: 00000001 -> 00000100 -> 00010000 -> 01000000
+-     * -- i.e. we were feeding garbage into the SPU's own state every cycle.
+-     * Whatever holds direction/init, it is not these offsets. */                          /* init: constructed */
+-    vm_write64(q + 0x70, (u64)(uint32_t)owner_ea);    /* eaSignal <- taskset/spurs */
++    /* ANY2ANY (3): the consumer masks the low bit of the buffer EA; ASSUMPTION
++     * that libsre sets it as RPCS3 does. */
++    vm_write64(q + 0x18, (u64)(uint32_t)buffer_ea | (direction == 3 ? 1u : 0u));   /* bcptr<void,u64> */
++    vm_write32(q + 0x24, direction);
++    vm_write32(q + 0x2C, 1);                          /* init flag, ASSUMPTION: value 1 */
++    vm_write64(q + 0x70, (u64)(uint32_t)owner_ea);    /* eaSignal <- taskset/spurs (ACiT: bit 0 set, masked at use) */
+
+     memset(vm_base + (uint32_t)buffer_ea, 0, (size_t)size * depth);
+
+@@ -4536,3 +4532,109 @@
+     printf("[cellSpurs] SetGlobalExceptionEventHandler(spurs=0x%08X handler=0x%08X)\n", spurs, (u32)handler_ea);
+     return CELL_OK;
+ }
++
++/* ---- patch 7030: _cellSpursLFQueuePushBody (NID 0x8A85674D) ----
++ * Producer side of the guest-visible CellSyncLFQueue line (layout: Initialize above, evidence in the SPU consumer lifts).
++ * Indices run modulo 2*depth; the consumer finds data only through push-completed (+0x08) against pop-in-flight (+0x06). */
++#define RC_LFQ_ERR_AGAIN   0x80410901u   /* TASK-series AGAIN: the only non-zero func_00717068 maps to "full, retry" */
++#define RC_LFQ_ERR_PERM    0x80410109u
++#define RC_LFQ_ERR_ALIGN   0x80410110u
++#define RC_LFQ_ERR_NULL    0x80410111u
++
++/* Optional PPU stop request for a blocking push (the runtime has no such flag today: the process ends with exit()). */
++int (*g_rc_lfq_stop_requested)(void);
++
++static inline u16 rc_lfq_r16(u32 a) { return vm_read16(a); }
++/* Raw store: only under the line's lock (vm_write16 would take it again). */
++static inline void rc_lfq_w16(u32 a, u16 v) { u16 r = ps3_bswap16(v); memcpy(vm_ptr8(a), &r, 2); }
++
++static void rc_lfq_dump(const char* tag, u32 q)
++{
++    printf("[cellSpurs] LFQueuePush line %s q=0x%08X\n", tag, q);
++    for (u32 r = 0; r < 128; r += 16)
++        printf("[cellSpurs]   +%02X %08X %08X %08X %08X\n", r, vm_read32(q + r), vm_read32(q + r + 4), vm_read32(q + r + 8), vm_read32(q + r + 12));
++}
++
++/* Phase 1: reserve a slot. Returns 1 and the slot index, or 0 when full. */
++static int rc_lfq_reserve(u32 q, u32 depth, u32* slot)
++{
++    int ok = 0;
++    PPU_LL_DECL(llm, q, 128);
++    PPU_LL_LOCK(llm);
++    u32 h1 = rc_lfq_r16(q + 0x00), h8 = rc_lfq_r16(q + 0x0E), mod = 2 * depth;
++    if (((h8 + mod - h1) % mod) < depth) {
++        *slot = h8;
++        rc_lfq_w16(q + 0x0E, (u16)((h8 + 1) % mod));
++        if (spu_coh_is_reserved(q & ~127u)) spu_coh_notify_write(q & ~127u);
++        ok = 1;
++    }
++    PPU_LL_UNLOCK(llm);
++    return ok;
++}
++
++/* Phase 3: publish the slot (h5, out-of-order bitmap h6) and take one waiting consumer off the ring (pack at +0x30 for
++ * direction 2, +0x04 for direction 3 -- ASSUMPTION). Returns the waiter's task id, or -1 for none. */
++static int rc_lfq_publish(u32 q, u32 depth, u32 slot, u32 direction)
++{
++    int waiter = -1;
++    u32 mod = 2 * depth;
++    PPU_LL_DECL(llm, q, 128);
++    PPU_LL_LOCK(llm);
++    u32 h5 = rc_lfq_r16(q + 0x08), h6 = rc_lfq_r16(q + 0x0A);
++    u32 off = (slot + mod - h5) % mod;
++    /* bit k of R = slot h5+k completed (bit 0 = the pending slot h5); h6 stores R >> 1 */
++    u32 R = (h6 << 1) | (1u << off);
++    while (R & 1) { h5 = (h5 + 1) % mod; R >>= 1; }
++    rc_lfq_w16(q + 0x08, (u16)h5);
++    rc_lfq_w16(q + 0x0A, (u16)(R >> 1));
++    u32 pa = q + (direction == 3 ? 0x04 : 0x30), ids = q + 0x32;
++    u32 pack = rc_lfq_r16(pa), tail = pack & 0x1F, head = (pack >> 10) & 0x1F;
++    if (head != tail && head < 30) {
++        waiter = rc_lfq_r16(ids + 2 * (head >= 15 ? head - 15 : head));
++        head = head >= 29 ? 0 : head + 1;
++        rc_lfq_w16(pa, (u16)((pack & ~(0x1Fu << 10)) | (head << 10)));
++    }
++    if (spu_coh_is_reserved(q & ~127u)) spu_coh_notify_write(q & ~127u);
++    PPU_LL_UNLOCK(llm);
++    return waiter;
++}
++
++s32 _cellSpursLFQueuePushBody(u64 queue_ea, u64 elem_ea, u64 is_blocking)
++{
++    u32 q = (u32)queue_ea, src = (u32)elem_ea;
++    if (!q || !src) return (s32)RC_LFQ_ERR_NULL;
++    if ((q & 0x7F) || (src & 0xF)) return (s32)RC_LFQ_ERR_ALIGN;
++    u32 direction = vm_read32(q + 0x24);
++    if (direction != 2 && direction != 3) return (s32)RC_LFQ_ERR_PERM;   /* 0/1: SPU-side producers */
++    u32 size = vm_read32(q + 0x10), depth = vm_read32(q + 0x14);
++    u64 buf = vm_read64(q + 0x18) & ~1ull;
++    if (!size || !depth || depth > 15 || !buf) return (s32)RC_LFQ_ERR_PERM;   /* queue was never initialised */
++
++    static int _n = 0;
++    int logit = PS3_LOG_FIRST(_n, 3);
++    if (logit) rc_lfq_dump("before", q);
++
++    u32 slot = 0;
++    while (!rc_lfq_reserve(q, depth, &slot)) {
++        if (!(u32)is_blocking) return (s32)RC_LFQ_ERR_AGAIN;
++        if (g_rc_lfq_stop_requested && g_rc_lfq_stop_requested()) return (s32)RC_LFQ_ERR_AGAIN;
++#ifdef _WIN32
++        Sleep(1);
++#else
++        struct timespec ts = { 0, 200000 };
++        nanosleep(&ts, NULL);
++#endif
++    }
++    u32 dst = (u32)buf + size * (slot >= depth ? slot - depth : slot);
++    vm_memcpy_to(dst, vm_ptr8(src), size);     /* the element is in place before h5 can move past it */
++    int waiter = rc_lfq_publish(q, depth, slot, direction);
++    if (waiter >= 0) {
++        u32 owner = (u32)vm_read64(q + 0x70) & ~1u;
++        if (owner) spu_taskset_signal_task(owner, (u32)waiter);
++    }
++    if (logit) {
++        printf("[cellSpurs] LFQueuePush(q=0x%08X dir=%u slot=%u dst=0x%08X waiter=%d)\n", q, direction, slot, dst, waiter);
++        rc_lfq_dump("after", q);
++    }
++    return CELL_OK;
++}
+--- a/libs/spurs/cellSpurs.h
++++ b/libs/spurs/cellSpurs.h
+@@ -306,6 +306,7 @@
+ s32 cellSpursQueueSize(u64 queue_ea, u64 size_ea);
+ s32 _cellSpursLFQueueInitialize(u64 owner_ea, u64 queue_ea, u64 buffer_ea,
+                                 u32 size, u32 depth, u32 direction);
++s32 _cellSpursLFQueuePushBody(u64 queue_ea, u64 elem_ea, u64 is_blocking);   /* patch 7030 */
+ s32 cellSpursLFQueueAttachLv2EventQueue(u64 queue_ea);
+ s32 cellSpursLFQueueDetachLv2EventQueue(u64 queue_ea);
+
+--- a/tools/nid_database.py
++++ b/tools/nid_database.py
+@@ -290,6 +290,7 @@
+     ("cellSpurs", "cellSpursQueueTryPopBody"),
+     # SPURS LFQueue
+     ("cellSpurs", "_cellSpursLFQueueInitialize"),
++    ("cellSpurs", "_cellSpursLFQueuePushBody"),
+     ("cellSpurs", "cellSpursLFQueuePush"),
+     ("cellSpurs", "cellSpursLFQueuePop"),
+     ("cellSpurs", "cellSpursLFQueueAttachLv2EventQueue"),

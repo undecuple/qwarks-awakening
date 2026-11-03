@@ -1,0 +1,10 @@
+{
+ "title": "Tools of Destruction",
+ "note": "Per-title inputs of tools/spu/spu_lift.py. Numbers recovered from the decrypted EBOOT (BCUS98127). pm_seed: the policy module's interrupt handler (the SPURS kernel jumps to it, nothing in the code calls it). wws_code_slot: the LS address of the job code buffer the policy module reads (lqa at LS 0x3024), patches 6500/6501; absent = the runtime default 0x1320. lift_table: code ends and data islands of the modules whose first lift had unsupported words (tools/survey/lift_table.py).",
+ "symbol_prefix": "tods",
+ "lift_table": "tods_spu_lift_table.tsv",
+ "edge_image_id": 30,
+ "pm_image_id": 2,
+ "pm_seed": "0xa2c",
+ "wws_code_slot": "0x1330"
+}

@@ -1,0 +1,18 @@
+{
+ "edge_zlib_inflate_elf": {
+  "count": 1,
+  "size": 38100,
+  "entry": "0x3050",
+  "file_offset": "0xd09b00",
+  "code_end": "0xb270",
+  "note": "ELF32 SPU without section headers (shnum 0); size = the end of the program header table at 0x94d4. code_end: one past the last function's `bi $lr` at 0xb26c; ASCII and shufb data follow up to the text segment end 0xc350 (read off the disassembly; ACiT's .rodata starts 0x10c0 before its text end, Nexus's 0x10e0)"
+ },
+ "raw_job_binaries_in_ebooot": {
+  "count": 2,
+  "extent_min_max": [46448, 56400],
+  "load_addr": [["0x4000", 2]],
+  "offsets_first_last": [13709440, 13768576]
+ },
+ "raw_spu_programs": {"count": 0, "note": "no sys_raw_spu_create call (syscall 160) in the lifted PPU code, no 'PS3_SPU' program name string"},
+ "psarc_scan": "not run (job modules the game loads from its archives are not liftable from the EBOOT)"
+}

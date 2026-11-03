@@ -1,0 +1,23 @@
+cellSysutilAvconfExt: cellVideoOutGetScreenSize (NID 0xFAA275A4), Full Frontal Assault 1.05 and All 4 One 1.03.
+
+(u32 videoOut, float* screenSize): the physical diagonal in inches, which a console reads from the TV's EDID. The port
+has no display-size information (a window, not a TV), and the SDK's answer for a display that does not report one is
+CELL_VIDEO_OUT_ERROR_VALUE_IS_NOT_SET (0x8002B229); titles must handle it, because many TVs give no EDID size.
+Reporting that is honest, where inventing "40 inch" would be a made-up number. A non-primary videoOut is
+UNSUPPORTED_VIDEO_OUT (0x8002B226). The output is left untouched on every error, as the SDK does. NULL output: PARAM-style
+CELL_VIDEO_OUT_ERROR_ILLEGAL_PARAMETER (0x8002B223). ASSUMPTION: the values of these three codes (SDK headers by memory).
+
+--- a/libs/misc/cellAvconfExt.c
++++ b/libs/misc/cellAvconfExt.c
+@@ -240,3 +240,11 @@
+     printf("[cellAvconfExt] AudioOutConfigure(audioOut=%u) -> ok\n", audioOut);
+     return 0;
+ }
++
++/* ---- patch 7025 ---- */
++s32 cellVideoOutGetScreenSize(u32 videoOut, float* screenSize)
++{
++    if (videoOut != 0) return (s32)0x8002B226;   /* UNSUPPORTED_VIDEO_OUT: only CELL_VIDEO_OUT_PRIMARY */
++    if (!screenSize) return (s32)0x8002B223;     /* ILLEGAL_PARAMETER */
++    return (s32)0x8002B229;                      /* VALUE_IS_NOT_SET: no EDID size for a window */
++}

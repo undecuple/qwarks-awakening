@@ -13,6 +13,7 @@ set -euo pipefail
 DIR="${1:?usage: build-rc.sh BUILD_DIR [cmake --build args]}"; shift
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GAME="${RC_TITLE:-tods}"   # RC_GAME is the sandbox's game-disc path, not a title
+EXE="$GAME"; [[ "$GAME" == acit120 ]] && EXE=acit   # the exe's name (acit120 builds acit.exe); others: the title
 OUT="${RC_OUT:-work}"; case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 PT="$OUT/ps3recomp-patched"
 MAINC="$ROOT"; [[ -f "$ROOT/.rc-main" ]] && MAINC="$(cat "$ROOT/.rc-main")"
@@ -39,7 +40,7 @@ fi
 GO="${RC_BUILD_GUARDS_ONLY:-0}"   # guards only: check, never configure (the remote client runs this outside the nix shell)
 if [[ "$GO" != 1 && ! -f "$DIR/CMakeCache.txt" ]]; then
   cmake -S "$ROOT/port/rc" -B "$DIR" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/mingw-w64.cmake" \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE="$(command -v python3)" -DRC_GAME="$GAME" \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE="$(command -v python3)" -DRC_GAME="$GAME" -DRC_EXE="$EXE" \
     -DPS3RECOMP_DIR="$PT" -DRECOMP_DIR="$OUT/recomp/$GAME" >"$DIR.configure.log" 2>&1 \
     || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
@@ -102,9 +103,9 @@ cmake --build "$DIR" -j"$jobs" "$@" || rc=$?
 echo "build-rc: done in $(( $(date +%s) - t0 )) s (-j$jobs, exit $rc)" >&2
 # Stage the exe alone with SDL3.dll and its zlib licence in work/stage/<game>:
 # proton-test.sh copies the exe's whole directory, and the build dir's read-only CMake files broke that copy (2026-10-19).
-if (( rc == 0 )) && [[ -f "$DIR/$GAME.exe" ]]; then
+if (( rc == 0 )) && [[ -f "$DIR/$EXE.exe" ]]; then
   STAGE="$OUT/stage/$GAME"; mkdir -p "$STAGE"
-  cp "$DIR/$GAME.exe" "$STAGE/"
+  cp "$DIR/$EXE.exe" "$STAGE/"
   if python3 "$ROOT/tools/release/stage_sdl3.py" --out "$STAGE" >&2; then
     mv -f "$STAGE/LICENSE.txt" "$STAGE/SDL3-LICENSE.txt"
   else

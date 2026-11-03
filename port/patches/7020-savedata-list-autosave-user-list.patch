@@ -1,0 +1,151 @@
+cellSaveData: cellSaveDataListAutoSave and the four User*List* entry points.
+
+What / NIDs (all four of A Crack in Time 1.20, Into the Nexus 1.01, Full Frontal Assault 1.05, All 4 One 1.03 import them;
+ToD imports ListAutoSave too):
+  cellSaveDataListAutoSave      0x4DD03A4E  (version, errDialog, setList, setBuf, funcFixed, funcStat, funcFile, container, userdata)
+  cellSaveDataUserListAutoSave  0x0E091C36  (version, userId, errDialog, setList, setBuf, funcFixed, funcStat, funcFile, container, userdata)
+  cellSaveDataUserListAutoLoad  0x248BD1D8  (same ten arguments)
+  cellSaveDataUserListSave      0x0F03CFB0  (version, userId, setList, setBuf, funcList, funcStat, funcFile, container, userdata)
+  cellSaveDataUserListLoad      0x39DD8425  (same nine arguments)
+Why: no handler existed (the dispatcher faked CELL_OK and never ran the title's callbacks, so the title believed a save
+or load had finished that never happened).
+How: ListAutoSave is ListAutoLoad's twin on the existing fixed-callback path (savedata_fixed with is_save=1, the path
+FixedSave2 already uses). The User*List* forms check the user and then run the same code as ListSave2 / ListLoad2 /
+ListAutoSave / ListAutoLoad, so the title's funcList/funcFixed/funcStat/funcFile callbacks fire exactly as there.
+The ninth (and tenth) argument arrives on the guest stack, so these are ctx handlers registered with the others in
+cellSaveData_register_ctx_handlers (arg9 at SP+112, arg10 at SP+120: PPC64 parameter save area, as for UserAutoLoad).
+errDialog > 2 is CELL_SAVEDATA_ERROR_PARAM (as ListAutoLoad). Behaviour reference only: RPCS3 cellSaveData.cpp.
+ASSUMPTION: userId 0 (CURRENT) or 1 (cellUserInfo's one user) is accepted, any other id is CELL_SAVEDATA_ERROR_NOUSER.
+
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1617,12 +1617,129 @@
+         (u32)ctx->gpr[10], (void*)(uintptr_t)savedata_arg9(ctx));
+ }
+
++/* ---- patch 7020: ListAutoSave and the User*List* entry points ---- */
++#define RC_G(n)     ((u32)ctx->gpr[n])
++#define RC_P(T, n)  ((T)(uintptr_t)RC_G(n))
++
++/* One local user: cellUserInfo's id (1); 0 is CELL_SYSUTIL_USERID_CURRENT. */
++static int savedata_user_ok(u32 userId) { return userId == 0 || userId == 1; }
++
++/* Tenth argument: the next doubleword of the caller's parameter save area after arg9. */
++static uint32_t savedata_arg10(ppu_context* ctx)
++{
++    return (uint32_t)vm_read64((u32)ctx->gpr[1] + SAVEDATA_ARG9_SP_OFF + 8u);
++}
++
++s32 cellSaveDataListAutoSave(u32 version, u32 errDialog,
++                             CellSaveDataSetList* setList, CellSaveDataSetBuf* setBuf,
++                             CellSaveDataFixedCallback funcFixed,
++                             CellSaveDataStatCallback funcStat,
++                             CellSaveDataFileCallback funcFile,
++                             u32 container, void* userdata)
++{
++    (void)container;
++    if (errDialog > 2) return CELL_SAVEDATA_ERROR_PARAM;
++    printf("[cellSaveData] ListAutoSave(version=%u)\n", version);
++    return savedata_fixed(1, setList, setBuf, funcFixed, funcStat, funcFile, userdata);
++}
++
++s32 cellSaveDataUserListAutoSave(u32 version, u32 userId, u32 errDialog,
++                                 CellSaveDataSetList* setList, CellSaveDataSetBuf* setBuf,
++                                 CellSaveDataFixedCallback funcFixed,
++                                 CellSaveDataStatCallback funcStat,
++                                 CellSaveDataFileCallback funcFile,
++                                 u32 container, void* userdata)
++{
++    if (!savedata_user_ok(userId)) return CELL_SAVEDATA_ERROR_NOUSER;
++    return cellSaveDataListAutoSave(version, errDialog, setList, setBuf, funcFixed, funcStat,
++                                    funcFile, container, userdata);
++}
++
++s32 cellSaveDataUserListAutoLoad(u32 version, u32 userId, u32 errDialog,
++                                 CellSaveDataSetList* setList, CellSaveDataSetBuf* setBuf,
++                                 CellSaveDataFixedCallback funcFixed,
++                                 CellSaveDataStatCallback funcStat,
++                                 CellSaveDataFileCallback funcFile,
++                                 u32 container, void* userdata)
++{
++    if (!savedata_user_ok(userId)) return CELL_SAVEDATA_ERROR_NOUSER;
++    return cellSaveDataListAutoLoad(version, errDialog, setList, setBuf, funcFixed, funcStat,
++                                    funcFile, container, userdata);
++}
++
++s32 cellSaveDataUserListSave(u32 version, u32 userId,
++                             CellSaveDataSetList* setList, CellSaveDataSetBuf* setBuf,
++                             CellSaveDataListCallback funcList,
++                             CellSaveDataStatCallback funcStat,
++                             CellSaveDataFileCallback funcFile,
++                             u32 container, void* userdata)
++{
++    if (!savedata_user_ok(userId)) return CELL_SAVEDATA_ERROR_NOUSER;
++    return cellSaveDataListSave2(version, setList, setBuf, funcList, funcStat, funcFile, container, userdata);
++}
++
++s32 cellSaveDataUserListLoad(u32 version, u32 userId,
++                             CellSaveDataSetList* setList, CellSaveDataSetBuf* setBuf,
++                             CellSaveDataListCallback funcList,
++                             CellSaveDataStatCallback funcStat,
++                             CellSaveDataFileCallback funcFile,
++                             u32 container, void* userdata)
++{
++    if (!savedata_user_ok(userId)) return CELL_SAVEDATA_ERROR_NOUSER;
++    return cellSaveDataListLoad2(version, setList, setBuf, funcList, funcStat, funcFile, container, userdata);
++}
++
++static void hle_cellSaveDataListAutoSave(ppu_context* ctx)
++{
++    ctx->gpr[3] = (uint64_t)(int64_t)cellSaveDataListAutoSave(RC_G(3), RC_G(4),
++        RC_P(CellSaveDataSetList*, 5), RC_P(CellSaveDataSetBuf*, 6), RC_P(CellSaveDataFixedCallback, 7),
++        RC_P(CellSaveDataStatCallback, 8), RC_P(CellSaveDataFileCallback, 9), RC_G(10),
++        (void*)(uintptr_t)savedata_arg9(ctx));
++}
++
++static void hle_cellSaveDataUserListSave(ppu_context* ctx)
++{
++    ctx->gpr[3] = (uint64_t)(int64_t)cellSaveDataUserListSave(RC_G(3), RC_G(4),
++        RC_P(CellSaveDataSetList*, 5), RC_P(CellSaveDataSetBuf*, 6), RC_P(CellSaveDataListCallback, 7),
++        RC_P(CellSaveDataStatCallback, 8), RC_P(CellSaveDataFileCallback, 9), RC_G(10),
++        (void*)(uintptr_t)savedata_arg9(ctx));
++}
++
++static void hle_cellSaveDataUserListLoad(ppu_context* ctx)
++{
++    ctx->gpr[3] = (uint64_t)(int64_t)cellSaveDataUserListLoad(RC_G(3), RC_G(4),
++        RC_P(CellSaveDataSetList*, 5), RC_P(CellSaveDataSetBuf*, 6), RC_P(CellSaveDataListCallback, 7),
++        RC_P(CellSaveDataStatCallback, 8), RC_P(CellSaveDataFileCallback, 9), RC_G(10),
++        (void*)(uintptr_t)savedata_arg9(ctx));
++}
++
++static void hle_cellSaveDataUserListAutoSave(ppu_context* ctx)
++{
++    ctx->gpr[3] = (uint64_t)(int64_t)cellSaveDataUserListAutoSave(RC_G(3), RC_G(4), RC_G(5),
++        RC_P(CellSaveDataSetList*, 6), RC_P(CellSaveDataSetBuf*, 7), RC_P(CellSaveDataFixedCallback, 8),
++        RC_P(CellSaveDataStatCallback, 9), RC_P(CellSaveDataFileCallback, 10), savedata_arg9(ctx),
++        (void*)(uintptr_t)savedata_arg10(ctx));
++}
++
++static void hle_cellSaveDataUserListAutoLoad(ppu_context* ctx)
++{
++    ctx->gpr[3] = (uint64_t)(int64_t)cellSaveDataUserListAutoLoad(RC_G(3), RC_G(4), RC_G(5),
++        RC_P(CellSaveDataSetList*, 6), RC_P(CellSaveDataSetBuf*, 7), RC_P(CellSaveDataFixedCallback, 8),
++        RC_P(CellSaveDataStatCallback, 9), RC_P(CellSaveDataFileCallback, 10), savedata_arg9(ctx),
++        (void*)(uintptr_t)savedata_arg10(ctx));
++}
++
+ void cellSaveData_register_ctx_handlers(void)
+ {
+     /* Overrides the generated 8-arg registration: ctx handlers are dispatched
+      * before the generic table. */
+     ps3_hle_register_ctx(0xCDC6AEFDu, "cellSaveDataUserAutoLoad",
+                          hle_cellSaveDataUserAutoLoad);
+     ps3_hle_register_ctx(0x52AAC4FAu, "cellSaveDataUserAutoSave",
+                          hle_cellSaveDataUserAutoSave);
++    ps3_hle_register_ctx(0x4DD03A4Eu, "cellSaveDataListAutoSave", hle_cellSaveDataListAutoSave);
++    ps3_hle_register_ctx(0x0E091C36u, "cellSaveDataUserListAutoSave", hle_cellSaveDataUserListAutoSave);
++    ps3_hle_register_ctx(0x248BD1D8u, "cellSaveDataUserListAutoLoad", hle_cellSaveDataUserListAutoLoad);
++    ps3_hle_register_ctx(0x0F03CFB0u, "cellSaveDataUserListSave", hle_cellSaveDataUserListSave);
++    ps3_hle_register_ctx(0x39DD8425u, "cellSaveDataUserListLoad", hle_cellSaveDataUserListLoad);
+ }

@@ -30,8 +30,8 @@ What is true and checked today:
 - **Tested under Proton on Linux.** Every test run so far has been the Windows program under Proton on Linux (the
   setups are in the table below). It has not been run on Windows itself yet.
 - **One runtime for the series.** All the games share one runtime and one set of tools, with one program per game. The
-  PPU code of *A Crack in Time* and *Into the Nexus* is already lifted to C with the same tools; neither is linked or
-  running yet.
+  PPU code of *A Crack in Time* and *Into the Nexus* is already lifted to C with the same tools. *A Crack in Time* also
+  builds into its own program, not tested yet; *Into the Nexus* is not linked yet.
 - **Fixes sent upstream.** General fixes found while porting go back to ps3recomp as pull requests:
   [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#408](https://github.com/sp00nznet/ps3recomp/pull/408),
   [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429) and
@@ -63,7 +63,7 @@ What the runs on Proton showed, all on *Tools of Destruction*:
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
 | Ratchet & Clank Future: Quest for Booty | 2008 | planned |
-| Ratchet & Clank Future: A Crack in Time | 2009 | PPU code lifted; not linked or running yet |
+| Ratchet & Clank Future: A Crack in Time | 2009 | PPU code lifted; builds, not tested yet |
 | Ratchet & Clank: All 4 One | 2011 | planned |
 | Ratchet & Clank: Full Frontal Assault | 2012 | planned |
 | Ratchet & Clank: Into the Nexus | 2013 | PPU code lifted; not linked or running yet |

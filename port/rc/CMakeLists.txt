@@ -4,6 +4,11 @@
 # Lifted code: work/recomp/<game> (tools/lift.sh, not committed). Toolkit: work/ps3recomp-patched.
 cmake_minimum_required(VERSION 3.20)
 set(RC_GAME "tods" CACHE STRING "Game to build: port/rc/<game>, work/recomp/<game>")
+# The exe's file name (default: the game's name); acit120 builds acit.exe (tools/build-rc.sh passes -DRC_EXE).
+set(RC_EXE "" CACHE STRING "Output exe name without .exe (default RC_GAME)")
+if(NOT RC_EXE)
+    set(RC_EXE "${RC_GAME}")
+endif()
 project(rc_${RC_GAME}
     VERSION 0.1.0
     LANGUAGES C CXX
@@ -170,11 +175,16 @@ if(PORT_ENABLE_SPU)
     endif()
 endif()
 
+# Host bodies for port/rc/<game>/ppu_overrides.txt: only a game with overrides has the file (acit120: none yet).
+set(GAME_OVERRIDES "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${RC_GAME}/${RC_GAME}_ppu_overrides.cpp")
+    set(GAME_OVERRIDES "${RC_GAME}/${RC_GAME}_ppu_overrides.cpp")
+endif()
 add_executable(${PROJECT_NAME}
     main.cpp
     stubs.cpp
     ${RC_GAME}/hle_${RC_GAME}.cpp            # the game's HLE for imports the runtime leaves unresolved
-    ${RC_GAME}/${RC_GAME}_ppu_overrides.cpp  # host bodies for port/rc/<game>/ppu_overrides.txt
+    ${GAME_OVERRIDES}
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}
@@ -225,7 +235,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # (tools/release/names.py PRODUCT). PUBLIC so main.cpp's display.ini writer gets the same name.
 target_compile_definitions(ps3recomp_runtime PUBLIC "PS3RECOMP_PRODUCT_NAME=\"Qwark's Awakening\"")
 
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${RC_GAME}")   # tods.exe
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${RC_EXE}")   # tods.exe, acit.exe
 # No lifted SPU images registered yet, no file logger (KZ3 ), no online setup: added when the port has its own.
 
 

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwark&#x27;s Awakening</title>
+<meta name="description" content="Ratchet &amp; Clank (PS3) // Unofficial PC Port (static recompilation). Status: early work, not playable yet.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:,">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+<div class="bar">
+<a class="wordmark" href="#top" aria-label="Qwark&#x27;s Awakening"><span class="w1">QWARK'S</span> <span class="w2">AWAKENING</span></a>
+<nav aria-label="Sections"><ul><li><a href="#status">Status</a></li><li><a href="#screens">Screens</a></li><li><a href="#about">About</a></li><li><a href="#changelog">Changelog</a></li><li><a href="#objectives">Objectives</a></li><li><a href="#install">Install</a></li><li><a href="#requirements">Requirements</a></li><li><a href="#channels">Official channels</a></li></ul></nav>
+</div>
+</header>
+<main id="main">
+<div class="hero" id="top">
+<div class="wrap">
+<img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Qwark&#x27;s Awakening. Ratchet &amp; Clank (PS3) // Unofficial PC Port (static recompilation), built on your PC from your own game">
+<h1 class="vh">Qwark&#x27;s Awakening: Ratchet &amp; Clank (PS3) // Unofficial PC Port (static recompilation)</h1>
+<p class="herostatus"><span class="chip big"><span aria-hidden="true">▶</span> Early work</span> <strong>Status: early work, not playable yet.</strong></p>
+</div>
+</div>
+<div class="wrap">
+<section id="status" aria-labelledby="h-status">
+<h2 id="h-status">Status</h2>
+<p class="lede">What the README says today, word for word.</p>
+<div class="statuscard"><p class="word"><span class="chip"><span aria-hidden="true">▶</span> Early work</span> </p><p><strong>Status: early work, not playable yet.</strong> Version 0.1.0, a source-only pre-release of 2026-11-03. <em>Tools of Destruction</em> starts and can be played by hand from its first level, with known bugs, and has not been played through. What a release means: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/RELEASE-CRITERIA.md">docs/RELEASE-CRITERIA.md</a>.</p></div>
+<h3>What is true and checked today</h3>
+<ul><li><strong>The US disc.</strong> The first game is ported from the US disc of <em>Tools of Destruction</em>, BCUS98127. Other regions are untested.</li><li><strong>Tested under Proton on Linux.</strong> Every test run so far has been the Windows program under Proton on Linux (the setups are in the table below). It has not been run on Windows itself yet.</li><li><strong>One runtime for the series.</strong> All the games share one runtime and one set of tools, with one program per game. The PPU code of <em>A Crack in Time</em> and <em>Into the Nexus</em> is already lifted to C with the same tools. <em>A Crack in Time</em> also builds into its own program, not tested yet; <em>Into the Nexus</em> is not linked yet.</li><li><strong>Fixes sent upstream.</strong> General fixes found while porting go back to ps3recomp as pull requests: <a href="https://github.com/sp00nznet/ps3recomp/pull/401">#401</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/408">#408</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/415">#415</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/429">#429</a> and the documentation change <a href="https://github.com/sp00nznet/ps3recomp/pull/405">#405</a>, all merged.</li></ul>
+<p><strong>You need your own copy of the game.</strong> This repository contains only the port: source code, patches to the recompiler, tools and documentation. It contains no game code, data, assets, keys or firmware, and it never will.</p>
+<h3>Compatibility</h3>
+<div class="tablewrap"><table><thead><tr><th scope="col">Platform</th><th scope="col">How it runs</th><th scope="col">Renderer</th><th scope="col">State</th><th scope="col">Tested on</th></tr></thead><tbody><tr><td>Windows 10/11</td><td>native exe</td><td>Direct3D 12</td><td>builds; not run on Windows</td><td>-</td></tr><tr><td>Linux</td><td>the Windows exe under Proton (GE-Proton11-7)</td><td>Direct3D 12 through vkd3d-proton</td><td>verified</td><td>NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-03</td></tr></tbody></table></div>
+<p>What the runs on Proton showed, all on <em>Tools of Destruction</em>:</p>
+<ul><li><strong>This source (ps3recomp v0.18.0), 2026-11-03:</strong> a new game starts and reaches its first level, Metropolis, and a saved game loads into Fastoon; neither five-minute run crashed (the setup in the Proton row above).</li><li><strong>An earlier build (ps3recomp v0.17.0), 2026-10-22, same GPU, driver 595.104.2:</strong> started from a saved game, the ship flies on to later planets such as Cobalia. A DualShock 4 pad, Alt+Enter fullscreen and in-game saving work.</li><li><strong>Frame rate, hand play:</strong> about 37 frames per second on average over one 147-second session in Fastoon, fights included, on that earlier build.</li><li><strong>Frame rate, scripted runs:</strong> not measured on that build.</li><li>Not reached yet: a ten-minute run without errors, a chapter played to its end, the port&#x27;s own save loaded again after a quit.</li></ul>
+<div class="tablewrap"><table><thead><tr><th scope="col">Game</th><th scope="col">PS3 release</th><th scope="col">State</th></tr></thead><tbody><tr><td>Ratchet &amp; Clank Future: Tools of Destruction</td><td>2007</td><td><span class="chip"><span aria-hidden="true">▶</span> In progress</span> first target: starts and plays by hand, not playable yet</td></tr><tr><td>Ratchet &amp; Clank Future: Quest for Booty</td><td>2008</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank Future: A Crack in Time</td><td>2009</td><td><span class="chip"><span aria-hidden="true">◐</span> Lifted</span> PPU code lifted; builds, not tested yet</td></tr><tr><td>Ratchet &amp; Clank: All 4 One</td><td>2011</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank: Full Frontal Assault</td><td>2012</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank: Into the Nexus</td><td>2013</td><td><span class="chip"><span aria-hidden="true">◐</span> Lifted</span> PPU code lifted; not linked or running yet</td></tr><tr><td>Ratchet &amp; Clank Collection, Ratchet: Deadlocked HD (PS2 remasters)</td><td>2012-2013</td><td><span class="chip"><span aria-hidden="true">○</span> Last</span> last, under review</td></tr></tbody></table></div>
+<h3>Known issues</h3>
+<p>There is no settings menu yet. Alt+Enter toggles fullscreen; pads are read through SDL3.</p>
+<p>Known issues in <em>Tools of Destruction</em> (on the build in the table above):</p>
+<ul><li>At Fastoon&#x27;s spaceport, reflections are far too strong and a HUD prompt shows mirrored in the scene.</li><li>The picture flickers inside one cave on Fastoon.</li><li>Level loads stall while graphics pipelines are built; the game&#x27;s own graphics-stall notice can show during them.</li><li>The game has not been played through, so later levels are untested.</li></ul>
+</section>
+<section id="screens" aria-labelledby="h-screens">
+<h2 id="h-screens">Screens</h2>
+<p class="lede">Tools of Destruction running in the port under Proton on Linux, on earlier builds of October 2026.</p>
+<div class="gallery"><figure><a href="../assets/screen-metropolis.jpg"><img src="../assets/screen-metropolis.jpg" loading="lazy" alt="Ratchet with Clank on his back in a sunlit Metropolis plaza, towers and airships behind"></a><figcaption>Metropolis, the first level (2026-10-22)</figcaption></figure><figure><a href="../assets/screen-intro.jpg"><img src="../assets/screen-intro.jpg" loading="lazy" alt="Close-up of Ratchet in the game&#x27;s opening cutscene"></a><figcaption>The opening cutscene (2026-10-20)</figcaption></figure><figure><a href="../assets/screen-fastoon.jpg"><img src="../assets/screen-fastoon.jpg" loading="lazy" alt="Ratchet in armour standing among rocks and ruins on Fastoon, a lit city behind"></a><figcaption>Fastoon, loaded from a saved game (2026-10-22)</figcaption></figure></div>
+<p class="credit">Game imagery © Sony Interactive Entertainment. <em>Ratchet &amp; Clank Future: Tools of Destruction</em> was developed by Insomniac Games.</p>
+</section>
+<section id="about" aria-labelledby="h-about">
+<h2 id="h-about">About</h2>
+
+<p>A native Windows port of the PS3 Ratchet &amp; Clank games, made by static recompilation on <a href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a>; the first game, <em>Ratchet &amp; Clank Future: Tools of Destruction</em>, needs your own copy of its <strong>US disc, BCUS98127</strong> (disc version, no update).</p>
+<h3>How it works, briefly</h3>
+<ul><li><strong>PPU (main CPU code):</strong> lifted to C ahead of time by ps3recomp and compiled into the Windows program, so no CPU emulator runs for the main game code at play time.</li><li><strong>SPU (Cell co-processor code):</strong> the game&#x27;s SPU programs (its job modules and two collision programs) are found in your EBOOT.elf and lifted to C the same way, by the build steps; the runtime runs them as compiled code.</li><li><strong>Graphics:</strong> the game&#x27;s RSX command stream is translated to Direct3D 12 as it runs, by the ps3recomp runtime.</li><li><strong>System software:</strong> the PS3 libraries the game calls are reimplemented on PC APIs by the same runtime.</li></ul>
+<p>The shared runtime is ps3recomp&#x27;s; this repository holds the port&#x27;s own patches and tools.</p>
+<h3>How AI was used</h3>
+<p>This port is developed by one maintainer with AI coding agents. The agents write code, tests and documentation under the maintainer&#x27;s direction; the maintainer decides what is done, reviews the changes and merges them. Every claim in the docs is dated and says how it was measured; guesses are marked <code>ASSUMPTION:</code>. The PS3 emulator RPCS3 is used as a reference to read, never as code to copy.</p>
+</section>
+<section id="changelog" aria-labelledby="h-changelog">
+<h2 id="h-changelog">Changelog</h2>
+<p class="lede">Newest first. The full file is on GitHub.</p>
+<article class="entry"><h3>[0.1.0] - 2026-11-03 (pre-release)</h3>
+<h4>Added</h4>
+<ul><li>First public pre-release, source code only: the port of <em>Ratchet &amp; Clank Future: Tools of Destruction</em> (US disc, BCUS98127) by static recompilation on ps3recomp v0.18.0, with this port&#x27;s patches in <code>port/patches/</code>, built on Linux with Nix from your own copy of the game (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>). No game files and no game program are included.</li><li><em>Tools of Destruction</em> starts as a Windows program and can be played by hand with a controller: a new game starts in its first level, Metropolis, and from a saved game the ship flies on to later planets such as Cobalia. Checked under GE-Proton11-7 on Linux with an NVIDIA GeForce RTX 4060 (driver 595.104.2) on 2026-10-22; hand play in Fastoon averaged about 37 frames per second over one 147-second session; scripted frame rate not measured. The source as released (ps3recomp v0.18.0) was checked on 2026-11-03 under GE-Proton11-7 with the same GPU (driver 595.112.07): a new game reaches Metropolis and a saved game loads into Fastoon, five minutes each without a crash.</li><li>A DualShock 4 pad (through SDL3), Alt+Enter fullscreen and in-game saving work under Proton.</li><li>The PPU code of <em>A Crack in Time</em> and <em>Into the Nexus</em> is lifted with the same tools; neither game is linked or running yet.</li></ul>
+<p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md">Full changelog on GitHub</a></p></article>
+</section>
+<section id="objectives" aria-labelledby="h-objectives">
+<h2 id="h-objectives">Objectives</h2>
+<p class="lede">What is planned, in rough order. No dates.</p>
+<p>What is planned, in rough order. Done, in progress, planned. No dates: the order is firm, the timing is not. The first release, v0.1.0, is a source-only pre-release, and the port is not playable yet.</p>
+<h3>Ratchet &amp; Clank Future: Tools of Destruction (first target)</h3>
+<div class="tablewrap"><table><tbody><tr><th scope="row"><span class="chip"><span aria-hidden="true">✓</span> Done</span> </th><td>Starts as a Windows program (tested under Proton on Linux only); a new game reaches the first level, Metropolis, and can be played by hand with a DualShock 4 pad; saving in game works; a saved game flies on to later planets</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">▶</span> In progress</span> </th><td>The known bugs: too-strong reflections and a mirrored HUD prompt at Fastoon&#x27;s spaceport, picture flicker in one cave, stalls during level loads</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Playable start to finish: a full run through the game, saves loaded again after a quit, audio, input</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>A tool that builds the program on your machine from your own copy of the game; nothing of the game is shipped</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Testing on real Windows (not run so far) and on macOS (not run so far)</td></tr></tbody></table></div>
+<h3>PC options</h3>
+<p>Planned after the first game is playable: display settings (resolution, window modes, widescreen), keyboard and mouse with rebindable controls, gamepad prompts. Gameplay changes stay optional.</p>
+<h3>The other games</h3>
+<p>One at a time, after the first game works. The order is not fixed. The main-CPU (PPU) code of two of them is already lifted to C with the same tools. One of them, A Crack in Time, also builds into its own program, not tested yet.</p>
+<div class="tablewrap"><table><thead><tr><th scope="col">Game</th><th scope="col">PS3 release</th><th scope="col">State</th></tr></thead><tbody><tr><td>Ratchet &amp; Clank Future: Quest for Booty</td><td>2008</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank Future: A Crack in Time</td><td>2009</td><td><span class="chip"><span aria-hidden="true">◐</span> Lifted</span> PPU code lifted; builds, not tested yet</td></tr><tr><td>Ratchet &amp; Clank: All 4 One</td><td>2011</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank: Full Frontal Assault</td><td>2012</td><td><span class="chip"><span aria-hidden="true">○</span> Planned</span> planned</td></tr><tr><td>Ratchet &amp; Clank: Into the Nexus</td><td>2013</td><td><span class="chip"><span aria-hidden="true">◐</span> Lifted</span> PPU code lifted; not linked or running yet</td></tr><tr><td>Ratchet &amp; Clank Collection, Ratchet: Deadlocked HD (PS2 remasters)</td><td>2012-2013</td><td><span class="chip"><span aria-hidden="true">○</span> Last</span> last, under review</td></tr></tbody></table></div>
+<h3>Not planned</h3>
+<ul><li>Distributing the game or any part of it: you always bring your own copy.</li></ul>
+<p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md">Roadmap on GitHub</a></p>
+</section>
+<section id="install" aria-labelledby="h-install">
+<h2 id="h-install">Install</h2>
+<p class="lede">Nothing is released as a program: you build it yourself from your own copy of the game.</p>
+<p><strong>Download.</strong> The first release is <strong>v0.1.0</strong>, a pre-release, on this repository&#x27;s <a href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a> page. It is source code only: there is no installer and no ready-made game program, because the program is generated from your own copy of the game. Every release stays a pre-release until v1.0.0. No game code, assets or keys are ever shipped or downloaded here.</p>
+<p><strong>Steps:</strong> build the program from source with your own copy (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>), then start <code>tods.exe</code> with the path of your decrypted <code>EBOOT.elf</code>.</p>
+<p><strong>Where your data goes.</strong> Nothing is installed and no launcher exists yet. The developer build reads your own game folder and keeps its saves and caches in folders you point it at (the test scripts use <code>work/</code>). Proper locations for saves, settings and caches: not yet.</p>
+<p><strong>What goes online.</strong> The port has no update check, no crash reporting and no telemetry. Online play of the original game is not supported and untested. Whether the shared runtime opens network connections for the game&#x27;s own network calls has not been checked for this title yet.</p>
+<p class="cta"><a class="btn" href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">Build from source: docs/BUILDING.md</a></p>
+</section>
+<section id="requirements" aria-labelledby="h-requirements">
+<h2 id="h-requirements">Requirements</h2>
+<p class="lede">What you need to build and run the port.</p>
+<p>What you need to build and run the port of <em>Ratchet &amp; Clank Future: Tools of Destruction</em>. Kept current as the port changes. The game starts and can be played by hand from its first level, with known bugs; it has not been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux. Nothing below is a promise of a playable game.</p>
+<h3>From your own copy of the game</h3>
+<div class="tablewrap"><table><thead><tr><th scope="col">Item</th><th scope="col">Required</th><th scope="col">Details</th></tr></thead><tbody><tr><td><strong>Ratchet &amp; Clank Future: Tools of Destruction disc, US release</strong></td><td>yes</td><td>Title ID <strong>BCUS98127</strong> (disc version, no update), as a decrypted folder that holds <code>PS3_GAME/</code>. Other regions and IDs are untested. You make your own dump; the port ships none of the game.</td></tr><tr><td><strong>Decrypted executable</strong></td><td>yes</td><td>The game&#x27;s <code>EBOOT.BIN</code> is encrypted; the port needs <code>EBOOT.elf</code>, its decrypted form, made from your own copy. This project gives no decryption tools or instructions; <a href="https://rpcs3.net">RPCS3</a> and its documentation are the place to start for dumping questions.</td></tr><tr><td><strong>PS3 system firmware</strong></td><td>no</td><td>Not needed; the PS3 system libraries are reimplemented by the runtime.</td></tr><tr><td><strong>PlayStation Network account</strong></td><td>no</td><td>Online play is not supported.</td></tr></tbody></table></div>
+<h3>Hardware</h3>
+<div class="tablewrap"><table><thead><tr><th scope="col"></th><th scope="col">Needed</th><th scope="col">Basis</th></tr></thead><tbody><tr><td><strong>OS</strong></td><td>To build: Linux with Nix (flakes enabled). To run: the Windows program under Proton on Linux is the only tested way</td><td>Windows itself and macOS: not run (see <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">BUILDING.md</a>). A native Linux build is not planned yet</td></tr><tr><td><strong>GPU</strong></td><td>Direct3D 12 support</td><td>Tested on one setup only: NVIDIA GeForce RTX 4060, driver 595.112.07, under GE-Proton11-7 (2026-11-03; earlier runs 2026-10-22 with driver 595.104.2). Which other GPUs work is not established</td></tr><tr><td><strong>Controller</strong></td><td>A gamepad</td><td>Tested with a DualShock 4, read through SDL3. Keyboard and mouse: not checked on this game</td></tr><tr><td><strong>RAM</strong></td><td>16 GB or more to build</td><td>Each lifted source chunk can take 1 to 2 GB to compile; the build script picks the number of parallel jobs from free memory. Memory needed to play: not measured</td></tr><tr><td><strong>Disk</strong></td><td>The game dump plus several GB for the lifted sources and build</td><td>Exact figures: not measured</td></tr><tr><td><strong>CPU</strong></td><td>x86-64</td><td>Figures for playing: not measured</td></tr></tbody></table></div>
+<p><strong>Frame rate.</strong> One hand-play session on the setup in the GPU row averaged about 37 frames per second over 147 seconds on the planet Fastoon, fights included. Scripted runs: not measured on that build. Minimum and recommended hardware for playing are not measured; they will be listed here once the game is playable.</p>
+<h3>Distribution</h3>
+<p>The first release, v0.1.0, is a source-only pre-release on this repository&#x27;s <a href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a> page. You build the program on your machine from your own copy of the game (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">BUILDING.md</a>); no game code is shipped or downloaded. There is no installer yet.</p>
+<p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md">Requirements on GitHub</a></p>
+</section>
+<section id="channels" aria-labelledby="h-channels">
+<h2 id="h-channels">Official channels</h2>
+
+<p><strong>Where releases come from.</strong> Qwark&#x27;s Awakening is made by <strong>undecuple</strong>: GitHub <a href="https://github.com/undecuple">@undecuple</a>, Reddit <a href="https://www.reddit.com/user/RelationshipNo4440">u/RelationshipNo4440</a>, Discord <strong>itekso.</strong> (on the ps3recomp server). Releases come only from this repository&#x27;s <a href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a>, and we never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, &quot;fixes&quot; or donations in this project&#x27;s name is not us.</p>
+<p class="cta"><a class="btn" href="https://github.com/undecuple/qwarks-awakening">GitHub repository</a> <a class="btn" href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a> <a class="btn" href="https://github.com/undecuple/qwarks-awakening/issues">Issues</a> <a class="btn" href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a></p>
+</section>
+</div>
+</main>
+<footer class="foot">
+<div class="wrap">
+<p><em>Qwark&#x27;s Awakening</em> is a fan project&#x27;s name, after a character from the series. It is not official and not
+affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.</p>
+<p>Licence: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/LICENSE">MIT</a>. Third-party components, credits and the no-game-content rule: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/NOTICE.md">NOTICE</a>.
+Source: <a href="https://github.com/undecuple/qwarks-awakening">github.com/undecuple/qwarks-awakening</a>.</p>
+<p>Fonts: Barlow, Rajdhani and Russo One, under the SIL Open Font License (<a href="fonts/OFL-barlow.txt">Barlow</a>, <a href="fonts/OFL-rajdhani.txt">Rajdhani</a>, <a href="fonts/OFL-russo-one.txt">Russo One</a>), served from this site: the page makes no request to any other site.</p>
+</div>
+</footer>
+</body>
+</html>

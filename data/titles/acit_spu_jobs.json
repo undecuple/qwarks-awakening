@@ -1,0 +1,46 @@
+{
+ "title": "A Crack in Time",
+ "note": "Numbers recovered from the decrypted EBOOT.elf by tools/survey/jobbin_scan.py (marker 0xC0DEC0DE), ppu_static.py (calls, TOC slots) and spu_pm_entry.py. The two job modules are ELF32 SPU executables in EBOOT data (PT_LOAD at LS 0x4000, file offset +0x80 of the ELF); the module image starts at the PT_LOAD, 0x20 bytes before the marker. lift_size = that PT_LOAD's file size (header +0x14 footprint minus 0x20, the same relation ToD's registered size has to its footprint; ASSUMPTION that this is the size the title registers). No registration call was resolved: the modules are not referenced through TOC slots (ppu_static.py images: 0 base references).",
+ "images": [
+  {
+   "index": 0,
+   "elf_file_offset": "0xbed400",
+   "file_offset_of_header": "0xbed480",
+   "header_words": ["0x80", "0xdc50", "0x70", "0x1890"],
+   "header_fields": {"+0x10_entry_offset": "0x80", "+0x14_footprint": "0xdc50", "+0x24_count": 4, "+0x28_base": "0x4000", "+0x2c_flags": "0x5"},
+   "elf_ptload_filesz": "0xdc30",
+   "size_argument_at_registration": null,
+   "lift_size": 56368,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue); PM entry rule as in ToD"
+  },
+  {
+   "index": 1,
+   "elf_file_offset": "0xbfbb00",
+   "file_offset_of_header": "0xbfbb80",
+   "header_words": ["0x80", "0xb5f0", "0x30", "0x2c0"],
+   "header_fields": {"+0x10_entry_offset": "0x80", "+0x14_footprint": "0xb5f0", "+0x24_count": 0, "+0x28_base": "0x4000", "+0x2c_flags": "0x5"},
+   "elf_ptload_filesz": "0xb5d0",
+   "size_argument_at_registration": null,
+   "lift_size": 46544,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue); PM entry rule as in ToD"
+  }
+ ],
+ "workload_creation_wrapper": {
+  "function": "0x718ea8",
+  "note": "calls _cellSpursWorkloadAttributeInitialize (revision 1, sdk 0x240001) twice, cellSpursWorkloadAttributeSetName, cellSpursAddWorkloadWithAttribute; the policy module EA and size come from two helper functions 0x720388/0x720390 reading TOC slots (TOC 0xd349c8, -0x40a4 and -0x40a0; size rounded to 128). Callers of the wrapper: 0x663fdc, 0x664700, 0x66476c, 0x9940c8. A second workload creator, 0x6951b8 (sdk 0x270001, max contention 5), passes a different, tiny policy module: EA 0xad9500, 0x230 bytes (file offset 0xac9500, TOC slots reached through r30; not a WWS policy module, not lifted)",
+  "policy_module": {
+   "ea": "0xc17b00",
+   "size": "0x2cf8",
+   "file_offset": "0xc07b00",
+   "segment": "first LOAD (va 0x10000, file offset 0)",
+   "slot_table": "u32 at file offset 0xd20924 pair (ea, size) = (0xc17b00, 0x2cf8); the next pair (0xc1a800, 0x220) is a second policy-module-like object (header words at +0x14 as the WWS module's), not used by the wrapper above"
+  }
+ },
+ "entry_rule": {
+  "formula": "entry_ls = LS[0x1320] + u32(header+0x10); the PM does lqa r?,0x1320 / lqd r?,0x10(r?) / a / bisl at LS 0x31f4..0x3254 (code buffer slot 0x1320 = the runtime default; ToD's is 0x1330)"
+ }
+}

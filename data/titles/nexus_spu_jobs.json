@@ -1,0 +1,46 @@
+{
+ "title": "Into the Nexus",
+ "note": "Numbers recovered from the decrypted EBOOT.elf by tools/survey/jobbin_scan.py (marker 0xC0DEC0DE), ppu_static.py (calls) and spu_pm_entry.py. The two job modules are ELF32 SPU executables in EBOOT data (PT_LOAD at LS 0x4000, file offset +0x80 of the ELF); the module image starts at the PT_LOAD, 0x20 bytes before the marker. lift_size = that PT_LOAD's file size (header +0x14 footprint minus 0x20; ASSUMPTION that this is the size the title registers). No registration call was resolved (ppu_static.py images: 0 base references).",
+ "images": [
+  {
+   "index": 0,
+   "elf_file_offset": "0xd13000",
+   "file_offset_of_header": "0xd13080",
+   "header_words": ["0x80", "0xdc50", "0x70", "0x1890"],
+   "header_fields": {"+0x10_entry_offset": "0x80", "+0x14_footprint": "0xdc50", "+0x24_count": 4, "+0x28_base": "0x4000", "+0x2c_flags": "0x5"},
+   "elf_ptload_filesz": "0xdc30",
+   "size_argument_at_registration": null,
+   "lift_size": 56368,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue)"
+  },
+  {
+   "index": 1,
+   "elf_file_offset": "0xd21700",
+   "file_offset_of_header": "0xd21780",
+   "header_words": ["0x80", "0xb570", "0x30", "0x2c0"],
+   "header_fields": {"+0x10_entry_offset": "0x80", "+0x14_footprint": "0xb570", "+0x24_count": 0, "+0x28_base": "0x4000", "+0x2c_flags": "0x5"},
+   "elf_ptload_filesz": "0xb550",
+   "size_argument_at_registration": null,
+   "lift_size": 46416,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue)"
+  }
+ ],
+ "workload_creation_wrapper": {
+  "function": "0x7afd58",
+  "note": "forwards its arguments to _cellSpursWorkloadAttributeInitialize (sdk 0x330000+; one direct caller 0x7afe2c, call 0x7b0158); the policy module EA and size are held in a TOC data pair: u32 at file offset 0xd77708 = (0xd3d680, 0x30f8; size rounded to 128 = 0x3100 = the distance to the next object at 0xd40780, as in ToD and ACiT). A second creator, 0x6ccbc4 (max contention 1), passes a tiny policy module with immediate arguments: EA 0xc14800, 0x230 bytes (not a WWS policy module, not lifted)",
+  "policy_module": {
+   "ea": "0xd3d680",
+   "size": "0x30f8",
+   "file_offset": "0xd2d680",
+   "segment": "first LOAD (va 0x10000, file offset 0)",
+   "slot_table": "u32 pair (ea, size) at file offset 0xd77708; the policy module size passed to the kernel is rounded up to 128"
+  }
+ },
+ "entry_rule": {
+  "formula": "entry_ls = LS[0x1320] + u32(header+0x10); the PM does lqa/lqd 0x10/a/bisl at LS 0x3574..0x35ec (code buffer slot 0x1320 = the runtime default)"
+ }
+}

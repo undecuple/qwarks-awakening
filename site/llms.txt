@@ -1,0 +1,34 @@
+# Qwark's Awakening
+
+> Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation)
+
+Status: early work, not playable yet. Version 0.1.0, a source-only
+pre-release of 2026-11-03. Tools of Destruction starts and can be played by hand from its first
+level, with known bugs, and has not been played through. What a release means: docs/RELEASE-CRITERIA.md.
+
+Qwark's Awakening is a fan project's name, after a character from the series. It is not official and not
+affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
+
+## Pages
+
+- [Project page](index.html): status, screens, about, changelog, objectives, install, requirements
+- [Repository](https://github.com/undecuple/qwarks-awakening)
+- [Building from source](https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md)
+- [Roadmap](https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md)
+- [Requirements](https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md)
+- [Changelog](https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md)
+- [Licence and credits](https://github.com/undecuple/qwarks-awakening/blob/main/NOTICE.md)
+
+## Games
+
+- Ratchet & Clank Future: Tools of Destruction (2007): first target: starts and plays by hand, not playable yet
+- Ratchet & Clank Future: Quest for Booty (2008): planned
+- Ratchet & Clank Future: A Crack in Time (2009): PPU code lifted; builds, not tested yet
+- Ratchet & Clank: All 4 One (2011): planned
+- Ratchet & Clank: Full Frontal Assault (2012): planned
+- Ratchet & Clank: Into the Nexus (2013): PPU code lifted; not linked or running yet
+- Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) (2012-2013): last, under review
+
+## Reuse
+
+MIT licence. Copies or substantial portions keep the copyright and permission notice; derived work credits "Qwark's Awakening by undecuple" with a link to the repository. See NOTICE.md.

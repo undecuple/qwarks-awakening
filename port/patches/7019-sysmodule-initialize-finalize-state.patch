@@ -1,0 +1,38 @@
+cellSysmodule: cellSysmoduleInitialize / cellSysmoduleFinalize keep the library's init state.
+
+NIDs 0x63FF6FF9 (Initialize) and 0x96C07ADF (Finalize), imported by A Crack in Time 1.20, Into the Nexus 1.01, Full
+Frontal Assault 1.05 and All 4 One 1.03. They were one-line constant returns; the survey counted them as stubs.
+Both return CELL_OK on a real console in every state (the library has no failure path of its own), so the return
+values stay; what changes is that Initialize/Finalize now track whether the library is up (ps3_sysmodule_is_initialized())
+and are logged once per transition, so a title that loads modules without ever initialising the library shows in the log.
+The loaded-module table is deliberately kept across Finalize (ASSUMPTION: firmware unloads nothing the title loaded).
+
+--- a/libs/system/cellSysmodule.c
++++ b/libs/system/cellSysmodule.c
+@@ -81,8 +81,23 @@
+
+ /* NID: 0x26A6E12B */
+-/* NID: 0x63FF6FF9 -- library init/teardown are no-ops in HLE. */
+-s32 cellSysmoduleInitialize(void) { return CELL_OK; }
+-s32 cellSysmoduleFinalize(void)   { return CELL_OK; }
++/* NID: 0x63FF6FF9 / 0x96C07ADF -- init/teardown only track the library state (patch 7019). */
++static int s_sysmodule_inited;
++
++int ps3_sysmodule_is_initialized(void) { return s_sysmodule_inited; }
++
++s32 cellSysmoduleInitialize(void)
++{
++    if (!s_sysmodule_inited) printf("[cellSysmodule] Initialize\n");
++    s_sysmodule_inited = 1;
++    return CELL_OK;
++}
++
++s32 cellSysmoduleFinalize(void)
++{
++    if (s_sysmodule_inited) printf("[cellSysmodule] Finalize\n");
++    s_sysmodule_inited = 0;
++    return CELL_OK;
++}
+
+ s32 cellSysmoduleLoadModule(u16 id)
+ {

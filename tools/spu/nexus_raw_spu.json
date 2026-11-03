@@ -1,0 +1,5 @@
+{
+ "title": "Ratchet & Clank: Into the Nexus",
+ "note": "Nexus has no raw SPU programs: no sys_raw_spu_create call (syscall 160) in the lifted PPU code (tools scan 2026-11-03) and no 'PS3_SPU' program name string in the EBOOT (ToD has igcollspu and igCollBroadSpu).",
+ "programs": []
+}

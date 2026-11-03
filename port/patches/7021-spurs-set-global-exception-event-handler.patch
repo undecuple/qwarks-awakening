@@ -1,0 +1,44 @@
+cellSpurs: cellSpursSetGlobalExceptionEventHandler (NID 0x7517724A).
+
+Imported by A Crack in Time 1.20, Into the Nexus 1.01, Full Frontal Assault 1.05, All 4 One 1.03; there was no handler.
+(spurs, eaHandler, arg): NULL spurs or handler is CELL_SPURS_CORE_ERROR_NULL_POINTER, a spurs address that is not
+128-byte aligned is ALIGN, a second registration on the same instance is BUSY; otherwise the handler and its argument
+are recorded (ps3_spurs_global_exception_handler() reads them back). The recompiled SPU workloads raise no SPU
+exceptions here, so nothing ever invokes the handler: recording it is all the real call does without a fault.
+ASSUMPTION: BUSY on a repeat registration and the eight-instance table limit (behaviour reference: RPCS3, not copied).
+_cellSpursLFQueuePushBody (0x8A85674D) is NOT in this patch: see the report (the producer slot protocol of the
+guest-visible queue line is not recovered).
+
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -4509,3 +4509,30 @@
+     if (PS3_LOG_FIRST(_n, 8)) printf("[cellSpurs] LFQueueDetachLv2EventQueue(q=0x%08X)\n", (u32)queue_ea);
+     return CELL_OK;
+ }
++
++/* ---- patch 7021 ---- */
++#define RC_SPURS_GEX_MAX 8
++static struct { u32 spurs, handler, arg; } s_spurs_gex[RC_SPURS_GEX_MAX];
++
++u32 ps3_spurs_global_exception_handler(u32 spurs, u32* arg)
++{
++    for (int i = 0; i < RC_SPURS_GEX_MAX; i++)
++        if (s_spurs_gex[i].spurs == spurs && spurs) { if (arg) *arg = s_spurs_gex[i].arg; return s_spurs_gex[i].handler; }
++    return 0;
++}
++
++s32 cellSpursSetGlobalExceptionEventHandler(u64 spurs_ea, u64 handler_ea, u64 arg_ea)
++{
++    u32 spurs = (u32)spurs_ea;
++    if (!spurs || !handler_ea) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
++    if (spurs & 0x7F) return CELL_SPURS_CORE_ERROR_ALIGN;
++    int slot = -1;
++    for (int i = 0; i < RC_SPURS_GEX_MAX; i++) {
++        if (s_spurs_gex[i].spurs == spurs) return CELL_SPURS_CORE_ERROR_BUSY;
++        if (!s_spurs_gex[i].spurs && slot < 0) slot = i;
++    }
++    if (slot < 0) return CELL_SPURS_CORE_ERROR_BUSY;
++    s_spurs_gex[slot].spurs = spurs; s_spurs_gex[slot].handler = (u32)handler_ea; s_spurs_gex[slot].arg = (u32)arg_ea;
++    printf("[cellSpurs] SetGlobalExceptionEventHandler(spurs=0x%08X handler=0x%08X)\n", spurs, (u32)handler_ea);
++    return CELL_OK;
++}

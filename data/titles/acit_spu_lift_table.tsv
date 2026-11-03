@@ -1,0 +1,3 @@
+module	entry	mode	code_end	data_ranges	extra_seeds	drop_seed_base_plus_0x30	unsupported_before	evidence
+3777cc31da01	0x4080	island		0x10380-0x10480;0x10490-0x104f0;0x10530-0x10660	0x812c	0	86	0x10380-0x10480: {'S': 16}, prologues inside 0 (kept code 28), branches into range 0, data refs into range 1; 0x10490-0x104f0: {'A': 1, 'M': 5}, prologues inside 0 (kept code 28), branches into range 0, data refs into range 4; 0x10530-0x10660: {'F': 12, 'T': 7}, prologues inside 0 (kept code 28), branches into range 0, data refs into range 0
+d1b9e6c64da6	0x4080	island		0xf2e0-0xf400	0x812c	0	64	0xf2e0-0xf400: {'Z': 2, 'S': 16}, prologues inside 0 (kept code 25), branches into range 0, data refs into range 1
