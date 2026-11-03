@@ -1,0 +1,3 @@
+# Reviewed false positives of the CI secret scan (gitleaks fingerprints: commit:file:rule:line).
+# 4011: an environment variable name in a comment (KZ3_KB_PROMPTS_FLIP=N), not a key.
+7c7f1d81dec30b24fc608484db203b03014d73f7:port/patches/4011-cellpad-last-device-button-prompts-option.patch:generic-api-key:65
