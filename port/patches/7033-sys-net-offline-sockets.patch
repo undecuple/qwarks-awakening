@@ -1,0 +1,452 @@
+sys_net (libnet): the offline socket model (a console with no link) for the libnet imports of A Crack in Time 1.20,
+All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault 1.05 and Deadlocked HD that had no handler. Companion of 7032
+(same rule: what the offline console answers; errno numbers and option/family values read from RPCS3's sys_net, no
+code taken; guesses marked ASSUMPTION).
+
+  * sys_net (libnet), new libs/network/net_offline.c, registered from ppu_sysprx.cpp: socket, bind, listen, connect
+    (ENETUNREACH), accept (EWOULDBLOCK), send/shutdown (ENOTCONN), socketclose, getsockname, setsockopt/getsockopt
+    (per-socket state; SO_TYPE, SO_ERROR), inet_ntoa/ntop/addr/aton (BSD parse), sys_net_open/read/close_dump (an
+    empty dump). Errors are -1 + the BSD errno in the _sys_net_errno_loc cell. ppu_sysprx.cpp's offline handlers are
+    relabelled to the real export names (recvfrom, recv, recvmsg, socketpoll, socketselect, sendto, gethostbyname,
+    sys_net_initialize_network_ex, sys_net_finalize_network, sys_net_free_thread_context: they sat under wrong labels,
+    so the NIDs titles import never reached them), and _sys_net_errno_loc no longer clears errno on every call.
+Host test: port/rc/tests/run_net_test.sh (R&C repo), gcc and clang.
+
+--- /dev/null
++++ b/libs/network/net_offline.c
+@@ -0,0 +1,351 @@
++/*
++ * ps3recomp - sys_net (libnet) offline model: the socket calls a console with no network link answers.
++ *
++ * R&C 7032. runtime/ppu/ppu_sysprx.cpp registers the receive/poll/select/sendto part of the offline model (written
++ * for LBP); this file adds the calls A Crack in Time 1.20, All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault
++ * 1.05 and Deadlocked HD import that had no handler, and keeps the per-socket state they need (type, bound port,
++ * options, open/closed), so socket/bind/setsockopt/socketclose moved here from ppu_sysprx.cpp. Registered by
++ * ps3_net_offline_register() only when the online switch is off (with PS3_NET_ONLINE the host-socket handlers of
++ * sysNet.c come first and win).
++ *
++ * The model, as the console with the cable out and no Wi-Fi:
++ *   - local work happens: socket, bind, listen, setsockopt/getsockopt, getsockname, close, address conversion;
++ *   - nothing reaches a peer: connect fails with ENETUNREACH (no interface is up, so no route); send on a socket that
++ *     never connected is ENOTCONN, shutdown of one is ENOTCONN; accept never finds a peer (EWOULDBLOCK, as the
++ *     receive calls of the offline model);
++ *   - every failure returns -1 and leaves the BSD errno in the cell _sys_net_errno_loc points to, which is how libnet
++ *     reports errors to its caller ([src:rpcs3-sysnet] for the error numbers and option/family values).
++ * ASSUMPTION: errno values are FreeBSD's, as libnet's are (35 EWOULDBLOCK, 50 ENETDOWN, 51 ENETUNREACH, 57 ENOTCONN).
++ *
++ * Guest layouts: sys_net_sockaddr_in { u8 len; u8 family; u16 port; u32 addr; u8 zero[8] } (16 bytes, port and
++ * address in network order, i.e. as the big-endian guest stores them); socklen_t is a u32.
++ */
++
++#include "../../runtime/ppu/ppu_context.h"
++#include "../../runtime/ppu/ppu_memory.h"
++#include "../../include/ps3emu/nid.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++extern void ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
++
++#define NET_EBADF        9
++#define NET_EINVAL       22
++#define NET_ENOSPC       28
++#define NET_EAFNOSUPPORT 47
++#define NET_ENETUNREACH  51
++#define NET_ENOTCONN     57
++#define NET_EWOULDBLOCK  35
++#define NET_AF_INET      2
++#define NET_SOL_SOCKET   0xffff
++#define NET_SO_ERROR     0x1007
++#define NET_SO_TYPE      0x1008
++
++#define NET_OFF_FD_FIRST 3      /* fds 0..2 are never handed out: titles use 0 as "no socket" */
++#define NET_OFF_FD_MAX   1024
++#define NET_OFF_OPTS     16
++
++typedef struct {
++    uint8_t  open;
++    uint8_t  listening;
++    int32_t  type;
++    uint16_t port;              /* network order as stored by the guest; 0 = not bound */
++    uint32_t addr;
++    int      nopts;
++    struct { int32_t level, name; uint32_t value; } opts[NET_OFF_OPTS];
++} net_off_sock;
++
++static net_off_sock s_sock[NET_OFF_FD_MAX];
++static int32_t s_next_fd = NET_OFF_FD_FIRST;
++static unsigned int (*s_alloc)(unsigned int, unsigned int);
++static void (*s_set_errno)(int);
++static uint32_t s_ntoa_ea;
++
++static void ret(ppu_context* ctx, int32_t v) { ctx->gpr[3] = (uint64_t)(int64_t)v; }
++
++static void fail(ppu_context* ctx, int err)
++{
++    if (s_set_errno) s_set_errno(err);
++    ret(ctx, -1);
++}
++
++static net_off_sock* sock_get(int32_t s)
++{
++    return (s >= NET_OFF_FD_FIRST && s < NET_OFF_FD_MAX && s_sock[s].open) ? &s_sock[s] : NULL;
++}
++
++/* socket(family, type, protocol): a local object; sequential ids, never reused, as before. */
++static void net_socket(ppu_context* ctx)
++{
++    int32_t s = s_next_fd;
++    if (s >= NET_OFF_FD_MAX) { fail(ctx, 24 /* EMFILE */); return; }
++    s_next_fd++;
++    memset(&s_sock[s], 0, sizeof(s_sock[s]));
++    s_sock[s].open = 1;
++    s_sock[s].type = (int32_t)ctx->gpr[4];
++    ret(ctx, s);
++}
++
++/* bind(s, const sockaddr*, addrlen): local; the address is kept for getsockname. */
++static void net_bind(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    uint32_t sa = (uint32_t)ctx->gpr[4], len = (uint32_t)ctx->gpr[5];
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    if (!sa || len < 8) { fail(ctx, NET_EINVAL); return; }
++    k->port = vm_read16(sa + 2);
++    k->addr = vm_read32(sa + 4);
++    ret(ctx, 0);
++}
++
++static void net_listen(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    k->listening = 1;
++    ret(ctx, 0);
++}
++
++/* connect(s, const sockaddr*, addrlen): no interface is up, so there is no route to any address. */
++static void net_connect(ppu_context* ctx)
++{
++    if (!sock_get((int32_t)ctx->gpr[3])) { fail(ctx, NET_EBADF); return; }
++    if (!ctx->gpr[4]) { fail(ctx, NET_EINVAL); return; }
++    fail(ctx, NET_ENETUNREACH);
++}
++
++/* accept(s, sockaddr*, socklen_t*): no peer can ever connect. ASSUMPTION: EWOULDBLOCK for every socket, as the
++ * receive calls of this offline model answer (a blocking accept on the console would wait forever). */
++static void net_accept(ppu_context* ctx)
++{
++    if (!sock_get((int32_t)ctx->gpr[3])) { fail(ctx, NET_EBADF); return; }
++    fail(ctx, NET_EWOULDBLOCK);
++}
++
++/* send(s, buf, len, flags) / shutdown(s, how): nothing ever connected. */
++static void net_send(ppu_context* ctx)
++{
++    if (!sock_get((int32_t)ctx->gpr[3])) { fail(ctx, NET_EBADF); return; }
++    fail(ctx, NET_ENOTCONN);
++}
++
++static void net_shutdown(ppu_context* ctx)
++{
++    if (!sock_get((int32_t)ctx->gpr[3])) { fail(ctx, NET_EBADF); return; }
++    fail(ctx, NET_ENOTCONN);
++}
++
++static void net_socketclose(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    k->open = 0;
++    ret(ctx, 0);
++}
++
++/* getsockname(s, sockaddr*, socklen_t*): the bound address, or 0.0.0.0:0 before bind. */
++static void net_getsockname(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    uint32_t sa = (uint32_t)ctx->gpr[4], lenp = (uint32_t)ctx->gpr[5];
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    if (!sa || !lenp || vm_read32(lenp) < 16) { fail(ctx, NET_EINVAL); return; }
++    vm_write8(sa + 0, 16);
++    vm_write8(sa + 1, NET_AF_INET);
++    vm_write16(sa + 2, k->port);
++    vm_write32(sa + 4, k->addr);
++    vm_write32(sa + 8, 0);
++    vm_write32(sa + 12, 0);
++    vm_write32(lenp, 16);
++    ret(ctx, 0);
++}
++
++static uint32_t* opt_slot(net_off_sock* k, int32_t level, int32_t name, int create)
++{
++    for (int i = 0; i < k->nopts; i++)
++        if (k->opts[i].level == level && k->opts[i].name == name) return &k->opts[i].value;
++    if (!create || k->nopts >= NET_OFF_OPTS) return NULL;
++    k->opts[k->nopts].level = level;
++    k->opts[k->nopts].name = name;
++    k->opts[k->nopts].value = 0;
++    return &k->opts[k->nopts++].value;
++}
++
++/* setsockopt(s, level, optname, const void* optval, socklen_t optlen): kept (first word of the value). */
++static void net_setsockopt(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    uint32_t val = (uint32_t)ctx->gpr[6], len = (uint32_t)ctx->gpr[7];
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    if (!val || len < 4) { fail(ctx, NET_EINVAL); return; }
++    uint32_t* v = opt_slot(k, (int32_t)ctx->gpr[4], (int32_t)ctx->gpr[5], 1);
++    if (!v) { fail(ctx, 55 /* ENOBUFS */); return; }
++    *v = vm_read32(val);
++    ret(ctx, 0);
++}
++
++/* getsockopt(s, level, optname, void* optval, socklen_t* optlen): SO_TYPE is the socket's type, SO_ERROR 0 (no
++ * pending error), anything set before reads back. ASSUMPTION: an option never set reads 0. */
++static void net_getsockopt(ppu_context* ctx)
++{
++    net_off_sock* k = sock_get((int32_t)ctx->gpr[3]);
++    int32_t level = (int32_t)ctx->gpr[4], name = (int32_t)ctx->gpr[5];
++    uint32_t val = (uint32_t)ctx->gpr[6], lenp = (uint32_t)ctx->gpr[7];
++    if (!k) { fail(ctx, NET_EBADF); return; }
++    if (!val || !lenp || vm_read32(lenp) < 4) { fail(ctx, NET_EINVAL); return; }
++    uint32_t v = 0;
++    if (level == NET_SOL_SOCKET && name == NET_SO_TYPE) v = (uint32_t)k->type;
++    else if (level == NET_SOL_SOCKET && name == NET_SO_ERROR) v = 0;
++    else { uint32_t* p = opt_slot(k, level, name, 0); if (p) v = *p; }
++    vm_write32(val, v);
++    vm_write32(lenp, 4);
++    ret(ctx, 0);
++}
++
++/* ---- address conversion: pure functions, the same with or without a link ---- */
++
++static void fmt_ipv4(char* out, uint32_t a)   /* a: the address as the guest stores it (network order) */
++{
++    snprintf(out, 16, "%u.%u.%u.%u", (a >> 24) & 0xFF, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF);
++}
++
++/* inet_ntoa(struct in_addr in): a pointer to one static buffer, rewritten by each call. */
++static void net_inet_ntoa(ppu_context* ctx)
++{
++    char s[16];
++    if (!s_ntoa_ea && s_alloc) s_ntoa_ea = s_alloc(16, 4);
++    if (!s_ntoa_ea) { ret(ctx, 0); return; }
++    fmt_ipv4(s, (uint32_t)ctx->gpr[3]);
++    for (int i = 0; i < 16; i++) vm_write8(s_ntoa_ea + (uint32_t)i, (uint8_t)s[i]);
++    ctx->gpr[3] = s_ntoa_ea;
++}
++
++/* inet_ntop(af, const void* src, char* dst, socklen_t size): dst, or NULL (EAFNOSUPPORT / ENOSPC). */
++static void net_inet_ntop(ppu_context* ctx)
++{
++    int32_t af = (int32_t)ctx->gpr[3];
++    uint32_t src = (uint32_t)ctx->gpr[4], dst = (uint32_t)ctx->gpr[5], size = (uint32_t)ctx->gpr[6];
++    char s[16];
++    if (af != NET_AF_INET) { if (s_set_errno) s_set_errno(NET_EAFNOSUPPORT); ctx->gpr[3] = 0; return; }
++    fmt_ipv4(s, vm_read32(src));
++    uint32_t n = (uint32_t)strlen(s) + 1;
++    if (!dst || size < n) { if (s_set_errno) s_set_errno(NET_ENOSPC); ctx->gpr[3] = 0; return; }
++    for (uint32_t i = 0; i < n; i++) vm_write8(dst + i, (uint8_t)s[i]);
++    ctx->gpr[3] = dst;
++}
++
++/* BSD inet_aton: 1 to 4 parts (a, a.b, a.b.c, a.b.c.d), each decimal, octal (0) or hex (0x); the last part fills the
++ * remaining bytes. Returns 1 and the address, or 0. */
++static int parse_aton(uint32_t cp, uint32_t* out)
++{
++    uint32_t part[4];
++    int n = 0;
++    uint32_t p = cp;
++    if (!cp) return 0;
++    for (;;) {
++        uint8_t c = vm_read8(p);
++        if (c < '0' || c > '9') return 0;
++        uint32_t base = 10, v = 0;
++        if (c == '0') {
++            base = 8; p++; c = vm_read8(p);
++            if (c == 'x' || c == 'X') { base = 16; p++; c = vm_read8(p); }
++        }
++        for (;; p++, c = vm_read8(p)) {
++            uint32_t d;
++            if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
++            else if (base == 16 && c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
++            else if (base == 16 && c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
++            else break;
++            if (d >= base) return 0;
++            if (v > (0xFFFFFFFFu - d) / base) return 0;
++            v = v * base + d;
++        }
++        if (n == 4) return 0;
++        part[n++] = v;
++        if (c == '.') { p++; continue; }
++        if (c != 0 && c != ' ' && c != '\t' && c != '\n') return 0;
++        break;
++    }
++    uint32_t a;
++    switch (n) {
++    case 1: a = part[0]; break;
++    case 2: if (part[0] > 0xFF || part[1] > 0xFFFFFF) return 0; a = part[0] << 24 | part[1]; break;
++    case 3: if (part[0] > 0xFF || part[1] > 0xFF || part[2] > 0xFFFF) return 0;
++            a = part[0] << 24 | part[1] << 16 | part[2]; break;
++    default: for (int i = 0; i < 4; i++) if (part[i] > 0xFF) return 0;
++             a = part[0] << 24 | part[1] << 16 | part[2] << 8 | part[3]; break;
++    }
++    *out = a;
++    return 1;
++}
++
++/* inet_addr(const char*): the address (network order), or INADDR_NONE (0xFFFFFFFF). */
++static void net_inet_addr(ppu_context* ctx)
++{
++    uint32_t a;
++    ctx->gpr[3] = parse_aton((uint32_t)ctx->gpr[3], &a) ? a : 0xFFFFFFFFu;
++}
++
++/* inet_aton(const char*, struct in_addr*): 1 and the address, or 0. */
++static void net_inet_aton(ppu_context* ctx)
++{
++    uint32_t a, inp = (uint32_t)ctx->gpr[4];
++    if (!parse_aton((uint32_t)ctx->gpr[3], &a)) { ctx->gpr[3] = 0; return; }
++    if (inp) vm_write32(inp, a);
++    ctx->gpr[3] = 1;
++}
++
++/* ---- packet dump (sys_net_open_dump / read_dump / close_dump): a capture of the traffic the title's sockets see.
++ * With no link there is none, so a dump opens and stays empty. ASSUMPTION: one dump at a time, id 0 (the reference's
++ * open answers 0); read returns 0 bytes with *pflags = 0; an unknown id is EBADF. */
++static int s_dump_open;
++
++static void net_open_dump(ppu_context* ctx)   /* (s32 len, s32 flags) */
++{
++    if (s_dump_open) { fail(ctx, 16 /* EBUSY */); return; }
++    s_dump_open = 1;
++    ret(ctx, 0);
++}
++
++static void net_read_dump(ppu_context* ctx)   /* (s32 id, void* buf, s32 len, s32* pflags) */
++{
++    uint32_t pflags = (uint32_t)ctx->gpr[6];
++    if (!s_dump_open || (int32_t)ctx->gpr[3] != 0) { fail(ctx, NET_EBADF); return; }
++    if (pflags) vm_write32(pflags, 0);
++    ret(ctx, 0);
++}
++
++static void net_close_dump(ppu_context* ctx)  /* (s32 id, s32* pflags) */
++{
++    uint32_t pflags = (uint32_t)ctx->gpr[4];
++    if (!s_dump_open || (int32_t)ctx->gpr[3] != 0) { fail(ctx, NET_EBADF); return; }
++    s_dump_open = 0;
++    if (pflags) vm_write32(pflags, 0);
++    ret(ctx, 0);
++}
++
++void ps3_net_offline_register(unsigned int (*guest_alloc)(unsigned int, unsigned int), void (*set_errno)(int))
++{
++    s_alloc = guest_alloc;
++    s_set_errno = set_errno;
++    /* libnet's exports are plain BSD names; their NIDs are computed from them like any other. */
++    ps3_hle_register_ctx(ps3_compute_nid("socket"), "socket", net_socket);
++    ps3_hle_register_ctx(ps3_compute_nid("bind"), "bind", net_bind);
++    ps3_hle_register_ctx(ps3_compute_nid("listen"), "listen", net_listen);
++    ps3_hle_register_ctx(ps3_compute_nid("connect"), "connect", net_connect);
++    ps3_hle_register_ctx(ps3_compute_nid("accept"), "accept", net_accept);
++    ps3_hle_register_ctx(ps3_compute_nid("send"), "send", net_send);
++    ps3_hle_register_ctx(ps3_compute_nid("shutdown"), "shutdown", net_shutdown);
++    ps3_hle_register_ctx(ps3_compute_nid("socketclose"), "socketclose", net_socketclose);
++    ps3_hle_register_ctx(ps3_compute_nid("getsockname"), "getsockname", net_getsockname);
++    ps3_hle_register_ctx(ps3_compute_nid("setsockopt"), "setsockopt", net_setsockopt);
++    ps3_hle_register_ctx(ps3_compute_nid("getsockopt"), "getsockopt", net_getsockopt);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_ntoa"), "inet_ntoa", net_inet_ntoa);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_ntop"), "inet_ntop", net_inet_ntop);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_addr"), "inet_addr", net_inet_addr);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_aton"), "inet_aton", net_inet_aton);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_net_open_dump"), "sys_net_open_dump", net_open_dump);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_net_read_dump"), "sys_net_read_dump", net_read_dump);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_net_close_dump"), "sys_net_close_dump", net_close_dump);
++}
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -616,15 +616,26 @@
+ extern "C" void cellSaveData_register_ctx_handlers(void); /* libs/system/cellSaveData.c */
+ extern "C" void avconf_register_ctx(void);     /* libs/misc/cellAvconfExt.c */
+ static uint32_t g_net_errno_ea = 0;
++/* R&C 7032: the cell is allocated by whichever comes first (a failing call or the title asking where errno lives)
++ * and only a failing call writes it. errno_loc used to write EWOULDBLOCK on every call, which overwrote the errno of
++ * the call the title was asking about (connect's ENETUNREACH read back as EWOULDBLOCK). */
++static uint32_t net_errno_cell(void)
++{
++    if (!g_net_errno_ea) { g_net_errno_ea = gcm_guest_alloc(4, 4); if (g_net_errno_ea) vm_write32(g_net_errno_ea, 0); }
++    return g_net_errno_ea;
++}
++static void net_set_errno(int err)
++{
++    uint32_t ea = net_errno_cell();
++    if (ea) vm_write32(ea, (uint32_t)err);
++}
+ static void hle_net_errno_loc(ppu_context* ctx)
+ {
+-    if (!g_net_errno_ea) g_net_errno_ea = gcm_guest_alloc(4, 4);
+-    vm_write32(g_net_errno_ea, SYS_NET_EWOULDBLOCK_V);
+-    ctx->gpr[3] = g_net_errno_ea;
++    ctx->gpr[3] = net_errno_cell();
+ }
+ static void hle_net_wouldblock(ppu_context* ctx)
+ {
+-    if (g_net_errno_ea) vm_write32(g_net_errno_ea, SYS_NET_EWOULDBLOCK_V);
++    net_set_errno(SYS_NET_EWOULDBLOCK_V);
+     ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)-1;
+ }
+ static void hle_net_zero(ppu_context* ctx) { ctx->gpr[3] = 0; }
+@@ -657,9 +668,10 @@
+         if (fds) vm_write32(fds + i * 8 + 4, vm_read32(fds + i * 8 + 4) & 0xFFFF0000u);
+     ctx->gpr[3] = 0;                  /* 0 fds ready */
+ }
+-/* Distinct small fds: the unresolved default handed EVERY socket() call fd 0,
+- * making all sockets alias one id in the game's tables. */
+-static void hle_net_socket(ppu_context* ctx) { static uint32_t s_fd = 3; ctx->gpr[3] = s_fd++; }
++/* R&C 7032: socket/bind/setsockopt/socketclose and the rest of libnet's local calls live in
++ * libs/network/net_offline.c (ps3_net_offline_register), which keeps per-socket state; socket ids are still distinct
++ * small numbers from 3 (the unresolved default handed EVERY socket() call fd 0). */
++extern "C" void ps3_net_offline_register(unsigned int (*guest_alloc)(unsigned int, unsigned int), void (*set_errno)(int));
+ /* sendto: report the full length as sent (packets vanish into the void, matching
+  * the RPCS3-offline oracle where broadcasts go out and nothing answers). */
+ static void hle_net_sendto(ppu_context* ctx) { ctx->gpr[3] = (uint32_t)ctx->gpr[5]; }
+@@ -954,21 +966,22 @@
+     avconf_register_ctx();
+     /* sys_net offline model (NIDs from PSL1GHT libnet exports). Covers every
+      * sys_net NID LBP imports so none fall to the unresolved-NID default. */
++    /* R&C 7032: each NID is labelled with libnet's own export name (the NID is SHA-1 of it), so logs and
++     * tools/survey/import_coverage.py name them; the PSL1GHT wrapper names they had hashed to other NIDs. */
+     ps3_hle_register_ctx(0x6005CDE1u, "_sys_net_errno_loc",     hle_net_errno_loc);
+-    ps3_hle_register_ctx(0x1F953B9Fu, "sys_net_bnet_recvfrom",  hle_net_wouldblock);
+-    ps3_hle_register_ctx(0xFBA04F37u, "sys_net_bnet_recv",      hle_net_wouldblock);
+-    ps3_hle_register_ctx(0xC9D09C34u, "sys_net_bnet_recvmsg",   hle_net_wouldblock);
+-    ps3_hle_register_ctx(0x051EE3EEu, "sys_net_bnet_poll",      hle_net_poll);
+-    ps3_hle_register_ctx(0x3F09E20Au, "sys_net_bnet_select",    hle_net_select);
+-    ps3_hle_register_ctx(0x139A9E9Bu, "netInitializeNetworkEx", hle_net_zero);   /* lib init ok */
+-    ps3_hle_register_ctx(0x9C056962u, "netSocket",              hle_net_socket);
+-    ps3_hle_register_ctx(0xB0A59804u, "netBind",                hle_net_zero);
+-    ps3_hle_register_ctx(0x88F03575u, "netSetSockOpt",          hle_net_zero);
+-    ps3_hle_register_ctx(0x9647570Bu, "netSendTo",              hle_net_sendto);
+-    ps3_hle_register_ctx(0x6DB6E8CDu, "netClose",               hle_net_zero);
+-    ps3_hle_register_ctx(0x71F4C717u, "netGetHostByName",       hle_net_zero);   /* NULL: DNS down */
+-    ps3_hle_register_ctx(0xB68D5625u, "netFinalizeNetwork",     hle_net_zero);
+-    ps3_hle_register_ctx(0xFDB8F926u, "netFreethreadContext",   hle_net_zero);
++    ps3_hle_register_ctx(0x1F953B9Fu, "recvfrom",               hle_net_wouldblock);
++    ps3_hle_register_ctx(0xFBA04F37u, "recv",                   hle_net_wouldblock);
++    ps3_hle_register_ctx(0xC9D09C34u, "recvmsg",                hle_net_wouldblock);
++    ps3_hle_register_ctx(0x051EE3EEu, "socketpoll",             hle_net_poll);
++    ps3_hle_register_ctx(0x3F09E20Au, "socketselect",           hle_net_select);
++    ps3_hle_register_ctx(0x139A9E9Bu, "sys_net_initialize_network_ex", hle_net_zero);   /* lib init ok */
++    ps3_hle_register_ctx(0x9647570Bu, "sendto",                 hle_net_sendto);
++    ps3_hle_register_ctx(0x71F4C717u, "gethostbyname",          hle_net_zero);   /* NULL: DNS down */
++    ps3_hle_register_ctx(0xB68D5625u, "sys_net_finalize_network", hle_net_zero);
++    ps3_hle_register_ctx(0xFDB8F926u, "sys_net_free_thread_context", hle_net_zero);
++    /* socket, bind, listen, connect, accept, send, shutdown, socketclose, get/setsockopt, getsockname, inet_*, the
++     * packet dump: libs/network/net_offline.c. Online, sysNet.c registered first and wins. */
++    ps3_net_offline_register(gcm_guest_alloc, net_set_errno);
+     /* Route the GCM command-buffer-full callback (invoked indirectly via the
+      * context OPD) into cellGcm_fifo_recycle so the FIFO ring recycles on wrap. */
+     ppu_register_function(GCM_FIFO_CALLBACK_SENTINEL_EA, hle_gcm_callback);

@@ -7,6 +7,10 @@
 | [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | the optional FSR 1 upscaler, off by default (`RSX_UPSCALE=fsr1`): `ffx_a.h` and `ffx_fsr1.h` unmodified at commit a21ffb8, added to the renderer by patch 2145 (from the Killzone 3 series) under `libs/video/fsr1/` with their licence text; Copyright (c) 2021 Advanced Micro Devices, Inc. | MIT |
 | [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) (Jovanny Lemonad) | the wordmark in `assets/` (banner, social preview); the font itself is not included | SIL OFL 1.1 |
 | [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani) (Indian Type Foundry) | small text in `assets/`; the font itself is not included | SIL OFL 1.1 |
+| [Dear ImGui](https://github.com/ocornut/imgui) (Omar Cornut) | the launcher's interface (submodule `third_party/imgui`, v1.93.0) | MIT |
+| [SDL3](https://libsdl.org/) (Sam Lantinga and SDL contributors) | window, input, gamepads and PNG reading/writing in the launcher and the games | zlib |
+| [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani), [Barlow](https://github.com/google/fonts/tree/main/ofl/barlow) (Jeremy Tribby) and [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) | the launcher's headings, text and wordmark; the TTF files ship in `launcher/fonts/` with their licence texts | SIL OFL 1.1 |
+| [IGDB](https://www.igdb.com/) | cover art, only when the player turns "Fetch cover art from the internet" on (not active yet) | their terms |
 
 ## Upstream contributors and sister ports
 
@@ -15,7 +19,9 @@ author's sister ports. Each patch header names its source.
 
 - **Project Helghast** ([undecuple/project-helghast](https://github.com/undecuple/project-helghast), the author's
   Killzone 3 port, MIT): patches `0xxx`-`5xxx`, `9633` and `9933`, carried from that port's patch series, unchanged
-  or rebased. Most of the entries below reach this port through that series.
+  or rebased; and the file logger (`kz3_log.c`, `kz3_log.h`, `kz3_log_redact.h`: levels and tags, crash reports, redaction
+  of the user's name), copied into `port/common/log/` with the Ratchet & Clank file names and header block added.
+  Most of the entries below reach this port through that series.
 - **Project Pyrrhus** ([undecuple/project-pyrrhus](https://github.com/undecuple/project-pyrrhus), the author's
   Killzone 2 port, MIT), through the Killzone 3 series: patches 1059 (design of the per-waiter `sys_lwcond` FIFO),
   1139 (console `sys_fs_open` flag values), 1143 (kernel wake events under Wine), 2088 and 2089 (`WPOS` and the clear

@@ -1,0 +1,3051 @@
+Network libraries: the offline model (a console with no link, not signed in to PSN) for the network imports of A Crack
+in Time 1.20, All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault 1.05 and Deadlocked HD that had no handler or
+only a stub, plus the SDK's error values in every library touched (several tables here were made up).
+
+Rule: return what a real offline / not-signed-in PS3 returns; never CELL_OK for an operation that could not happen.
+Error names, values, argument checks and their order are facts read from RPCS3's module sources (reference only, no
+code taken); guesses are marked ASSUMPTION in the code. With the online switch (KZ3_ONLINE / psnr sign-in) the online
+side keeps working as before; where psnr has no such service the answer is the service's own "unavailable" error.
+
+  * cellHttp: the 16 cellHttpClientSet*/Close/Poll calls and cellHttpRequestSetContentLength (stored settings, client
+    headers copied into each transaction; PollConnections NO_CONNECTION with no open socket); RPCS3 error values.
+  * cellNetCtl library: cellGameUpdateInit/Term/CheckStartAsync/CheckStartWithoutDialogAsync/CheckFinishAsync (the
+    callback reports STATUS_ERROR + NET_NOT_CONNECTED offline, NO_UPDATE online, FINISHED on finish).
+  * cellSsl: every certificate getter answers INVALID_CERTIFICATE (no handshake ever produced one); 0x8074xxxx codes.
+  * cellRudp: rewritten to the SDK API (Init/End, EnableInternalIOThread, SetEventHandler, CreateContext, SetOption,
+    GetContextStatus, GetRemoteInfo, Bind, Initiate -> CONN_TIMEOUT, Terminate, Read/Write NOT_ACCEPTABLE,
+    GetSizeReadable/Writable 0); the invented Connect/Send/Recv/... are gone.
+  * sceNp: ManagerRequestTicket, GetAvatarUrl (OFFLINE), SubSignin (OFFLINE), SubSignout (ID_NOT_FOUND).
+    sceNpBasic: SendMessageGui/AddFriend (NOT_CONNECTED), AddPlayersHistory (local), friend/block-list lookups
+    (ID_NOT_FOUND), RecvMessageAttachmentLoad (INVALID_DATA_ID), RecvMessageCustom (CANCEL), GetEvent and
+    RegisterContextSensitiveHandler checks. sceNpSignaling: Deactivate/TerminateConnection (CONN_NOT_FOUND).
+    sceNpLookup: NpIdAsync, TitleSmallStorageAsync (INVALID_ONLINE_ID). sceNpScore: GetClansRankingByRange/ByClanIdAsync
+    (context handlers; the transaction ends with INVALID_ONLINE_ID).
+  * sceNp2 (Matching2): ClearEventData, GetUserInfoList, GetRoomDataExternalList, SetRoomMemberDataInternal
+    (SERVER_NOT_AVAILABLE). sceNpCommerce2: DoProductBrowseStartAsync (SCE_NP_ERROR_OFFLINE) / FinishAsync.
+  * sceNpTus: rewritten to the SDK API (title / transaction contexts, the Async calls, Poll/Wait/Abort); not signed in,
+    CreateTransactionCtx and every request answer INVALID_ONLINE_ID. SetData[Async] (nine arguments) are context handlers.
+  * sceNpClans: rewritten to the SDK API (request handles, 35 calls); local Init/Term/requests, every server call
+    SERVICE_UNAVAILABLE after its argument checks.
+sys_net (libnet) is patch 7033. Host test: port/rc/tests/run_net_test.sh (R&C repo), gcc and clang, with 7033.
+
+--- a/libs/network/cellHttp.c
++++ b/libs/network/cellHttp.c
+@@ -25,6 +25,7 @@
+ #define http_closesocket closesocket
+ #else
+ #include <sys/socket.h>
++#include <sys/select.h>   /* R&C 7032: cellHttpClientPollConnections */
+ #include <netinet/in.h>
+ #include <netdb.h>
+ #include <unistd.h>
+@@ -57,6 +58,13 @@
+     u32                  connect_timeout;
+     u32                  send_timeout;
+     u32                  recv_timeout;
++    /* R&C 7032: the client settings (cellHttpClientSet*). Headers are copied into each new transaction. */
++    u32                  version_major, version_minor;
++    u32                  response_buffer_max;
++    u8                   auto_redirect, auto_auth, pipeline, keep_alive, cookies;
++    u32                  ssl_cb, ssl_cb_arg;
++    u32                  header_count;
++    struct { char name[128]; char value[512]; } headers[CELL_HTTP_MAX_CLIENT_HEADERS];
+ } HttpClientSlot;
+ 
+ /* Custom header key/value pair */
+@@ -351,6 +359,12 @@
+             s_clients[i].connect_timeout = 30000000;
+             s_clients[i].send_timeout    = 120000000;
+             s_clients[i].recv_timeout    = 120000000;
++            /* R&C 7032: ASSUMPTION: the library defaults (HTTP/1.1, redirect/auth/keep-alive/cookies on, pipeline off) */
++            s_clients[i].version_major = 1; s_clients[i].version_minor = 1;
++            s_clients[i].auto_redirect = s_clients[i].auto_auth = 1;
++            s_clients[i].keep_alive = s_clients[i].cookies = 1;
++            s_clients[i].pipeline = 0;
++            s_clients[i].header_count = 0;
+             *clientId_h = i;
+             printf("[cellHttp] CreateClient(id=%u)\n", i);
+             return CELL_OK;
+@@ -452,6 +466,13 @@
+ 
+             t->port = uri_port ? uri_port : 80;
+ 
++            /* R&C 7032: the client's own headers (SetHeader / SetUserAgent) start every transaction */
++            for (u32 h = 0; h < s_clients[clientId].header_count && h < CELL_HTTP_MAX_CUSTOM_HEADERS; h++) {
++                memcpy(t->custom_headers[h].name, s_clients[clientId].headers[h].name, sizeof(t->custom_headers[h].name));
++                memcpy(t->custom_headers[h].value, s_clients[clientId].headers[h].value, sizeof(t->custom_headers[h].value));
++                t->custom_header_count = h + 1;
++            }
++
+             /* Build URL string for logging (only the logs read t->url). Query values are dropped, names kept
+              * ("?sig=&sigclass=..."): a title may put an identifier or a signature there. */
+             snprintf(t->url, sizeof(t->url), "%s://%s:%u%s",
+@@ -523,7 +544,9 @@
+         static int said;
+         if (!said) { said = 1; printf("[cellHttp]   offline: no connection (online switch off)\n"); }
+         if (sent) vm_write32((u32)(uintptr_t)sent, (u32)0);
+-        return CELL_HTTP_ERROR_CONNECTION_FAILED;
++        /* R&C 7032: a console with no link fails at the first network step, the name lookup: the resolver base | the
++         * sys_net errno ENETDOWN (50). ASSUMPTION: the resolver reports ENETDOWN rather than a resolver h_errno. */
++        return (s32)(CELL_HTTP_ERROR_NET_RESOLVER | 50u);
+     }
+ 
+     /* ---- Resolve hostname (the policy's map first: a refused name never reaches the resolver) ---- */
+@@ -1177,3 +1200,198 @@
+     (void)buffer; (void)size; (void)clientId;
+     return CELL_OK;
+ }
++
++/* ---- R&C 7032: the client settings A Crack in Time 1.20, All 4 One 1.03, Into the Nexus 1.01 and Full Frontal Assault
++ * 1.05 import (NIDs = ps3_compute_nid(name)). Checks and error names as [src:rpcs3-cellhttp]: NOT_INITIALIZED before
++ * cellHttpInit, BAD_CLIENT for an id no cellHttpCreateClient returned, NO_BUFFER for a NULL string/header. Each
++ * setting is a local operation a console with no link performs too, so it is stored and answers CELL_OK; the
++ * transactions read the timeouts and the headers (the other settings only shape a connection that offline never
++ * opens). */
++static s32 http_client_get(CellHttpClientId clientId, HttpClientSlot** out)
++{
++    if (!s_http_initialized) return (s32)CELL_HTTP_ERROR_NOT_INITIALIZED;
++    if (clientId >= CELL_HTTP_MAX_CLIENTS || !s_clients[clientId].in_use) return (s32)CELL_HTTP_ERROR_BAD_CLIENT;
++    *out = &s_clients[clientId];
++    return CELL_OK;
++}
++
++/* Adds or replaces (case-insensitive name) one client header; the value is a guest string. */
++static s32 http_client_put_header(HttpClientSlot* c, const char* name, u32 value_ea)
++{
++    u32 i = 0;
++    while (i < c->header_count && http_name_eq(c->headers[i].name, name)) i++;
++    if (i == c->header_count) {
++        if (c->header_count >= CELL_HTTP_MAX_CLIENT_HEADERS) return (s32)CELL_HTTP_ERROR_NO_MEMORY;
++        c->header_count++;
++    }
++    snprintf(c->headers[i].name, sizeof(c->headers[i].name), "%s", name);
++    snprintf(c->headers[i].value, sizeof(c->headers[i].value), "%s", (const char*)vm_base + value_ea);
++    for (char* p = c->headers[i].value; *p; p++) if (*p == '\r' || *p == '\n') *p = ' ';   /* no header injection */
++    return CELL_OK;
++}
++
++/* (clientId, const char* userAgent) */
++s32 cellHttpClientSetUserAgent(CellHttpClientId clientId, u32 userAgent)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    if (!userAgent) return (s32)CELL_HTTP_ERROR_NO_BUFFER;
++    return http_client_put_header(c, "User-Agent", userAgent);
++}
++
++/* (clientId, const CellHttpHeader* header): header = guest { u32 name; u32 value; } */
++s32 cellHttpClientSetHeader(CellHttpClientId clientId, u32 header)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    if (!header) return (s32)CELL_HTTP_ERROR_NO_BUFFER;
++    u32 nea = vm_read32(header), vea = vm_read32(header + 4u);
++    if (!nea || !vea) return (s32)CELL_HTTP_ERROR_NO_BUFFER;   /* ASSUMPTION: a NULL field is the same NO_BUFFER */
++    char name[128];
++    snprintf(name, sizeof(name), "%s", (const char*)vm_base + nea);
++    if (!name[0] || strpbrk(name, ":\r\n")) return (s32)CELL_HTTP_ERROR_INVALID_VALUE;   /* ASSUMPTION */
++    return http_client_put_header(c, name, vea);
++}
++
++/* (clientId, const CellHttpUri* proxy): NULL clears the proxy; a proxy needs a host name. Offline nothing connects
++ * through it, so only the check is made (CellHttpUri: hostname EA at +4). */
++s32 cellHttpClientSetProxy(CellHttpClientId clientId, u32 proxy)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    if (proxy) {
++        u32 host = vm_read32(proxy + 4u);
++        if (!host || !vm_read8(host)) return (s32)CELL_HTTP_ERROR_INVALID_URI;
++    }
++    return CELL_OK;
++}
++
++s32 cellHttpClientSetVersion(CellHttpClientId clientId, u32 major, u32 minor)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    c->version_major = major; c->version_minor = minor;
++    return CELL_OK;
++}
++
++s32 cellHttpClientSetAutoRedirect(CellHttpClientId clientId, u32 enable)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->auto_redirect = (u8)(enable & 0xFF) != 0;
++    return r;
++}
++
++s32 cellHttpClientSetAutoAuthentication(CellHttpClientId clientId, u32 enable)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->auto_auth = (u8)(enable & 0xFF) != 0;
++    return r;
++}
++
++s32 cellHttpClientSetPipeline(CellHttpClientId clientId, u32 enable)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->pipeline = (u8)(enable & 0xFF) != 0;
++    return r;
++}
++
++s32 cellHttpClientSetKeepAlive(CellHttpClientId clientId, u32 enable)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->keep_alive = (u8)(enable & 0xFF) != 0;
++    return r;
++}
++
++s32 cellHttpClientSetCookieStatus(CellHttpClientId clientId, u32 enable)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->cookies = (u8)(enable & 0xFF) != 0;
++    return r;
++}
++
++/* The library raises a maximum under 1500 bytes to 1500 ([src:rpcs3-cellhttp]). */
++s32 cellHttpClientSetResponseBufferMax(CellHttpClientId clientId, u32 max)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r == CELL_OK) c->response_buffer_max = max < 1500u ? 1500u : max;
++    return r;
++}
++
++/* Timeouts are s64 microseconds; the transactions' sockets take them as u32. ASSUMPTION: a negative or > u32 value is
++ * INVALID_VALUE (the SDK's own check is not in the reference). */
++static s32 http_client_timeout(CellHttpClientId clientId, s64 usec, int which)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    if (usec < 0 || usec > (s64)0xFFFFFFFFu) return (s32)CELL_HTTP_ERROR_INVALID_VALUE;
++    if (which == 0) c->connect_timeout = (u32)usec;
++    else if (which == 1) c->send_timeout = (u32)usec;
++    else c->recv_timeout = (u32)usec;
++    return CELL_OK;
++}
++s32 cellHttpClientSetConnTimeout(CellHttpClientId clientId, s64 usec) { return http_client_timeout(clientId, usec, 0); }
++s32 cellHttpClientSetSendTimeout(CellHttpClientId clientId, s64 usec) { return http_client_timeout(clientId, usec, 1); }
++s32 cellHttpClientSetRecvTimeout(CellHttpClientId clientId, s64 usec) { return http_client_timeout(clientId, usec, 2); }
++
++/* (clientId, CellHttpsSslCallback cbfunc, void* userArg): kept; it runs during a TLS handshake, which offline never
++ * happens. */
++s32 cellHttpClientSetSslCallback(CellHttpClientId clientId, u32 cbfunc, u32 userArg)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    c->ssl_cb = cbfunc; c->ssl_cb_arg = userArg;
++    return CELL_OK;
++}
++
++s32 cellHttpClientCloseAllConnections(CellHttpClientId clientId)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    for (u32 i = 0; i < CELL_HTTP_MAX_TRANSACTIONS; i++)
++        if (s_transactions[i].in_use && s_transactions[i].client == clientId)
++            http_close_slot_socket(&s_transactions[i]);
++    return CELL_OK;
++}
++
++/* (clientId, CellHttpTransId* transId, s64 usec): waits until one of the client's open connections is readable and
++ * names its transaction. With no open connection (always, offline) there is nothing to wait for: NO_CONNECTION and
++ * *transId untouched (ASSUMPTION: the SDK's answer for an idle client). A wait that times out is the select base with
++ * ETIMEDOUT (60) (ASSUMPTION). usec < 0 waits without a limit. */
++s32 cellHttpClientPollConnections(CellHttpClientId clientId, u32 transId, s64 usec)
++{
++    HttpClientSlot* c; s32 r = http_client_get(clientId, &c);
++    if (r != CELL_OK) return r;
++    if (!transId) return (s32)CELL_HTTP_ERROR_NO_BUFFER;   /* ASSUMPTION: as the other NULL out-params */
++    fd_set rd;
++    FD_ZERO(&rd);
++    int any = 0;
++    http_socket_t hi = 0;
++    for (u32 i = 0; i < CELL_HTTP_MAX_TRANSACTIONS; i++)
++        if (s_transactions[i].in_use && s_transactions[i].client == clientId && s_transactions[i].sock != HTTP_INVALID_SOCKET) {
++            FD_SET(s_transactions[i].sock, &rd);
++            if (s_transactions[i].sock > hi) hi = s_transactions[i].sock;
++            any = 1;
++        }
++    if (!any) return (s32)CELL_HTTP_ERROR_NO_CONNECTION;
++    struct timeval tv, *ptv = NULL;
++    if (usec >= 0) { tv.tv_sec = (long)(usec / 1000000); tv.tv_usec = (long)(usec % 1000000); ptv = &tv; }
++    int n = select((int)hi + 1, &rd, NULL, NULL, ptv);
++    if (n <= 0) return (s32)(CELL_HTTP_ERROR_NET_SELECT | 60u);
++    for (u32 i = 0; i < CELL_HTTP_MAX_TRANSACTIONS; i++)
++        if (s_transactions[i].in_use && s_transactions[i].client == clientId
++            && s_transactions[i].sock != HTTP_INVALID_SOCKET && FD_ISSET(s_transactions[i].sock, &rd)) {
++            vm_write32(transId, i);
++            return CELL_OK;
++        }
++    return (s32)CELL_HTTP_ERROR_NO_CONNECTION;
++}
++
++/* (transId, u64 totalSize): the SDK name of cellHttpSetRequestContentLength; BAD_TRANS for an unknown id. */
++s32 cellHttpRequestSetContentLength(CellHttpTransId transId, u64 totalSize)
++{
++    if (!s_http_initialized) return (s32)CELL_HTTP_ERROR_NOT_INITIALIZED;
++    if (transId >= CELL_HTTP_MAX_TRANSACTIONS || !s_transactions[transId].in_use) return (s32)CELL_HTTP_ERROR_BAD_TRANS;
++    s_transactions[transId].request_content_length     = totalSize;
++    s_transactions[transId].request_content_length_set = 1;
++    return CELL_OK;
++}
+--- a/libs/network/cellHttp.h
++++ b/libs/network/cellHttp.h
+@@ -17,19 +17,29 @@
+ /* ---------------------------------------------------------------------------
+  * Error codes
+  * -----------------------------------------------------------------------*/
+-#define CELL_HTTP_ERROR_NOT_INITIALIZED         0x80710101
+-#define CELL_HTTP_ERROR_ALREADY_INITIALIZED     0x80710102
+-#define CELL_HTTP_ERROR_NO_MEMORY               0x80710103
++/* R&C 7032: the SDK's values for the names it has ([src:rpcs3-cellhttp]); 0x807101xx were made up here and are kept
++ * only for the names the SDK lacks (NOT_FOUND, INVALID_PARAMETER, CONNECTION_FAILED .. ABORTED). */
++#define CELL_HTTP_ERROR_ALREADY_INITIALIZED     0x80710001
++#define CELL_HTTP_ERROR_NOT_INITIALIZED         0x80710002
++#define CELL_HTTP_ERROR_NO_MEMORY               0x80710003
++#define CELL_HTTP_ERROR_NO_BUFFER               0x80710004
++#define CELL_HTTP_ERROR_INVALID_URI             0x80710007
++#define CELL_HTTP_ERROR_BAD_CLIENT              0x80710010
++#define CELL_HTTP_ERROR_BAD_TRANS               0x80710011
++#define CELL_HTTP_ERROR_NO_CONNECTION           0x80710012
++#define CELL_HTTP_ERROR_INVALID_VALUE           0x80710027
++/* A failed network step is its base | the sys_net errno ([src:rpcs3-cellhttp] NET_* bases). */
++#define CELL_HTTP_ERROR_NET_RESOLVER            0x80710100
++#define CELL_HTTP_ERROR_NET_SELECT              0x80710800
+ #define CELL_HTTP_ERROR_NOT_FOUND               0x80710104
+ #define CELL_HTTP_ERROR_INVALID_PARAMETER       0x80710105
+-#define CELL_HTTP_ERROR_NO_BUFFER               0x80710106
+ #define CELL_HTTP_ERROR_CONNECTION_FAILED       0x80710107
+ #define CELL_HTTP_ERROR_SEND_FAILED             0x80710108
+ #define CELL_HTTP_ERROR_RECV_FAILED             0x80710109
+ #define CELL_HTTP_ERROR_TIMEOUT                 0x8071010A
+ #define CELL_HTTP_ERROR_INVALID_URL             0x8071010B
+ #define CELL_HTTP_ERROR_ABORTED                 0x8071010C
+-#define CELL_HTTP_ERROR_UNKNOWN                 0x807101FF
++#define CELL_HTTP_ERROR_UNKNOWN                 0x80710051
+ /* "No Content-Length" from cellHttpResponseGetContentLength. The value is the
+  * one titles compare the result with before reading the body to the end; the
+  * SDK's own name for it is not confirmed here. */
+@@ -85,6 +95,8 @@
+ 
+ /* Max custom request headers per transaction */
+ #define CELL_HTTP_MAX_CUSTOM_HEADERS 16
++/* R&C 7032: headers a client adds to every transaction it creates (cellHttpClientSetHeader / SetUserAgent) */
++#define CELL_HTTP_MAX_CLIENT_HEADERS 8
+ 
+ /* ---------------------------------------------------------------------------
+  * Functions
+--- a/libs/network/cellNetCtl.c
++++ b/libs/network/cellNetCtl.c
+@@ -379,3 +379,83 @@
+     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED);
+     return CELL_OK;
+ }
++
++/* ---------------------------------------------------------------------------
++ * R&C 7032: the game update check (cellGameUpdate*, exported by the cellNetCtl library; A Crack in Time 1.20,
++ * All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault 1.05 import it). Error names/values and the callback
++ * shape (status, error_code, userdata) as [src:rpcs3-cellnetctl]. The check asks the update server for a newer
++ * patch; with no link it cannot reach it, so the start callback reports RESULT_STATUS_ERROR with
++ * CELL_NET_CTL_ERROR_NET_NOT_CONNECTED (ASSUMPTION: the console's offline answer; RPCS3 answers NO_UPDATE without
++ * asking). With the online switch on there is still no update server for a port: NO_UPDATE (ASSUMPTION). Finish
++ * reports FINISHED. Callbacks run from the title's next cellSysutilCheckCallback, as the console's do.
++ * -----------------------------------------------------------------------*/
++#define CELL_GAMEUPDATE_ERROR_NOT_INITIALIZED      0x8002cc01
++#define CELL_GAMEUPDATE_ERROR_ALREADY_INITIALIZED  0x8002cc02
++#define CELL_GAMEUPDATE_ERROR_INVALID_ADDR         0x8002cc03
++#define CELL_GAMEUPDATE_ERROR_BUSY                 0x8002cc07
++#define CELL_GAMEUPDATE_ERROR_NOT_START            0x8002cc08
++#define CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE    0
++#define CELL_GAMEUPDATE_RESULT_STATUS_ERROR        3
++#define CELL_GAMEUPDATE_RESULT_STATUS_FINISHED     5
++#define CELL_NET_CTL_ERROR_NET_NOT_CONNECTED_      0x80130182u
++
++static int s_gameupdate_init, s_gameupdate_started;
++
++static void gameupdate_callback(u32 cb, s32 status, u32 error_code, u32 userdata)
++{
++    const u64 args[8] = { (u64)(u32)status, (u64)error_code, (u64)userdata, 0, 0, 0, 0, 0 };
++    cellSysutilQueueGuestCallbackArgs(cb, args);
++}
++
++s32 cellGameUpdateInit(void)
++{
++    if (s_gameupdate_init) return (s32)CELL_GAMEUPDATE_ERROR_ALREADY_INITIALIZED;
++    s_gameupdate_init = 1;
++    s_gameupdate_started = 0;
++    return CELL_OK;
++}
++
++s32 cellGameUpdateTerm(void)
++{
++    if (!s_gameupdate_init) return (s32)CELL_GAMEUPDATE_ERROR_NOT_INITIALIZED;
++    s_gameupdate_init = s_gameupdate_started = 0;
++    return CELL_OK;
++}
++
++static s32 gameupdate_start(u32 cb_func, u32 userdata)
++{
++    if (!s_gameupdate_init) return (s32)CELL_GAMEUPDATE_ERROR_NOT_INITIALIZED;
++    if (!cb_func) return (s32)CELL_GAMEUPDATE_ERROR_INVALID_ADDR;
++    if (s_gameupdate_started) return (s32)CELL_GAMEUPDATE_ERROR_BUSY;   /* ASSUMPTION: one check at a time */
++    s_gameupdate_started = 1;
++    if (netctl_online())
++        gameupdate_callback(cb_func, CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, CELL_OK, userdata);
++    else
++        gameupdate_callback(cb_func, CELL_GAMEUPDATE_RESULT_STATUS_ERROR, CELL_NET_CTL_ERROR_NET_NOT_CONNECTED_, userdata);
++    printf("[cellNetCtl] GameUpdateCheckStart -> %s\n", netctl_online() ? "no update" : "error: not connected");
++    return CELL_OK;
++}
++
++/* (const CellGameUpdateParam* param, CellGameUpdateCallback cb_func, void* userdata) */
++s32 cellGameUpdateCheckStartAsync(u32 param, u32 cb_func, u32 userdata)
++{
++    (void)param;   /* { u32 size; u32 cid; }: only the dialog's look depends on it */
++    return gameupdate_start(cb_func, userdata);
++}
++
++/* (CellGameUpdateCallback cb_func, void* userdata) */
++s32 cellGameUpdateCheckStartWithoutDialogAsync(u32 cb_func, u32 userdata)
++{
++    return gameupdate_start(cb_func, userdata);
++}
++
++/* (CellGameUpdateCallback cb_func, void* userdata): ends a started check. */
++s32 cellGameUpdateCheckFinishAsync(u32 cb_func, u32 userdata)
++{
++    if (!s_gameupdate_init) return (s32)CELL_GAMEUPDATE_ERROR_NOT_INITIALIZED;
++    if (!cb_func) return (s32)CELL_GAMEUPDATE_ERROR_INVALID_ADDR;
++    if (!s_gameupdate_started) return (s32)CELL_GAMEUPDATE_ERROR_NOT_START;
++    s_gameupdate_started = 0;
++    gameupdate_callback(cb_func, CELL_GAMEUPDATE_RESULT_STATUS_FINISHED, CELL_OK, userdata);
++    return CELL_OK;
++}
+--- a/libs/network/cellRudp.c
++++ b/libs/network/cellRudp.c
+@@ -1,143 +1,217 @@
+ /*
+  * ps3recomp - cellRudp HLE implementation
+  *
+- * Offline stub. Context management works, connect/send return errors.
++ * R&C 7032 (All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault 1.05): the SDK calls in place of an invented API
++ * (cellRudpInit(maxContexts), CreateContext(option, handler, arg, id*), Bind(id, port), Connect/Send/Recv/GetState),
++ * whose argument order did not match what titles pass. Local work (init, contexts, options, binding to the title's
++ * socket) is done and answers CELL_OK; anything that needs a peer cannot happen with no link and fails. See cellRudp.h
++ * for the sources.
+  */
+ 
+ #include "cellRudp.h"
+ #include <stdio.h>
+ #include <string.h>
+-#include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
+-
+-/* Internal state */
+-
+-static int s_initialized = 0;
++#include "../../runtime/ppu/ppu_memory.h"   /* vm_read/vm_write: guest EA -> host, byte-swapped */
+ 
+ typedef struct {
+     int in_use;
++    int bound;
++    int initiated;
+     s32 state;
+-    CellRudpEventHandler handler;
+-    void* handlerArg;
++    s32 soc;
++    u16 vport;
++    u8  muxmode;
++    u32 handler, arg;                       /* the context event handler (guest OPD) and its argument */
++    u32 options[CELL_RUDP_OPTION_KEEP_ALIVE_TIMEOUT + 1];
+ } RudpCtx;
+ 
+-static RudpCtx s_ctx[CELL_RUDP_CTX_MAX];
+-
+-/* API */
++static int s_initialized = 0;
++static int s_io_thread = 0;
++static u32 s_event_handler, s_event_arg;
++static RudpCtx s_ctx[CELL_RUDP_CTX_MAX + 1];   /* ids 1..MAX; 0 is never handed out */
+ 
+-s32 cellRudpInit(u32 maxContexts)
++/* (CellRudpAllocator* allocator): NULL selects the library's own allocator. */
++s32 cellRudpInit(u32 allocator)
+ {
+-    (void)maxContexts;
+-    printf("[cellRudp] Init()\n");
+-    if (s_initialized)
+-        return (s32)CELL_RUDP_ERROR_ALREADY_INITIALIZED;
++    (void)allocator;
++    if (s_initialized) return (s32)CELL_RUDP_ERROR_ALREADY_INITIALIZED;
+     memset(s_ctx, 0, sizeof(s_ctx));
++    s_io_thread = 0;
++    s_event_handler = s_event_arg = 0;
+     s_initialized = 1;
++    printf("[cellRudp] Init()\n");
+     return CELL_OK;
+ }
+ 
+ s32 cellRudpEnd(void)
+ {
+-    printf("[cellRudp] End()\n");
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    memset(s_ctx, 0, sizeof(s_ctx));
+     s_initialized = 0;
++    printf("[cellRudp] End()\n");
++    return CELL_OK;
++}
++
++/* (u32 stackSize, u32 priority): the library's own I/O thread. Nothing ever arrives offline, so it would only wait;
++ * the request is recorded. ASSUMPTION: a second call is THREAD_IN_USE. */
++s32 cellRudpEnableInternalIOThread(u32 stackSize, u32 priority)
++{
++    (void)stackSize; (void)priority;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    if (s_io_thread) return (s32)CELL_RUDP_ERROR_THREAD_IN_USE;
++    s_io_thread = 1;
++    return CELL_OK;
++}
++
++/* (CellRudpEventHandler handler, void* arg): the library-wide handler (socket events). */
++s32 cellRudpSetEventHandler(u32 handler, u32 arg)
++{
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    s_event_handler = handler;
++    s_event_arg = arg;
+     return CELL_OK;
+ }
+ 
+-s32 cellRudpCreateContext(const CellRudpOption* option,
+-                            CellRudpEventHandler handler,
+-                            void* arg, CellRudpCtxId* ctxId)
++static RudpCtx* rudp_ctx(s32 id)
+ {
+-    (void)option;
+-    printf("[cellRudp] CreateContext()\n");
++    return (id >= 1 && id <= CELL_RUDP_CTX_MAX && s_ctx[id].in_use) ? &s_ctx[id] : NULL;
++}
+ 
++/* (CellRudpContextEventHandler handler, void* arg, s32* ctxId) */
++s32 cellRudpCreateContext(u32 handler, u32 arg, u32 ctxId)
++{
+     if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
+     if (!ctxId) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
+-
+-    for (int i = 0; i < CELL_RUDP_CTX_MAX; i++) {
++    for (s32 i = 1; i <= CELL_RUDP_CTX_MAX; i++)
+         if (!s_ctx[i].in_use) {
+-            memset(&s_ctx[i], 0, sizeof(RudpCtx));
++            memset(&s_ctx[i], 0, sizeof(s_ctx[i]));
+             s_ctx[i].in_use = 1;
+             s_ctx[i].state = CELL_RUDP_STATE_IDLE;
+             s_ctx[i].handler = handler;
+-            s_ctx[i].handlerArg = arg;
+-            vm_write32((u32)(uintptr_t)ctxId, (u32)i);
++            s_ctx[i].arg = arg;
++            vm_write32(ctxId, (u32)i);
+             return CELL_OK;
+         }
+-    }
+-    return (s32)CELL_RUDP_ERROR_OUT_OF_MEMORY;
++    return (s32)CELL_RUDP_ERROR_TOO_MANY_CONTEXTS;
+ }
+ 
+-s32 cellRudpDestroyContext(CellRudpCtxId ctxId)
++/* (ctxId, s32 option, const void* optval, u32 optlen): options 1..11 and 14..19; the value is the first word. */
++s32 cellRudpSetOption(s32 ctxId, s32 option, u32 optval, u32 optlen)
+ {
+-    printf("[cellRudp] DestroyContext(%u)\n", ctxId);
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    s_ctx[ctxId].in_use = 0;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (option < CELL_RUDP_OPTION_MAX_PAYLOAD || option > CELL_RUDP_OPTION_KEEP_ALIVE_TIMEOUT || option == 12 || option == 13)
++        return (s32)CELL_RUDP_ERROR_INVALID_OPTION;
++    if (!optval || optlen < 4) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;   /* ASSUMPTION: every option is a word */
++    c->options[option] = vm_read32(optval);
+     return CELL_OK;
+ }
+ 
+-s32 cellRudpBind(CellRudpCtxId ctxId, u16 port)
++/* (ctxId, CellRudpContextStatus* status, u32 statusSize): the state word first, the counters (all zero: nothing was
++ * ever sent or received) after it. ASSUMPTION: the layout begins with the s32 state. */
++s32 cellRudpGetContextStatus(s32 ctxId, u32 status, u32 statusSize)
+ {
+-    (void)port;
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (!status || statusSize < 4) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
++    for (u32 i = 0; i < statusSize; i++) vm_write8(status + i, 0);
++    vm_write32(status, (u32)c->state);
+     return CELL_OK;
+ }
+ 
+-s32 cellRudpConnect(CellRudpCtxId ctxId, u32 addr, u16 port)
++/* (ctxId, sys_net_sockaddr* addr, u32* addrlen, u16* vport): a context that never initiated has no remote end.
++ * ASSUMPTION: NOT_ACCEPTABLE, outputs untouched. */
++s32 cellRudpGetRemoteInfo(s32 ctxId, u32 addr, u32 addrlen, u32 vport)
+ {
+-    (void)addr; (void)port;
+-    printf("[cellRudp] Connect() - offline\n");
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    return (s32)CELL_RUDP_ERROR_NOT_CONNECTED;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (!addr || !addrlen || !vport) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
++    return (s32)CELL_RUDP_ERROR_NOT_ACCEPTABLE;
+ }
+ 
+-s32 cellRudpClose(CellRudpCtxId ctxId)
++/* (ctxId, s32 soc, u16 vport, u8 muxmode): attach the context to the title's P2P socket. A local step: it works
++ * offline. ASSUMPTION: vport 0 is INVALID_VPORT, muxmode is 0 or 1. */
++s32 cellRudpBind(s32 ctxId, s32 soc, u16 vport, u8 muxmode)
+ {
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    s_ctx[ctxId].state = CELL_RUDP_STATE_IDLE;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (c->bound) return (s32)CELL_RUDP_ERROR_ALREADY_BOUND;
++    if (!vport) return (s32)CELL_RUDP_ERROR_INVALID_VPORT;
++    if (muxmode > 1) return (s32)CELL_RUDP_ERROR_INVALID_MUXMODE;
++    c->bound = 1; c->soc = soc; c->vport = vport; c->muxmode = muxmode;
+     return CELL_OK;
+ }
+ 
+-s32 cellRudpSend(CellRudpCtxId ctxId, const void* data, u32 size)
++/* (ctxId, const sys_net_sockaddr* to, u32 tolen, u16 vport): connect to a peer. With no link no peer answers, so the
++ * handshake ends in a connection timeout and the context is closed. ASSUMPTION: the console reports that through the
++ * context handler after the connection timeout; here it is the return value at once. */
++s32 cellRudpInitiate(s32 ctxId, u32 to, u32 tolen, u16 vport)
+ {
+-    (void)data; (void)size;
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    return (s32)CELL_RUDP_ERROR_NOT_CONNECTED;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (!to || tolen < 16 || !vport) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
++    if (!c->bound) return (s32)CELL_RUDP_ERROR_NOT_BOUND;
++    c->initiated = 1;
++    c->state = CELL_RUDP_STATE_CLOSED;
++    printf("[cellRudp] Initiate(ctx=%d): no peer reachable offline\n", ctxId);
++    return (s32)CELL_RUDP_ERROR_CONN_TIMEOUT;
+ }
+ 
+-s32 cellRudpRecv(CellRudpCtxId ctxId, void* data, u32 size, u32* received)
++s32 cellRudpTerminate(s32 ctxId)
+ {
+-    (void)data; (void)size;
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    if (received) vm_write32((u32)(uintptr_t)received, (u32)0);
+-    return (s32)CELL_RUDP_ERROR_NOT_CONNECTED;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    memset(c, 0, sizeof(*c));
++    return CELL_OK;
+ }
+ 
+-s32 cellRudpGetState(CellRudpCtxId ctxId, s32* state)
++/* Data moves only on an established connection, which never exists offline. ASSUMPTION: NOT_ACCEPTABLE is the
++ * library's answer for a context that is not established. */
++static s32 rudp_need_established(s32 ctxId, u32 data)
+ {
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    if (!state) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
+-    vm_write32((u32)(uintptr_t)state, (u32)s_ctx[ctxId].state);
+-    return CELL_OK;
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    RudpCtx* c = rudp_ctx(ctxId);
++    if (!c) return (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++    if (!data) return (s32)CELL_RUDP_ERROR_INVALID_ARGUMENT;
++    return c->state == CELL_RUDP_STATE_ESTABLISHED ? CELL_OK : (s32)CELL_RUDP_ERROR_NOT_ACCEPTABLE;
+ }
+ 
+-s32 cellRudpFlush(CellRudpCtxId ctxId)
++/* (ctxId, void* data, u32 len, u8 flags, CellRudpReadInfo* info) */
++s32 cellRudpRead(s32 ctxId, u32 data, u32 len, u8 flags, u32 info)
+ {
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    return CELL_OK;
++    (void)len; (void)flags; (void)info;
++    return rudp_need_established(ctxId, data);
+ }
+ 
+-s32 cellRudpPoll(CellRudpCtxId ctxId, s32 events, s32* revents, u32 timeoutMs)
++/* (ctxId, const void* data, u32 len, u8 flags) */
++s32 cellRudpWrite(s32 ctxId, u32 data, u32 len, u8 flags)
+ {
+-    (void)events; (void)timeoutMs;
+-    if (ctxId >= CELL_RUDP_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)CELL_RUDP_ERROR_CTX_NOT_FOUND;
+-    if (revents) vm_write32((u32)(uintptr_t)revents, (u32)0);
+-    return CELL_OK;
++    (void)len; (void)flags;
++    return rudp_need_established(ctxId, data);
++}
++
++/* Bytes waiting to be read / room to write: nothing was received, and a context that is not established takes no data. */
++s32 cellRudpGetSizeReadable(s32 ctxId)
++{
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    return rudp_ctx(ctxId) ? 0 : (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++}
++
++s32 cellRudpGetSizeWritable(s32 ctxId)
++{
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    return rudp_ctx(ctxId) ? 0 : (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
++}
++
++/* Nothing is ever queued, so a flush has nothing to wait for. */
++s32 cellRudpFlush(s32 ctxId)
++{
++    if (!s_initialized) return (s32)CELL_RUDP_ERROR_NOT_INITIALIZED;
++    return rudp_ctx(ctxId) ? CELL_OK : (s32)CELL_RUDP_ERROR_INVALID_CONTEXT_ID;
+ }
+--- a/libs/network/cellRudp.h
++++ b/libs/network/cellRudp.h
+@@ -1,8 +1,13 @@
+ /*
+  * ps3recomp - cellRudp HLE
+  *
+- * Sony's reliable UDP protocol for game networking.
+- * Offline stub — context management works, operations return errors.
++ * Sony's reliable UDP protocol for game networking, layered on a P2P socket the
++ * title binds. R&C 7032: the SDK's calls, argument order and error values
++ * ([src:rpcs3-cellrudp] for the names, values, option ids and the function list;
++ * the argument lists, which the reference leaves out, are an ASSUMPTION from the
++ * library's published shape: context ids are ints, Bind takes the title's socket,
++ * a virtual port and a mux mode). Offline: contexts and options are local and
++ * work; no peer can be reached, so a connection is never established.
+  */
+ 
+ #ifndef PS3RECOMP_CELL_RUDP_H
+@@ -15,58 +20,51 @@
+ extern "C" {
+ #endif
+ 
+-/* Error codes */
+-#define CELL_RUDP_ERROR_NOT_INITIALIZED       0x80770001
+-#define CELL_RUDP_ERROR_ALREADY_INITIALIZED   0x80770002
+-#define CELL_RUDP_ERROR_INVALID_ARGUMENT      0x80770003
+-#define CELL_RUDP_ERROR_OUT_OF_MEMORY         0x80770004
+-#define CELL_RUDP_ERROR_NOT_CONNECTED         0x80770005
+-#define CELL_RUDP_ERROR_CTX_NOT_FOUND         0x80770006
+-#define CELL_RUDP_ERROR_TIMEOUT               0x80770007
+-#define CELL_RUDP_ERROR_WOULDBLOCK            0x80770008
+-
+-/* Constants */
+-#define CELL_RUDP_CTX_MAX           8
+-#define CELL_RUDP_MAX_PAYLOAD       1200
+-
+-/* Context state */
+-#define CELL_RUDP_STATE_IDLE        0
+-#define CELL_RUDP_STATE_CONNECTING  1
+-#define CELL_RUDP_STATE_CONNECTED   2
+-#define CELL_RUDP_STATE_CLOSING     3
+-
+-/* Types */
+-typedef u32 CellRudpCtxId;
+-
+-typedef struct CellRudpOption {
+-    u32 maxRetransmit;
+-    u32 timeoutMs;
+-    u32 keepAliveMs;
+-    u32 reserved[4];
+-} CellRudpOption;
++/* Error codes ([src:rpcs3-cellrudp]) */
++#define CELL_RUDP_ERROR_NOT_INITIALIZED      0x80770001
++#define CELL_RUDP_ERROR_ALREADY_INITIALIZED  0x80770002
++#define CELL_RUDP_ERROR_INVALID_CONTEXT_ID   0x80770003
++#define CELL_RUDP_ERROR_INVALID_ARGUMENT     0x80770004
++#define CELL_RUDP_ERROR_INVALID_OPTION       0x80770005
++#define CELL_RUDP_ERROR_INVALID_MUXMODE      0x80770006
++#define CELL_RUDP_ERROR_MEMORY               0x80770007
++#define CELL_RUDP_ERROR_CONN_TIMEOUT         0x8077000b
++#define CELL_RUDP_ERROR_THREAD_IN_USE        0x80770010
++#define CELL_RUDP_ERROR_NOT_ACCEPTABLE       0x80770011
++#define CELL_RUDP_ERROR_NOT_BOUND            0x80770013
++#define CELL_RUDP_ERROR_INVALID_VPORT        0x80770015
++#define CELL_RUDP_ERROR_ALREADY_BOUND        0x8077001d
++#define CELL_RUDP_ERROR_TOO_MANY_CONTEXTS    0x80770020
++
++/* Options (CELL_RUDP_OPTION_*): 1..11 and 14..19 exist */
++#define CELL_RUDP_OPTION_MAX_PAYLOAD         1
++#define CELL_RUDP_OPTION_KEEP_ALIVE_TIMEOUT  19
++
++/* Context states. ASSUMPTION: the library's numbering (idle 0, closed 1, SYN sent 2, SYN received 3, established 4,
++ * close wait 5). */
++#define CELL_RUDP_STATE_IDLE                 0
++#define CELL_RUDP_STATE_CLOSED               1
++#define CELL_RUDP_STATE_ESTABLISHED          4
+ 
+-typedef void (*CellRudpEventHandler)(CellRudpCtxId ctxId, u32 event,
+-                                       s32 errorCode, void* arg);
++#define CELL_RUDP_CTX_MAX                    32   /* ASSUMPTION: enough for any title; TOO_MANY_CONTEXTS past it */
+ 
+-/* Functions */
+-s32 cellRudpInit(u32 maxContexts);
++/* Functions (guest pointers as u32 EAs) */
++s32 cellRudpInit(u32 allocator);
+ s32 cellRudpEnd(void);
+-
+-s32 cellRudpCreateContext(const CellRudpOption* option,
+-                            CellRudpEventHandler handler,
+-                            void* arg, CellRudpCtxId* ctxId);
+-s32 cellRudpDestroyContext(CellRudpCtxId ctxId);
+-
+-s32 cellRudpBind(CellRudpCtxId ctxId, u16 port);
+-s32 cellRudpConnect(CellRudpCtxId ctxId, u32 addr, u16 port);
+-s32 cellRudpClose(CellRudpCtxId ctxId);
+-
+-s32 cellRudpSend(CellRudpCtxId ctxId, const void* data, u32 size);
+-s32 cellRudpRecv(CellRudpCtxId ctxId, void* data, u32 size, u32* received);
+-
+-s32 cellRudpGetState(CellRudpCtxId ctxId, s32* state);
+-s32 cellRudpFlush(CellRudpCtxId ctxId);
+-s32 cellRudpPoll(CellRudpCtxId ctxId, s32 events, s32* revents, u32 timeoutMs);
++s32 cellRudpEnableInternalIOThread(u32 stackSize, u32 priority);
++s32 cellRudpSetEventHandler(u32 handler, u32 arg);
++s32 cellRudpCreateContext(u32 handler, u32 arg, u32 ctxId);
++s32 cellRudpSetOption(s32 ctxId, s32 option, u32 optval, u32 optlen);
++s32 cellRudpGetContextStatus(s32 ctxId, u32 status, u32 statusSize);
++s32 cellRudpGetRemoteInfo(s32 ctxId, u32 addr, u32 addrlen, u32 vport);
++s32 cellRudpBind(s32 ctxId, s32 soc, u16 vport, u8 muxmode);
++s32 cellRudpInitiate(s32 ctxId, u32 to, u32 tolen, u16 vport);
++s32 cellRudpTerminate(s32 ctxId);
++s32 cellRudpRead(s32 ctxId, u32 data, u32 len, u8 flags, u32 info);
++s32 cellRudpWrite(s32 ctxId, u32 data, u32 len, u8 flags);
++s32 cellRudpGetSizeReadable(s32 ctxId);
++s32 cellRudpGetSizeWritable(s32 ctxId);
++s32 cellRudpFlush(s32 ctxId);
+ 
+ #ifdef __cplusplus
+ }
+--- a/libs/network/cellSsl.c
++++ b/libs/network/cellSsl.c
+@@ -63,57 +63,82 @@
+     return CELL_OK;
+ }
+ 
+-s32 cellSslCertGetSerialNumber(CellSslCertId certId, u8* serial, u32* serialSize)
++/* ---- R&C 7032: certificate queries (A Crack in Time 1.20, All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault
++ * 1.05; the name queries are also KZ3 1.14's, patch 5003). A CellSslCert is only ever handed to the title inside an
++ * HTTPS server-verify callback, during a TLS handshake; with no link no handshake starts, so no certificate the title
++ * could pass exists. Checks in the reference's order ([src:rpcs3-cellssl]): NOT_INITIALIZED, a NULL certificate
++ * INVALID_CERTIFICATE, a NULL out-pointer NO_BUFFER; then any certificate handle is one this library never issued:
++ * INVALID_CERTIFICATE, outputs untouched (ASSUMPTION: the library's answer for a foreign handle). These used to
++ * return a fixed serial number, an empty key and an unlimited validity for any handle. */
++static s32 ssl_cert_query(u32 cert, int outs_ok)
+ {
+-    (void)certId;
+-    printf("[cellSsl] CertGetSerialNumber()\n");
++    if (!s_ssl_initialized) return (s32)CELL_SSL_ERROR_NOT_INITIALIZED;
++    if (!cert) return (s32)CELL_SSL_ERROR_INVALID_CERTIFICATE;
++    if (!outs_ok) return (s32)CELL_SSL_ERROR_NO_BUFFER;
++    return (s32)CELL_SSL_ERROR_INVALID_CERTIFICATE;
++}
+ 
+-    if (!serial || !serialSize)
+-        return (s32)CELL_SSL_ERROR_INVALID_ARG;
++/* (const CellSslCert sslCert, const u8** sboData, u64* sboLength) */
++s32 cellSslCertGetSerialNumber(u32 sslCert, u32 sboData, u32 sboLength)
++{
++    return ssl_cert_query(sslCert, sboData && sboLength);
++}
+ 
+-    /* Fake serial number */
+-    if (vm_read32((u32)(uintptr_t)serialSize) >= 4) {
+-        serial[0] = 0x01;
+-        serial[1] = 0x00;
+-        serial[2] = 0x00;
+-        serial[3] = 0x01;
+-        vm_write32((u32)(uintptr_t)serialSize, 4);
+-    }
+-    return CELL_OK;
++s32 cellSslCertGetPublicKey(u32 sslCert, u32 sboData, u32 sboLength)
++{
++    return ssl_cert_query(sslCert, sboData && sboLength);
+ }
+ 
+-s32 cellSslCertGetPublicKey(CellSslCertId certId, u8* key, u32* keySize)
++s32 cellSslCertGetRsaPublicKeyModulus(u32 sslCert, u32 sboData, u32 sboLength)
+ {
+-    (void)certId;
+-    (void)key;
+-    printf("[cellSsl] CertGetPublicKey()\n");
++    return ssl_cert_query(sslCert, sboData && sboLength);
++}
+ 
+-    if (keySize)
+-        vm_write32((u32)(uintptr_t)keySize, (u32)0);
++s32 cellSslCertGetRsaPublicKeyExponent(u32 sslCert, u32 sboData, u32 sboLength)
++{
++    return ssl_cert_query(sslCert, sboData && sboLength);
++}
+ 
+-    return CELL_OK;
++/* (const CellSslCert sslCert, CellRtcTick* begin / limit) */
++s32 cellSslCertGetNotBefore(u32 sslCert, u32 begin)
++{
++    return ssl_cert_query(sslCert, begin != 0);
+ }
+ 
+-s32 cellSslCertGetNotBefore(CellSslCertId certId, u64* time)
++s32 cellSslCertGetNotAfter(u32 sslCert, u32 limit)
+ {
+-    (void)certId;
+-    if (!time) return (s32)CELL_SSL_ERROR_INVALID_ARG;
+-    vm_write64((u32)(uintptr_t)time, (u64)0);
+-    return CELL_OK;
++    return ssl_cert_query(sslCert, limit != 0);
+ }
+ 
+-s32 cellSslCertGetNotAfter(CellSslCertId certId, u64* time)
++/* (const CellSslCert sslCert, const CellSslCertName* certName) */
++s32 cellSslCertGetSubjectName(u32 sslCert, u32 certName)
+ {
+-    (void)certId;
+-    if (!time) return (s32)CELL_SSL_ERROR_INVALID_ARG;
+-    vm_write64((u32)(uintptr_t)time, (u64)0xFFFFFFFFFFFFFFFFULL);
+-    return CELL_OK;
++    return ssl_cert_query(sslCert, certName != 0);
++}
++
++s32 cellSslCertGetIssuerName(u32 sslCert, u32 certName)
++{
++    return ssl_cert_query(sslCert, certName != 0);
++}
++
++/* A CellSslCertName comes from Subject/IssuerName of a certificate, so none exists either. KZ3 1.14 (0x85750) returns
++ * its own error 4 on a negative IssuerName and skips the entry loop on a negative count. */
++s32 cellSslCertGetNameEntryCount(u32 certName, u32 entryCount)
++{
++    return ssl_cert_query(certName, entryCount != 0);
++}
++
++/* (certName, u32 entryNum, const char** oidName, const u8** value, u64* valueLength, s32 flag) */
++s32 cellSslCertGetNameEntryInfo(u32 certName, u32 entryNum, u32 oidName, u32 value, u32 valueLength, s32 flag)
++{
++    (void)entryNum; (void)flag;
++    return ssl_cert_query(certName, oidName && value && valueLength);
+ }
+ 
+ s32 cellSslGetRandomNumber(u8* buf, u32 size)
+ {
+     if (!buf || size == 0)
+-        return (s32)CELL_SSL_ERROR_INVALID_ARG;
++        return (s32)CELL_SSL_ERROR_NO_BUFFER;   /* R&C 7032: ASSUMPTION: the SDK's code for a missing buffer */
+ 
+ #ifdef _WIN32
+     NTSTATUS status = BCryptGenRandom(NULL, buf, size,
+@@ -136,24 +161,3 @@
+ 
+     return CELL_OK;
+ }
+-
+-/* ---- KZ3 patch 5003: certificate name queries KZ3 1.14 imports (NIDs = ps3_compute_nid(name)). They are only
+- * meaningful inside a TLS verify callback, which cannot run offline; fail without writing. KZ3 1.14 (0x85750) returns
+- * its own error 4 on a negative IssuerName and skips the entry loop on a negative count. */
+-s32 cellSslCertGetIssuerName(u32 certId, u32 certName)
+-{
+-    (void)certId; (void)certName;
+-    return (s32)CELL_SSL_ERROR_INVALID_ARG;
+-}
+-
+-s32 cellSslCertGetNameEntryCount(u32 certName, u32 entryCount)
+-{
+-    (void)certName; (void)entryCount;
+-    return (s32)CELL_SSL_ERROR_INVALID_ARG;
+-}
+-
+-s32 cellSslCertGetNameEntryInfo(u32 certName, u32 entryNum, u32 oidName, u32 value, u32 valueLength, s32 flag)
+-{
+-    (void)certName; (void)entryNum; (void)oidName; (void)value; (void)valueLength; (void)flag;
+-    return (s32)CELL_SSL_ERROR_INVALID_ARG;
+-}
+--- a/libs/network/cellSsl.h
++++ b/libs/network/cellSsl.h
+@@ -18,12 +18,16 @@
+ /* ---------------------------------------------------------------------------
+  * Error codes
+  * -----------------------------------------------------------------------*/
+-#define CELL_SSL_ERROR_NOT_INITIALIZED       0x80720101
+-#define CELL_SSL_ERROR_ALREADY_INITIALIZED   0x80720102
+-#define CELL_SSL_ERROR_INVALID_ARG           0x80720103
+-#define CELL_SSL_ERROR_NO_MEMORY             0x80720104
+-#define CELL_SSL_ERROR_HANDSHAKE_FAILED      0x80720105
+-#define CELL_SSL_ERROR_NOT_CONNECTED         0x80720106
++/* R&C 7032: the SDK's values ([src:rpcs3-cellssl]); the 0x807201xx set here was made up. */
++#define CELL_SSL_ERROR_NOT_INITIALIZED       0x80740001
++#define CELL_SSL_ERROR_ALREADY_INITIALIZED   0x80740002
++#define CELL_SSL_ERROR_INITIALIZATION_FAILED 0x80740003
++#define CELL_SSL_ERROR_NO_BUFFER             0x80740004
++#define CELL_SSL_ERROR_INVALID_CERTIFICATE   0x80740005
++#define CELL_SSL_ERROR_UNRETRIEVABLE         0x80740006
++#define CELL_SSL_ERROR_INVALID_FORMAT        0x80740007
++#define CELL_SSL_ERROR_NOT_FOUND             0x80740008
++#define CELL_SSL_ERROR_NO_MEMORY             0x80740035
+ 
+ /* ---------------------------------------------------------------------------
+  * Types
+@@ -39,10 +43,17 @@
+ 
+ /* Certificate management */
+ s32 cellSslCertificateLoader(u64 flags, char* buffer, u32 size, u32* required);
+-s32 cellSslCertGetSerialNumber(CellSslCertId certId, u8* serial, u32* serialSize);
+-s32 cellSslCertGetPublicKey(CellSslCertId certId, u8* key, u32* keySize);
+-s32 cellSslCertGetNotBefore(CellSslCertId certId, u64* time);
+-s32 cellSslCertGetNotAfter(CellSslCertId certId, u64* time);
++/* R&C 7032: certificate queries take a CellSslCert handed to an HTTPS verify callback; none exists offline. */
++s32 cellSslCertGetSerialNumber(u32 sslCert, u32 sboData, u32 sboLength);
++s32 cellSslCertGetPublicKey(u32 sslCert, u32 sboData, u32 sboLength);
++s32 cellSslCertGetRsaPublicKeyModulus(u32 sslCert, u32 sboData, u32 sboLength);
++s32 cellSslCertGetRsaPublicKeyExponent(u32 sslCert, u32 sboData, u32 sboLength);
++s32 cellSslCertGetNotBefore(u32 sslCert, u32 begin);
++s32 cellSslCertGetNotAfter(u32 sslCert, u32 limit);
++s32 cellSslCertGetSubjectName(u32 sslCert, u32 certName);
++s32 cellSslCertGetIssuerName(u32 sslCert, u32 certName);
++s32 cellSslCertGetNameEntryCount(u32 certName, u32 entryCount);
++s32 cellSslCertGetNameEntryInfo(u32 certName, u32 entryNum, u32 oidName, u32 value, u32 valueLength, s32 flag);
+ 
+ /* Entropy / RNG */
+ s32 cellSslGetRandomNumber(u8* buf, u32 size);
+--- a/libs/network/sceNp.c
++++ b/libs/network/sceNp.c
+@@ -450,3 +450,52 @@
+ }
+ 
+ /* sceNpManagerGetNetworkTime: upstream v0.18.0 has the same function (above); 5003's copy dropped (SPU pass 108). */
++
++/* ---------------------------------------------------------------------------
++ * R&C 7032: the manager calls A Crack in Time 1.20, All 4 One 1.03, Into the Nexus 1.01 and Full Frontal Assault 1.05
++ * import. Signed in means what sceNpManagerGetStatus reports ONLINE for (a psnr server, or a port's own sign-in); with
++ * no link the manager is OFFLINE and so are these, with the checks and offline answers of [src:rpcs3-scenp].
++ * -----------------------------------------------------------------------*/
++
++/* For the NP libraries in other files (sceNpBasic/Lookup/Tus/Clans/Commerce2): 1 when the manager is ONLINE. */
++int np_signed_in(void) { return np_psnr_enabled() || ps3_net_np_signed_in(); }
++
++/* sceNpScoreInit's flag, for the score calls in sceNpScore.c. */
++int np_score_is_initialized(void) { return s_score_initialized; }
++
++/* (const SceNpId* npId, const char* serviceId, const void* cookie, u32 cookieSize, const char* entitlementId,
++ * u32 consumedCount): the version-less form of RequestTicket2, same checks and the same answers. */
++s32 sceNpManagerRequestTicket(u32 npId, u32 serviceId, u32 cookie, u32 cookieSize, u32 entitlementId, u32 consumedCount)
++{
++    return sceNpManagerRequestTicket2(npId, 0, serviceId, cookie, cookieSize, entitlementId, consumedCount);
++}
++
++/* (SceNpAvatarUrl* avatarUrl): OFFLINE before the manager is online. Signed in to psnr, which keeps no avatars, the
++ * URL is empty (ASSUMPTION: an account without an avatar). */
++s32 sceNpManagerGetAvatarUrl(u32 avatarUrl)
++{
++    if (!s_np_initialized) return (s32)SCE_NP_ERROR_NOT_INITIALIZED;
++    if (!avatarUrl) return (s32)SCE_NP_ERROR_INVALID_ARGUMENT;
++    if (!np_signed_in()) return (s32)SCE_NP_ERROR_OFFLINE;
++    for (u32 i = 0; i < (u32)sizeof(SceNpAvatarUrl); i++) vm_write8(avatarUrl + i, 0);
++    return CELL_OK;
++}
++
++/* (CellSysutilUserId userId, SceNpManagerSubSigninCallback cb_func, void* cb_arg, s32 flag): signs a second local
++ * user in to PSN. That needs the network: OFFLINE without it (ASSUMPTION: the manager's offline code, before any
++ * dialog). Signed in to psnr, which has no second accounts: INVALID_STATE (ASSUMPTION). */
++s32 sceNpManagerSubSignin(u32 userId, u32 cb_func, u32 cb_arg, s32 flag)
++{
++    (void)userId; (void)cb_arg; (void)flag;
++    if (!s_np_initialized) return (s32)SCE_NP_ERROR_NOT_INITIALIZED;
++    if (!cb_func) return (s32)SCE_NP_ERROR_INVALID_ARGUMENT;   /* ASSUMPTION: the result has nowhere to go */
++    return np_signed_in() ? (s32)SCE_NP_ERROR_INVALID_STATE : (s32)SCE_NP_ERROR_OFFLINE;
++}
++
++/* (const SceNpId* npId): no sub-user was ever signed in, so no NP ID matches one. ASSUMPTION: ID_NOT_FOUND. */
++s32 sceNpManagerSubSignout(u32 npId)
++{
++    if (!s_np_initialized) return (s32)SCE_NP_ERROR_NOT_INITIALIZED;
++    if (!npId) return (s32)SCE_NP_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_ERROR_ID_NOT_FOUND;
++}
+--- a/libs/network/sceNp.h
++++ b/libs/network/sceNp.h
+@@ -105,6 +105,18 @@
+ 
+ #define SCE_NP_COMMUNITY_ERROR_ALREADY_INITIALIZED 0x8002a101
+ #define SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED     0x8002a102
++/* R&C 7032: the rest of the community (Score/Lookup/TUS) codes the offline answers use ([src:rpcs3-scenp]) */
++#define SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT        0x8002a104
++#define SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT   0x8002a1a1
++#define SCE_NP_COMMUNITY_ERROR_INVALID_ID              0x8002a1a3
++#define SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID       0x8002a1a4
++#define SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT       0x8002a1ac
++#define SCE_NP_COMMUNITY_ERROR_TOO_MANY_NPID           0x8002a1ad
++#define SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID         0x8002a1b1
++#define SCE_NP_COMMUNITY_SERVER_ERROR_NO_SUCH_TITLE    0x8002a4a6
++/* 1 when the NP manager is ONLINE (sceNp.c); sceNpScoreInit has run (sceNp.c) */
++int np_signed_in(void);
++int np_score_is_initialized(void);
+ s32 sceNpScoreInit(void);
+ s32 sceNpScoreTerm(void);
+ 
+--- a/libs/network/sceNpBasic.c
++++ b/libs/network/sceNpBasic.c
+@@ -20,6 +20,14 @@
+ static SceNpBasicPresenceHandler s_presence_handler = NULL;
+ static void* s_handler_arg = NULL;
+ static SceNpBasicPresence s_own_presence;
++/* R&C 7032: a Basic event handler is registered (RegisterHandler or RegisterContextSensitiveHandler); the calls that
++ * deliver events or messages need one ([src:rpcs3-scenp]: NOT_REGISTERED otherwise). */
++static int s_handler_registered = 0;
++/* R&C 7032: the players-history entries added this session (online IDs, the first 16 bytes of each SceNpId). */
++#define NP_BASIC_HISTORY_MAX 64
++static char s_history[NP_BASIC_HISTORY_MAX][16];
++static u32 s_history_count = 0;
++int np_signed_in(void);   /* sceNp.c: the manager is ONLINE */
+ 
+ /* sceNpBasic is usable once sceNpInit has run: in the SDK a title calls
+  * sceNpInit and then sceNpBasic*, and many never call sceNpBasicInit. Checking
+@@ -62,6 +70,7 @@
+     s_initialized = 0;
+     s_event_handler = NULL;
+     s_presence_handler = NULL;
++    s_handler_registered = 0;
+     return CELL_OK;
+ }
+ 
+@@ -72,14 +81,15 @@
+  * then reads a STALE/garbage event out-param and loops forever, hanging the boot
+  * before NP-init/trophy/GThread. So the exact value matters. We report no event
+  * and don't touch the out-params. */
+-#ifndef SCE_NP_BASIC_ERROR_NO_EVENT
+-#define SCE_NP_BASIC_ERROR_NO_EVENT 0x8002A66A
+-#endif
+ s32 sceNpBasicGetEvent(u32* event, void* from, void* data, u32* size)
+ {
+     /* out-params are GUEST EAs; the game checks the return (0x8002A66A) and
+-     * exits the drain BEFORE reading them, so we leave them untouched. */
+-    (void)event; (void)from; (void)data; (void)size;
++     * exits the drain BEFORE reading them, so we leave them untouched.
++     * R&C 7032: the reference's checks first ([src:rpcs3-scenp]): NOT_INITIALIZED, NOT_REGISTERED without a handler,
++     * INVALID_ARGUMENT for a NULL out-param; then no event ever arrives offline. */
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_NOT_REGISTERED;
++    if (!event || !from || !data || !size) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
+     return (s32)SCE_NP_BASIC_ERROR_NO_EVENT;
+ }
+ 
+@@ -95,6 +105,7 @@
+     s_event_handler = handler;
+     s_presence_handler = presenceHandler;
+     s_handler_arg = arg;
++    s_handler_registered = 1;
+     return CELL_OK;
+ }
+ 
+@@ -108,6 +119,7 @@
+     s_event_handler = NULL;
+     s_presence_handler = NULL;
+     s_handler_arg = NULL;
++    s_handler_registered = 0;
+     return CELL_OK;
+ }
+ 
+@@ -254,7 +266,7 @@
+ {
+     (void)options;
+     if (!count) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
+-    vm_write32((u32)(uintptr_t)count, 0);
++    vm_write32((u32)(uintptr_t)count, s_history_count);   /* R&C 7032: the entries sceNpBasicAddPlayersHistory added */
+     return CELL_OK;
+ }
+ 
+@@ -265,9 +277,17 @@
+     return CELL_OK;
+ }
+ 
++/* R&C 7032: (const SceNpCommunicationId* context, SceNpBasicEventHandler handler, void* arg), checks as
++ * [src:rpcs3-scenp]: one handler at a time (EXCEEDS_MAX), both pointers needed. The handler is kept; offline nothing
++ * ever invokes it. */
+ s32 sceNpBasicRegisterContextSensitiveHandler(const void* context, void* handler, void* arg)
+ {
+-    (void)context; (void)handler; (void)arg;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_EXCEEDS_MAX;
++    if (!context || !handler) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    s_event_handler = (SceNpBasicEventHandler)handler;
++    s_handler_arg = arg;
++    s_handler_registered = 1;
+     return CELL_OK;
+ }
+ 
+@@ -291,3 +311,120 @@
+         return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
+     return CELL_OK;   /* accepted, not published: there is no presence server */
+ }
++
++/* ---- R&C 7032: the Basic calls A Crack in Time 1.20, All 4 One 1.03, Into the Nexus 1.01, Full Frontal Assault 1.05
++ * and Deadlocked HD import. Checks in the order of [src:rpcs3-scenp]; then what a console that is not signed in
++ * answers: no friends, no block list, no messages, nothing can be sent. The players history is local and kept. */
++
++/* SceNpBasicMessageDetails { u64 msgId; u16 mainType; u16 subType; u32 msgFeatures; u32 npids; u32 count;
++ * u32 subject; u32 body; u32 data; u32 size; } */
++#define NP_BASIC_MSG_MAIN_TYPE_MAX      5      /* URL_ATTACHMENT */
++#define NP_BASIC_SEND_MAX_RECIPIENTS    12
++#define NP_BASIC_DESCRIPTION_MAX        341
++#define NP_BASIC_RECV_OPTIONS_ALL       0x7u
++#define NP_BASIC_MAIN_TYPE_INVITE       3
++#define NP_BASIC_MAIN_TYPE_CUSTOM_DATA  4
++
++/* (const SceNpBasicMessageDetails* msg, sys_memory_container_t containerId): the send-message dialog. The message is
++ * checked (NULL, a preset msgId, an unknown main type, too many recipients), then a console that is not signed in
++ * answers NOT_CONNECTED and shows nothing. ASSUMPTION: the reference's finer per-type checks (sub types, text
++ * lengths, attachment sizes) are not repeated; each of them is also an error, so only which error differs. */
++s32 sceNpBasicSendMessageGui(u32 msg, u32 containerId)
++{
++    (void)containerId;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_NOT_REGISTERED;
++    if (!msg || vm_read64(msg) != 0 || vm_read16(msg + 8) > NP_BASIC_MSG_MAIN_TYPE_MAX
++        || vm_read32(msg + 20) > NP_BASIC_SEND_MAX_RECIPIENTS)
++        return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    if (!np_signed_in()) return (s32)SCE_NP_BASIC_ERROR_NOT_CONNECTED;
++    /* ASSUMPTION: psnr carries no messages; signed in to it, the player cancels the dialog. */
++    return (s32)SCE_NP_BASIC_ERROR_CANCEL;
++}
++
++/* (const SceNpId* contact, const char* body, sys_memory_container_t containerId): an ADD_FRIEND message to one NP ID
++ * through the same dialog. */
++s32 sceNpBasicAddFriend(u32 contact, u32 body, u32 containerId)
++{
++    (void)body; (void)containerId;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_NOT_REGISTERED;
++    if (!contact || !vm_read8(contact)) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    if (!np_signed_in()) return (s32)SCE_NP_BASIC_ERROR_NOT_CONNECTED;
++    return (s32)SCE_NP_BASIC_ERROR_CANCEL;
++}
++
++/* (const SceNpId* npid, const char* description): the console's own list of players met; local, so it works offline.
++ * Kept per session (ASSUMPTION: not saved). */
++s32 sceNpBasicAddPlayersHistory(u32 npid, u32 description)
++{
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!npid || !vm_read8(npid)) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    if (description) {
++        u32 n = 0;
++        while (n <= NP_BASIC_DESCRIPTION_MAX && vm_read8(description + n)) n++;
++        if (n > NP_BASIC_DESCRIPTION_MAX) return (s32)SCE_NP_BASIC_ERROR_EXCEEDS_MAX;
++    }
++    char id[16];
++    for (u32 i = 0; i < 16; i++) id[i] = (char)vm_read8(npid + i);
++    for (u32 i = 0; i < s_history_count; i++)
++        if (!memcmp(s_history[i], id, 16)) return CELL_OK;
++    if (s_history_count < NP_BASIC_HISTORY_MAX) memcpy(s_history[s_history_count++], id, 16);
++    return CELL_OK;
++}
++
++/* (u32 index, SceNpUserInfo* user, SceNpBasicPresenceDetails* pres, u32 options) / (const SceNpId* npid,
++ * SceNpBasicPresenceDetails2* pres, u32 options): the friend list is empty while not signed in, so no index and no
++ * NP ID is a friend. ASSUMPTION: ID_NOT_FOUND, the code the reference gives a block-list lookup offline. */
++s32 sceNpBasicGetFriendPresenceByIndex(u32 index, u32 user, u32 pres, u32 options)
++{
++    (void)index; (void)options;
++    if (!pres) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!user) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_BASIC_NP_ERROR_ID_NOT_FOUND;
++}
++
++s32 sceNpBasicGetFriendPresenceByNpId2(u32 npid, u32 pres, u32 options)
++{
++    (void)options;
++    if (!pres) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!npid) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_BASIC_NP_ERROR_ID_NOT_FOUND;
++}
++
++/* (u32 index, SceNpId* npid): the block list is empty while not signed in: ID_NOT_FOUND ([src:rpcs3-scenp]). */
++s32 sceNpBasicGetBlockListEntry(u32 index, u32 npid)
++{
++    (void)index;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!npid) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_BASIC_NP_ERROR_ID_NOT_FOUND;
++}
++
++/* (SceNpBasicAttachmentDataId id, void* buffer, u32* size): the data of a message the player picked in the XMB; ids 1
++ * (invitation) and 2 (message). Nothing was ever picked, so no id has data: INVALID_DATA_ID, outputs untouched. */
++s32 sceNpBasicRecvMessageAttachmentLoad(u32 id, u32 buffer, u32 size)
++{
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_NOT_REGISTERED;
++    if (!buffer || !size) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    (void)id;
++    return (s32)SCE_NP_BASIC_ERROR_INVALID_DATA_ID;
++}
++
++/* (u16 mainType, u32 recvOptions, sys_memory_container_t containerId): the received-messages dialog for invitations or
++ * custom data. Nothing was received, so the player has nothing to pick and the dialog ends cancelled (ASSUMPTION: the
++ * console's answer for an empty list; the reference answers CANCEL when the dialog closes without a pick). */
++s32 sceNpBasicRecvMessageCustom(u32 mainType, u32 recvOptions, u32 containerId)
++{
++    (void)containerId;
++    if (!basic_ready()) return (s32)SCE_NP_BASIC_ERROR_NOT_INITIALIZED;
++    if (!s_handler_registered) return (s32)SCE_NP_BASIC_ERROR_NOT_REGISTERED;
++    mainType &= 0xFFFF;
++    if (mainType != NP_BASIC_MAIN_TYPE_INVITE && mainType != NP_BASIC_MAIN_TYPE_CUSTOM_DATA)
++        return (s32)SCE_NP_BASIC_ERROR_NOT_SUPPORTED;
++    if (recvOptions & ~NP_BASIC_RECV_OPTIONS_ALL) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_BASIC_ERROR_CANCEL;
++}
+--- a/libs/network/sceNpBasic.h
++++ b/libs/network/sceNpBasic.h
+@@ -18,14 +18,21 @@
+ /* ---------------------------------------------------------------------------
+  * Error codes
+  * -----------------------------------------------------------------------*/
+-#define SCE_NP_BASIC_ERROR_NOT_INITIALIZED         0x8002AA01
+-#define SCE_NP_BASIC_ERROR_ALREADY_INITIALIZED     0x8002AA02
+-#define SCE_NP_BASIC_ERROR_INVALID_ARGUMENT        0x8002AA03
+-#define SCE_NP_BASIC_ERROR_NOT_SUPPORTED           0x8002AA04
+-#define SCE_NP_BASIC_ERROR_OUT_OF_MEMORY           0x8002AA05
+-#define SCE_NP_BASIC_ERROR_EXCEEDS_MAX             0x8002AA06
+-#define SCE_NP_BASIC_ERROR_NOT_CONNECTED           0x8002AA07
++/* R&C 7032: the SDK's values ([src:rpcs3-scenp]); the 0x8002AA0x set here was the NP manager's range. DATA_NOT_FOUND
++ * has no SDK name and keeps its old value. */
++#define SCE_NP_BASIC_ERROR_ALREADY_INITIALIZED     0x8002a661
++#define SCE_NP_BASIC_ERROR_NOT_INITIALIZED         0x8002a662
++#define SCE_NP_BASIC_ERROR_NOT_SUPPORTED           0x8002a663
++#define SCE_NP_BASIC_ERROR_OUT_OF_MEMORY           0x8002a664
++#define SCE_NP_BASIC_ERROR_INVALID_ARGUMENT        0x8002a665
++#define SCE_NP_BASIC_ERROR_NO_EVENT                0x8002a66a
++#define SCE_NP_BASIC_ERROR_EXCEEDS_MAX             0x8002a66b
++#define SCE_NP_BASIC_ERROR_NOT_REGISTERED          0x8002a66d
++#define SCE_NP_BASIC_ERROR_CANCEL                  0x8002a671
++#define SCE_NP_BASIC_ERROR_INVALID_DATA_ID         0x8002a673
++#define SCE_NP_BASIC_ERROR_NOT_CONNECTED           0x8002a678
+ #define SCE_NP_BASIC_ERROR_DATA_NOT_FOUND          0x8002AA08
++#define SCE_NP_BASIC_NP_ERROR_ID_NOT_FOUND         0x8002aa06   /* SCE_NP_ERROR_ID_NOT_FOUND (sceNp.h) */
+ 
+ /* ---------------------------------------------------------------------------
+  * Constants
+--- a/libs/network/sceNpClans.c
++++ b/libs/network/sceNpClans.c
+@@ -1,84 +1,413 @@
+ /*
+  * ps3recomp - sceNpClans HLE implementation
+  *
+- * Offline stub. Init/term work, all clan operations return NOT_CONNECTED.
++ * R&C 7032: the clan service as a console without it answers. Init, Term and the request handles are local and work;
++ * each argument check and its order follow [src:rpcs3-scenpclans]. Every call that needs the clan server then fails
++ * with SERVICE_UNAVAILABLE: not signed in there is no server to reach, and psnr (the port's server) has no clans
++ * (ASSUMPTION: the code a console answers when the clan service cannot be reached; the reference passes the
++ * server's own error through). Nothing is written to the out-parameters.
++ *
++ * Request handles are 1..SCE_NP_CLANS_MAX_REQUESTS (0 is SCE_NP_CLANS_INVALID_REQUEST_HANDLE). A handle that was
++ * never created answers INVALID_ARGUMENT (ASSUMPTION), checked after the arguments.
+  */
+ 
+ #include "sceNpClans.h"
+-#include <stdio.h>
+ #include <string.h>
++#include "../../runtime/ppu/ppu_memory.h"   /* vm_read, vm_write: guest EA -> host, byte-swapped */
++
++static int s_initialized;
++static u8  s_requests[SCE_NP_CLANS_MAX_REQUESTS + 1];   /* 1-based; 1 = in use */
++
++/* ---------------------------------------------------------------------------
++ * Helpers
++ * -----------------------------------------------------------------------*/
++
++static u32 guest_strnlen(u32 ea, u32 limit)
++{
++    u32 n = 0;
++    while (n <= limit && vm_read8(ea + n)) n++;
++    return n;
++}
++
++/* SceNpClansPagingRequest { u32 startPos; u32 max; } */
++static int paging_too_big(u32 paging)
++{
++    return paging && (vm_read32(paging) > SCE_NP_CLANS_PAGING_REQUEST_START_POSITION_MAX
++                      || vm_read32(paging + 4) > SCE_NP_CLANS_PAGING_REQUEST_PAGE_MAX);
++}
++
++/* A SceNpClansMessage whose subject or body is longer than the SDK allows. */
++static int message_too_long(u32 message, u32 body_max)
++{
++    return message && (guest_strnlen(message, SCE_NP_CLANS_MESSAGE_SUBJECT_MAX_LENGTH) > SCE_NP_CLANS_MESSAGE_SUBJECT_MAX_LENGTH
++                       || guest_strnlen(message + SCE_NP_CLANS_MESSAGE_BODY_OFFSET, body_max) > body_max);
++}
++
++static int request_ok(SceNpClansRequestHandle h)
++{
++    return h >= 1 && h <= SCE_NP_CLANS_MAX_REQUESTS && s_requests[h];
++}
+ 
+-/* Internal state */
++/* The end of every server call, after its own checks. */
++static s32 clans_server(SceNpClansRequestHandle handle)
++{
++    if (!request_ok(handle)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return (s32)SCE_NP_CLANS_ERROR_SERVICE_UNAVAILABLE;
++}
+ 
+-static int s_initialized = 0;
++#define CLANS_REQUIRE_INIT() do { if (!s_initialized) return (s32)SCE_NP_CLANS_ERROR_NOT_INITIALIZED; } while (0)
+ 
+-/* API */
++/* ---------------------------------------------------------------------------
++ * Lifecycle and requests
++ * -----------------------------------------------------------------------*/
+ 
+-s32 sceNpClansInit(const void* commId, const void* passPhrase, u32 poolSize)
++/* (const SceNpCommunicationId*, const SceNpCommunicationPassphrase*, void* pool, u32* poolSize, u32 flags) */
++s32 sceNpClansInit(u32 commId, u32 passphrase, u32 pool, u32 poolSize, u32 flags)
+ {
+-    (void)commId; (void)passPhrase; (void)poolSize;
+-    printf("[sceNpClans] Init()\n");
+-    if (s_initialized)
+-        return (s32)SCE_NP_CLANS_ERROR_ALREADY_INITIALIZED;
++    (void)pool; (void)poolSize;
++    if (s_initialized) return (s32)SCE_NP_CLANS_ERROR_ALREADY_INITIALIZED;
++    if (!commId || !passphrase) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (flags != 0) return (s32)SCE_NP_CLANS_ERROR_NOT_SUPPORTED;
++    memset(s_requests, 0, sizeof(s_requests));
+     s_initialized = 1;
+     return CELL_OK;
+ }
+ 
+ s32 sceNpClansTerm(void)
+ {
+-    printf("[sceNpClans] Term()\n");
++    CLANS_REQUIRE_INIT();
++    memset(s_requests, 0, sizeof(s_requests));
+     s_initialized = 0;
+     return CELL_OK;
+ }
+ 
+-s32 sceNpClansCreateClan(const char* name, const char* tag,
+-                           SceNpClansRequestId* reqId)
++/* (SceNpClansRequestHandle* handle, u64 flags) */
++s32 sceNpClansCreateRequest(u32 handle, u64 flags)
+ {
+-    (void)name; (void)tag; (void)reqId;
+-    printf("[sceNpClans] CreateClan() - offline\n");
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (!handle) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (flags != 0) return (s32)SCE_NP_CLANS_ERROR_NOT_SUPPORTED;
++    for (u32 i = 1; i <= SCE_NP_CLANS_MAX_REQUESTS; i++)
++        if (!s_requests[i]) {
++            s_requests[i] = 1;
++            vm_write32(handle, i);
++            return CELL_OK;
++        }
++    return (s32)SCE_NP_CLANS_ERROR_OUT_OF_MEMORY;   /* ASSUMPTION: the code for no free request */
+ }
+ 
+-s32 sceNpClansLeaveClan(SceNpClansClanId clanId, SceNpClansRequestId* reqId)
++s32 sceNpClansDestroyRequest(SceNpClansRequestHandle handle)
+ {
+-    (void)clanId; (void)reqId;
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (!request_ok(handle)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    s_requests[handle] = 0;
++    return CELL_OK;
+ }
+ 
+-s32 sceNpClansJoinClan(SceNpClansClanId clanId, SceNpClansRequestId* reqId)
++/* Nothing is ever in flight (each call answers at once); like the reference, the handle is released. */
++s32 sceNpClansAbortRequest(SceNpClansRequestHandle handle)
+ {
+-    (void)clanId; (void)reqId;
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (request_ok(handle)) s_requests[handle] = 0;
++    return CELL_OK;
+ }
+ 
+-s32 sceNpClansGetClanInfo(SceNpClansClanId clanId, SceNpClansClanInfo* info,
+-                            SceNpClansRequestId* reqId)
++/* ---------------------------------------------------------------------------
++ * Server calls
++ * -----------------------------------------------------------------------*/
++
++/* (handle, const char* name, const char* tag, SceNpClanId* clanId) */
++s32 sceNpClansCreateClan(SceNpClansRequestHandle handle, u32 name, u32 tag, u32 clanId)
+ {
+-    (void)clanId; (void)info; (void)reqId;
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (!name || !tag || !clanId) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (guest_strnlen(name, SCE_NP_CLANS_CLAN_NAME_MAX_LENGTH) > SCE_NP_CLANS_CLAN_NAME_MAX_LENGTH
++        || guest_strnlen(tag, SCE_NP_CLANS_CLAN_TAG_MAX_LENGTH) > SCE_NP_CLANS_CLAN_TAG_MAX_LENGTH)
++        return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
+ }
+ 
+-s32 sceNpClansSearchByName(const char* name, SceNpClansRequestId* reqId)
++s32 sceNpClansDisbandClan(SceNpClansRequestHandle handle, SceNpClanId clanId)
+ {
+-    (void)name; (void)reqId;
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (!clanId) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
+ }
+ 
+-s32 sceNpClansGetMemberList(SceNpClansClanId clanId, SceNpClansRequestId* reqId)
++/* (handle, const SceNpClansPagingRequest* paging, SceNpClansEntry* clanList, SceNpClansPagingResult* pageResult) */
++s32 sceNpClansGetClanList(SceNpClansRequestHandle handle, u32 paging, u32 clanList, u32 pageResult)
+ {
+-    (void)clanId; (void)reqId;
+-    return (s32)SCE_NP_CLANS_ERROR_NOT_CONNECTED;
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !clanList)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
+ }
+ 
+-s32 sceNpClansAbortRequest(SceNpClansRequestId reqId)
++s32 sceNpClansGetClanListByNpId(SceNpClansRequestHandle handle, u32 paging, u32 npid, u32 clanList, u32 pageResult)
+ {
+-    (void)reqId;
+-    return CELL_OK;
++    CLANS_REQUIRE_INIT();
++    if (!npid || !pageResult || (paging && !clanList)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
+ }
+ 
+-s32 sceNpClansCheckCallback(void)
++s32 sceNpClansSearchByProfile(SceNpClansRequestHandle handle, u32 paging, u32 search, u32 results, u32 pageResult)
+ {
+-    if (!s_initialized)
+-        return (s32)SCE_NP_CLANS_ERROR_NOT_INITIALIZED;
+-    return CELL_OK;
++    CLANS_REQUIRE_INIT();
++    if (!search || !pageResult || (paging && !results)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansSearchByName(SceNpClansRequestHandle handle, u32 paging, u32 search, u32 results, u32 pageResult)
++{
++    CLANS_REQUIRE_INIT();
++    if (!search || !pageResult || (paging && !results)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansGetClanInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!info) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++s32 sceNpClansUpdateClanInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!info) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++/* (handle, clanId, paging*, SceNpClansMemberStatus status, SceNpClansMemberEntry* memList, pageResult*) */
++s32 sceNpClansGetMemberList(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 status, u32 memList,
++                            u32 pageResult)
++{
++    (void)clanId; (void)status;
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !memList)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansGetMemberInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 memInfo)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!npid || !memInfo) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++s32 sceNpClansUpdateMemberInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!info) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++s32 sceNpClansChangeMemberRole(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 role)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!npid || role > SCE_NP_CLANS_ROLE_LEADER) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++/* (handle, clanId, b8* enable) */
++s32 sceNpClansGetAutoAcceptStatus(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 enable)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!enable) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++s32 sceNpClansUpdateAutoAcceptStatus(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 enable)
++{
++    (void)clanId; (void)enable;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++s32 sceNpClansJoinClan(SceNpClansRequestHandle handle, SceNpClanId clanId)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++s32 sceNpClansLeaveClan(SceNpClansRequestHandle handle, SceNpClanId clanId)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++/* (handle, clanId, const SceNpId* npid, const SceNpClansMessage* message) */
++s32 sceNpClansKickMember(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!npid) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (message_too_long(message, SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansSendInvitation(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!npid) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (message_too_long(message, SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansCancelInvitation(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!npid) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++/* (handle, clanId, const SceNpClansMessage* message, b8 accept) */
++s32 sceNpClansSendInvitationResponse(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message, u32 accept)
++{
++    (void)clanId; (void)accept;
++    CLANS_REQUIRE_INIT();
++    if (message_too_long(message, SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansSendMembershipRequest(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (message_too_long(message, SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansCancelMembershipRequest(SceNpClansRequestHandle handle, SceNpClanId clanId)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++s32 sceNpClansSendMembershipResponse(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message,
++                                     u32 allow)
++{
++    (void)clanId; (void)allow;
++    CLANS_REQUIRE_INIT();
++    if (!npid) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (message_too_long(message, SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansGetBlacklist(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 bl, u32 pageResult)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !bl)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansAddBlacklistEntry(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 member)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!member) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++s32 sceNpClansRemoveBlacklistEntry(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 member)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!member) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    return clans_server(handle);
++}
++
++/* (handle, clanId, paging*, SceNpClansMessageEntry* mlist, pageResult*) */
++s32 sceNpClansRetrieveAnnouncements(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 mlist,
++                                    u32 pageResult)
++{
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !mlist) || clanId == 0xFFFFFFFFu) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++/* (handle, clanId, const SceNpClansMessage* message, const SceNpClansMessageData* data, u32 duration,
++ *  SceNpClansMessageId* mId) */
++s32 sceNpClansPostAnnouncement(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message, u32 data,
++                               u32 duration, u32 mId)
++{
++    (void)clanId; (void)data;
++    CLANS_REQUIRE_INIT();
++    if (!message || !mId || duration == 0) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (message_too_long(message, SCE_NP_CLANS_ANNOUNCEMENT_MESSAGE_BODY_MAX_LENGTH))
++        return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansRemoveAnnouncement(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClansMessageId mId)
++{
++    (void)clanId; (void)mId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++/* (handle, clanId, targetClan, message*, data*, duration, mId*): a challenge without data is not supported. */
++s32 sceNpClansPostChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan, u32 message,
++                            u32 data, u32 duration, u32 mId)
++{
++    (void)clanId; (void)targetClan;
++    CLANS_REQUIRE_INIT();
++    if (!message || !mId || duration == 0) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (!data) return (s32)SCE_NP_CLANS_ERROR_NOT_SUPPORTED;
++    if (message_too_long(message, SCE_NP_CLANS_ANNOUNCEMENT_MESSAGE_BODY_MAX_LENGTH))
++        return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansRetrievePostedChallenges(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan,
++                                       u32 paging, u32 mList, u32 pageResult)
++{
++    (void)clanId; (void)targetClan;
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !mList)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansRemovePostedChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan,
++                                    SceNpClansMessageId mId)
++{
++    (void)clanId; (void)targetClan; (void)mId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
++}
++
++s32 sceNpClansRetrieveChallenges(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 mList,
++                                 u32 pageResult)
++{
++    (void)clanId;
++    CLANS_REQUIRE_INIT();
++    if (!pageResult || (paging && !mList)) return (s32)SCE_NP_CLANS_ERROR_INVALID_ARGUMENT;
++    if (paging_too_big(paging)) return (s32)SCE_NP_CLANS_ERROR_EXCEEDS_MAX;
++    return clans_server(handle);
++}
++
++s32 sceNpClansRemoveChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClansMessageId mId)
++{
++    (void)clanId; (void)mId;
++    CLANS_REQUIRE_INIT();
++    return clans_server(handle);
+ }
+--- a/libs/network/sceNpClans.h
++++ b/libs/network/sceNpClans.h
+@@ -1,8 +1,11 @@
+ /*
+  * ps3recomp - sceNpClans HLE
+  *
+- * PSN clan system: create/join/leave clans, member management.
+- * Offline stub — all operations return NOT_CONNECTED.
++ * PSN clans: clan lists, members, invitations, announcements, challenges.
++ *
++ * R&C 7032: rewritten to the SDK's API (request handles, the clan id and paging arguments) and the SDK's error
++ * values ([src:rpcs3-scenpclans]); the earlier file had made-up signatures and codes. Every pointer is a guest
++ * address. The model is a console without the clan service: see sceNpClans.c.
+  */
+ 
+ #ifndef PS3RECOMP_SCE_NP_CLANS_H
+@@ -15,47 +18,80 @@
+ extern "C" {
+ #endif
+ 
+-/* Error codes */
+-#define SCE_NP_CLANS_ERROR_NOT_INITIALIZED       0x80022301
+-#define SCE_NP_CLANS_ERROR_ALREADY_INITIALIZED   0x80022302
+-#define SCE_NP_CLANS_ERROR_INVALID_ARGUMENT      0x80022303
+-#define SCE_NP_CLANS_ERROR_NOT_CONNECTED         0x80022304
+-#define SCE_NP_CLANS_ERROR_OUT_OF_MEMORY         0x80022305
+-#define SCE_NP_CLANS_ERROR_NOT_FOUND             0x80022306
+-
+-/* Types */
+-typedef u32 SceNpClansRequestId;
+-typedef u32 SceNpClansClanId;
+-
+-typedef struct SceNpClansClanInfo {
+-    SceNpClansClanId clanId;
+-    char name[64];
+-    char tag[16];
+-    char description[256];
+-    u32 memberCount;
+-    u32 reserved[4];
+-} SceNpClansClanInfo;
+-
+-typedef void (*SceNpClansCallback)(SceNpClansRequestId reqId,
+-                                     s32 result, void* arg);
++#define SCE_NP_CLANS_ERROR_ALREADY_INITIALIZED   0x80022701
++#define SCE_NP_CLANS_ERROR_NOT_INITIALIZED       0x80022702
++#define SCE_NP_CLANS_ERROR_NOT_SUPPORTED         0x80022703
++#define SCE_NP_CLANS_ERROR_OUT_OF_MEMORY         0x80022704
++#define SCE_NP_CLANS_ERROR_INVALID_ARGUMENT      0x80022705
++#define SCE_NP_CLANS_ERROR_EXCEEDS_MAX           0x80022706
++#define SCE_NP_CLANS_ERROR_ABORTED               0x80022710
++#define SCE_NP_CLANS_ERROR_SERVICE_UNAVAILABLE   0x80022711
++
++#define SCE_NP_CLANS_CLAN_NAME_MAX_LENGTH                 64
++#define SCE_NP_CLANS_CLAN_TAG_MAX_LENGTH                  8
++#define SCE_NP_CLANS_MESSAGE_SUBJECT_MAX_LENGTH           54
++#define SCE_NP_CLANS_MESSAGE_BODY_MAX_LENGTH              1536
++#define SCE_NP_CLANS_ANNOUNCEMENT_MESSAGE_BODY_MAX_LENGTH 1536
++#define SCE_NP_CLANS_PAGING_REQUEST_START_POSITION_MAX    1000000
++#define SCE_NP_CLANS_PAGING_REQUEST_PAGE_MAX              100
++#define SCE_NP_CLANS_ROLE_LEADER                          4
++#define SCE_NP_CLANS_MAX_REQUESTS                         32   /* ASSUMPTION: the console's limit is not known */
++
++/* SceNpClansMessage { char subject[55]; char body[1537]; u32 options; } */
++#define SCE_NP_CLANS_MESSAGE_BODY_OFFSET                  55
++
++typedef u32 SceNpClansRequestHandle;
++typedef u32 SceNpClanId;
++typedef u32 SceNpClansMessageId;
+ 
+-/* Functions */
+-s32 sceNpClansInit(const void* commId, const void* passPhrase, u32 poolSize);
++s32 sceNpClansInit(u32 commId, u32 passphrase, u32 pool, u32 poolSize, u32 flags);
+ s32 sceNpClansTerm(void);
+-
+-s32 sceNpClansCreateClan(const char* name, const char* tag,
+-                           SceNpClansRequestId* reqId);
+-s32 sceNpClansLeaveClan(SceNpClansClanId clanId, SceNpClansRequestId* reqId);
+-s32 sceNpClansJoinClan(SceNpClansClanId clanId, SceNpClansRequestId* reqId);
+-
+-s32 sceNpClansGetClanInfo(SceNpClansClanId clanId, SceNpClansClanInfo* info,
+-                            SceNpClansRequestId* reqId);
+-s32 sceNpClansSearchByName(const char* name, SceNpClansRequestId* reqId);
+-
+-s32 sceNpClansGetMemberList(SceNpClansClanId clanId, SceNpClansRequestId* reqId);
+-
+-s32 sceNpClansAbortRequest(SceNpClansRequestId reqId);
+-s32 sceNpClansCheckCallback(void);
++s32 sceNpClansCreateRequest(u32 handle, u64 flags);
++s32 sceNpClansDestroyRequest(SceNpClansRequestHandle handle);
++s32 sceNpClansAbortRequest(SceNpClansRequestHandle handle);
++
++s32 sceNpClansCreateClan(SceNpClansRequestHandle handle, u32 name, u32 tag, u32 clanId);
++s32 sceNpClansDisbandClan(SceNpClansRequestHandle handle, SceNpClanId clanId);
++s32 sceNpClansGetClanList(SceNpClansRequestHandle handle, u32 paging, u32 clanList, u32 pageResult);
++s32 sceNpClansGetClanListByNpId(SceNpClansRequestHandle handle, u32 paging, u32 npid, u32 clanList, u32 pageResult);
++s32 sceNpClansSearchByProfile(SceNpClansRequestHandle handle, u32 paging, u32 search, u32 results, u32 pageResult);
++s32 sceNpClansSearchByName(SceNpClansRequestHandle handle, u32 paging, u32 search, u32 results, u32 pageResult);
++s32 sceNpClansGetClanInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info);
++s32 sceNpClansUpdateClanInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info);
++s32 sceNpClansGetMemberList(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 status, u32 memList,
++                            u32 pageResult);
++s32 sceNpClansGetMemberInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 memInfo);
++s32 sceNpClansUpdateMemberInfo(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 info);
++s32 sceNpClansChangeMemberRole(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 role);
++s32 sceNpClansGetAutoAcceptStatus(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 enable);
++s32 sceNpClansUpdateAutoAcceptStatus(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 enable);
++s32 sceNpClansJoinClan(SceNpClansRequestHandle handle, SceNpClanId clanId);
++s32 sceNpClansLeaveClan(SceNpClansRequestHandle handle, SceNpClanId clanId);
++s32 sceNpClansKickMember(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message);
++s32 sceNpClansSendInvitation(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message);
++s32 sceNpClansCancelInvitation(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid);
++s32 sceNpClansSendInvitationResponse(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message, u32 accept);
++s32 sceNpClansSendMembershipRequest(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message);
++s32 sceNpClansCancelMembershipRequest(SceNpClansRequestHandle handle, SceNpClanId clanId);
++s32 sceNpClansSendMembershipResponse(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 npid, u32 message,
++                                     u32 allow);
++s32 sceNpClansGetBlacklist(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 bl, u32 pageResult);
++s32 sceNpClansAddBlacklistEntry(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 member);
++s32 sceNpClansRemoveBlacklistEntry(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 member);
++s32 sceNpClansRetrieveAnnouncements(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 mlist,
++                                    u32 pageResult);
++s32 sceNpClansPostAnnouncement(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 message, u32 data,
++                               u32 duration, u32 mId);
++s32 sceNpClansRemoveAnnouncement(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClansMessageId mId);
++s32 sceNpClansPostChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan, u32 message,
++                            u32 data, u32 duration, u32 mId);
++s32 sceNpClansRetrievePostedChallenges(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan,
++                                       u32 paging, u32 mList, u32 pageResult);
++s32 sceNpClansRemovePostedChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClanId targetClan,
++                                    SceNpClansMessageId mId);
++s32 sceNpClansRetrieveChallenges(SceNpClansRequestHandle handle, SceNpClanId clanId, u32 paging, u32 mList,
++                                 u32 pageResult);
++s32 sceNpClansRemoveChallenge(SceNpClansRequestHandle handle, SceNpClanId clanId, SceNpClansMessageId mId);
+ 
+ #ifdef __cplusplus
+ }
+--- a/libs/network/sceNpCommerce2.c
++++ b/libs/network/sceNpCommerce2.c
+@@ -225,3 +225,30 @@
+     (void)gameProductInfo; (void)index; (void)gameSkuInfo;
+     return SCE_NP_COMMERCE2_ERROR_INVALID_ARGUMENT;
+ }
++
++/* ---- R&C 7032: the product browse Full Frontal Assault 1.05 imports: the PlayStation Store overlay on one product.
++ * Checks as [src:rpcs3-scenpcommerce2] (NOT_INITIALIZED, product id, the param's size field = 4, the context); the
++ * store needs a signed-in account, so a console that is not signed in cannot open it (ASSUMPTION: SCE_NP_ERROR_OFFLINE,
++ * the NP manager's offline code, at once, where the console would report the failure through the context handler).
++ * Signed in to psnr there is still no store: SERVER_ERROR (ASSUMPTION). Finish: no browse ever started, REQ_NOT_FOUND
++ * (ASSUMPTION). */
++int np_signed_in(void);   /* sceNp.c */
++
++/* (u32 ctx_id, const char* product_id, sys_memory_container_t container, const SceNpCommerce2ProductBrowseParam* param) */
++s32 sceNpCommerce2DoProductBrowseStartAsync(u32 ctx_id, u32 product_id, u32 container, u32 param)
++{
++    (void)container;
++    if (!s_initialized) return SCE_NP_COMMERCE2_ERROR_NOT_INITIALIZED;
++    if (!product_id || !vm_read8(product_id)) return SCE_NP_COMMERCE2_ERROR_INVALID_ARGUMENT;
++    if (param && vm_read32(param) != 4u) return SCE_NP_COMMERCE2_ERROR_INVALID_SIZE;
++    if (ctx_id >= MAX_CTX || !s_ctx_in_use[ctx_id]) return SCE_NP_COMMERCE2_ERROR_CTX_NOT_FOUND;
++    if (!np_signed_in()) return (s32)0x8002aa0c;   /* SCE_NP_ERROR_OFFLINE */
++    return SCE_NP_COMMERCE2_ERROR_SERVER_ERROR;
++}
++
++s32 sceNpCommerce2DoProductBrowseFinishAsync(u32 ctx_id)
++{
++    if (!s_initialized) return SCE_NP_COMMERCE2_ERROR_NOT_INITIALIZED;
++    if (ctx_id >= MAX_CTX || !s_ctx_in_use[ctx_id]) return SCE_NP_COMMERCE2_ERROR_CTX_NOT_FOUND;
++    return SCE_NP_COMMERCE2_ERROR_REQ_NOT_FOUND;
++}
+--- a/libs/network/sceNpCommerce2.h
++++ b/libs/network/sceNpCommerce2.h
+@@ -16,8 +16,13 @@
+ #endif
+ 
+ /* Error codes */
+-#define SCE_NP_COMMERCE2_ERROR_NOT_INITIALIZED  (s32)0x80024401
+-#define SCE_NP_COMMERCE2_ERROR_INVALID_ARGUMENT (s32)0x80024402
++/* R&C 7032: the SDK's values ([src:rpcs3-scenpcommerce2]); 0x800244xx was made up. SERVER_ERROR has no SDK name and
++ * keeps its old value. */
++#define SCE_NP_COMMERCE2_ERROR_NOT_INITIALIZED  (s32)0x80023001
++#define SCE_NP_COMMERCE2_ERROR_INVALID_ARGUMENT (s32)0x80023003
++#define SCE_NP_COMMERCE2_ERROR_CTX_NOT_FOUND    (s32)0x8002300c
++#define SCE_NP_COMMERCE2_ERROR_REQ_NOT_FOUND    (s32)0x8002300e
++#define SCE_NP_COMMERCE2_ERROR_INVALID_SIZE     (s32)0x8002301c
+ #define SCE_NP_COMMERCE2_ERROR_SERVER_ERROR     (s32)0x80024410
+ 
+ /* Context handle */
+--- a/libs/network/sceNpLookup.c
++++ b/libs/network/sceNpLookup.c
+@@ -135,3 +135,38 @@
+ {
+     return sceNpLookupAvatarImageAsync(transId, avatarUrl, avatarImage, 0, option);
+ }
++
++/* ---- R&C 7032: two lookups Into the Nexus 1.01, Full Frontal Assault 1.05 and Deadlocked HD import. Both ask the
++ * PSN servers, so a console that is not signed in refuses them: checks and INVALID_ONLINE_ID in the order of
++ * [src:rpcs3-scenp]. Signed in (psnr), they follow this file's local model. */
++
++/* (s32 transId, const SceNpOnlineId* onlineId, SceNpId* npId, s32 prio, void* option): an online ID's NP ID. Signed in,
++ * the NP ID is the online ID as its handle, as psnr knows players. */
++s32 sceNpLookupNpIdAsync(s32 transId, u32 onlineId, u32 npId, s32 prio, u32 option)
++{
++    (void)prio; (void)option;
++    if (!s_lookup_init) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!onlineId) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (!trans_ok(transId)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    if (!np_signed_in()) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID;
++    if (npId) {
++        memset(vm_ptr8(npId), 0, 36);
++        memcpy(vm_ptr8(npId), vm_ptr8(onlineId), 16);
++    }
++    return CELL_OK;
++}
++
++/* (s32 transId, void* data, u32 maxSize, u32* contentLength, s32 prio, void* option): the title's small storage on the
++ * server (at most 64 KiB). Signed in to psnr, which stores none: empty (ASSUMPTION). */
++s32 sceNpLookupTitleSmallStorageAsync(s32 transId, u32 data, u32 maxSize, u32 contentLength, s32 prio, u32 option)
++{
++    (void)prio;
++    if (maxSize > 0x10000) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (!s_lookup_init) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!data || !contentLength) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (option) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (!np_signed_in()) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID;
++    if (!trans_ok(transId)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    vm_write32(contentLength, 0);
++    return CELL_OK;
++}
+--- a/libs/network/sceNpMatching2.c
++++ b/libs/network/sceNpMatching2.c
+@@ -1375,3 +1375,56 @@
+ { (void)ctxId; (void)reqId; return CELL_OK; }
+ s32 sceNpMatching2CreateRoom(u16 ctxId, u32 opt, u32 reqId)
+ { (void)ctxId; (void)opt; (void)reqId; return (s32)SCE_NP_MATCHING2_ERROR_SERVER_NOT_AVAILABLE; }
++
++/* ---------------------------------------------------------------------------
++ * R&C 7032: four calls All 4 One 1.03, Into the Nexus 1.01 and Full Frontal Assault 1.05 import. Request event ids
++ * as [src:rpcs3-scenp2]. Offline (no psnr) every request is refused as the others here are: SERVER_NOT_AVAILABLE.
++ * Signed in to psnr, which has no user-info, room-list or member-data request, each one is answered at once through
++ * the request callback with SERVER_NOT_AVAILABLE (ASSUMPTION: the closest SDK code for a service the server lacks).
++ * -----------------------------------------------------------------------*/
++#define EV_GetRoomDataExternalList   0x0005
++#define EV_GetUserInfoList           0x0008
++#define EV_SetRoomMemberDataInternal 0x010b
++
++/* (ctxId, SceNpMatching2EventKey eventKey): drops the event data kept for GetEventData. */
++s32 sceNpMatching2ClearEventData(u16 ctxId, u32 eventKey)
++{
++    if (!s_init) return (s32)SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
++    if (!ctx_get(ctxId)) return (s32)SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
++    LOCK();
++    int slot = (int)(eventKey % EVENT_RING);
++    if (s_events[slot].key != eventKey || !s_events[slot].img.len) {
++        UNLOCK();
++        return (s32)SCE_NP_MATCHING2_ERROR_EVENT_DATA_NOT_FOUND;   /* ASSUMPTION: a key with no data */
++    }
++    rb_free(&s_events[slot].img);
++    s_events[slot].key = 0;
++    UNLOCK();
++    return CELL_OK;
++}
++
++static s32 m2_unserved(u16 ctxId, u16 event, u32 req, u32 opt, u32 reqId, int need_room)
++{
++    REQUIRE_STARTED(c, ctxId);
++    if (!req || (need_room && !c->room.in)) return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
++    return answer_now(op_new(c, ctxId, event, opt, reqId), (s32)SCE_NP_MATCHING2_ERROR_SERVER_NOT_AVAILABLE, NULL);
++}
++
++/* (ctxId, const SceNpMatching2GetUserInfoListRequest* req, const SceNpMatching2RequestOptParam* opt,
++ * SceNpMatching2RequestId* assignedReqId); the other two take the same four. */
++s32 sceNpMatching2GetUserInfoList(u16 ctxId, u32 req, u32 opt, u32 reqId)
++{
++    return m2_unserved(ctxId, EV_GetUserInfoList, req, opt, reqId, 0);
++}
++
++s32 sceNpMatching2GetRoomDataExternalList(u16 ctxId, u32 req, u32 opt, u32 reqId)
++{
++    return m2_unserved(ctxId, EV_GetRoomDataExternalList, req, opt, reqId, 0);
++}
++
++/* Only a member of a room can set its own member data (ASSUMPTION: INVALID_ARGUMENT outside a room, as
++ * SetRoomDataInternal here). */
++s32 sceNpMatching2SetRoomMemberDataInternal(u16 ctxId, u32 req, u32 opt, u32 reqId)
++{
++    return m2_unserved(ctxId, EV_SetRoomMemberDataInternal, req, opt, reqId, 1);
++}
+--- a/libs/network/sceNpMatching2.h
++++ b/libs/network/sceNpMatching2.h
+@@ -18,14 +18,16 @@
+ extern "C" {
+ #endif
+ 
+-#define SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED       0x80022C01
+-#define SCE_NP_MATCHING2_ERROR_ALREADY_INITIALIZED   0x80022C02
+-#define SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT      0x80022C03
+-#define SCE_NP_MATCHING2_ERROR_OUT_OF_MEMORY         0x80022C04
+-#define SCE_NP_MATCHING2_ERROR_SERVER_NOT_AVAILABLE  0x80022C05
++/* R&C 7032: the SDK's values ([src:rpcs3-scenp2]); the 0x80022Cxx set here was made up. NOT_CONNECTED has no SDK
++ * name and keeps its old value. */
++#define SCE_NP_MATCHING2_ERROR_OUT_OF_MEMORY         0x80022301
++#define SCE_NP_MATCHING2_ERROR_ALREADY_INITIALIZED   0x80022302
++#define SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED       0x80022303
++#define SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND     0x80022306
++#define SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT      0x8002230a
++#define SCE_NP_MATCHING2_ERROR_SERVER_NOT_AVAILABLE  0x8002232d
++#define SCE_NP_MATCHING2_ERROR_EVENT_DATA_NOT_FOUND  0x80022339
+ #define SCE_NP_MATCHING2_ERROR_NOT_CONNECTED         0x80022C06
+-#define SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND     0x80022C07
+-#define SCE_NP_MATCHING2_ERROR_EVENT_DATA_NOT_FOUND  0x80022C08
+ 
+ /* Server-side errors delivered in callbacks. */
+ #define SCE_NP_MATCHING2_SERVER_ERROR_BAD_REQUEST    0x80022B01
+--- a/libs/network/sceNpScore.c
++++ b/libs/network/sceNpScore.c
+@@ -353,6 +353,44 @@
+     if ((s32)ctx->gpr[3] == 0) ctx->gpr[3] = (u64)(s64)sceNpScoreWaitAsync(id, 0);
+ }
+ 
++/* ---- R&C 7032: the two clan rankings Deadlocked HD imports. Checks in the order of [src:rpcs3-scenp]: NOT_INITIALIZED
++ * (sceNpScoreInit), arrayNum 0, reserved fields / option / a zero start rank; then the transaction. psnr keeps no clan
++ * boards, so the request ends with no data: a console that is not signed in fails it with INVALID_ONLINE_ID, signed
++ * in to psnr it fails as this file's other unanswered requests (ASSUMPTION: both through the transaction's result,
++ * as the other requests here, PollAsync/WaitAsync hand it back).
++ *
++ * GetClansRankingByRangeAsync(transId, clanBoardId, startSerialRank, rankArray*, rankArraySize, reserved1*,
++ *   reservedSize1, reserved2*, reservedSize2, arrayNum, lastSortDate*, totalRecord*, prio, option*)
++ * GetClansRankingByClanIdAsync(transId, clanBoardId, clanIdArray*, clanIdArraySize, rankArray*, rankArraySize,
++ *   reserved1*, reservedSize1, reserved2*, reservedSize2, arrayNum, lastSortDate*, totalRecord*, prio, option*) */
++static void clans_ranking(ppu_context* ctx, u32 array_num, int reserved_or_option_set)
++{
++    if (!np_score_is_initialized()) { ctx->gpr[3] = (u64)(s64)(s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED; return; }
++    if (!array_num) { ctx->gpr[3] = (u64)(s64)(s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT; return; }
++    if (reserved_or_option_set) { ctx->gpr[3] = (u64)(s64)(s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT; return; }
++    score_trans* t = trans_get((s32)ctx->gpr[3]);
++    if (!t) { ctx->gpr[3] = (u64)(s64)(s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID; return; }
++    t->state = T_PENDING;
++    ctx->gpr[3] = 0;
++    fail_now(t, np_signed_in() ? (s32)SCORE_ERROR_NO_SERVER : (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID);
++}
++
++static void hle_clans_ranking_by_range_async(ppu_context* ctx)
++{
++    int bad = !(u32)ctx->gpr[5]                                         /* startSerialRank */
++           || (u32)ctx->gpr[8] || (u32)ctx->gpr[9] || (u32)ctx->gpr[10]  /* reserved1, size1, reserved2 */
++           || (u32)stack_arg(ctx, 9) || (u32)stack_arg(ctx, 14);         /* reservedSize2, option */
++    clans_ranking(ctx, (u32)stack_arg(ctx, 10), bad);
++}
++
++static void hle_clans_ranking_by_clan_id_async(ppu_context* ctx)
++{
++    int bad = (u32)ctx->gpr[9] || (u32)ctx->gpr[10]                     /* reserved1, size1 */
++           || (u32)stack_arg(ctx, 9) || (u32)stack_arg(ctx, 10)          /* reserved2, size2 */
++           || (u32)stack_arg(ctx, 15);                                   /* option */
++    clans_ranking(ctx, (u32)stack_arg(ctx, 11), bad);
++}
++
+ extern void ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
+ 
+ void np_score_register_ctx(void)
+@@ -365,4 +403,8 @@
+                          "sceNpScoreGetRankingByNpIdAsync", hle_ranking_by_npid_async);
+     ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetRankingByNpId"),
+                          "sceNpScoreGetRankingByNpId", hle_ranking_by_npid);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetClansRankingByRangeAsync"),
++                         "sceNpScoreGetClansRankingByRangeAsync", hle_clans_ranking_by_range_async);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetClansRankingByClanIdAsync"),
++                         "sceNpScoreGetClansRankingByClanIdAsync", hle_clans_ranking_by_clan_id_async);
+ }
+--- a/libs/network/sceNpSignaling.c
++++ b/libs/network/sceNpSignaling.c
+@@ -85,11 +85,26 @@
+     return (s32)SCE_NP_SIGNALING_ERROR_NOT_CONNECTED;
+ }
+ 
++/* R&C 7032: (ctxId, connId) for Deactivate and Terminate. ActivateConnection never succeeds without a link, so no
++ * connection id exists: NOT_INITIALIZED, CTX_NOT_FOUND, then CONN_NOT_FOUND (ASSUMPTION: the library's answer for an
++ * id it never issued). Deactivate used to answer CELL_OK for any id. */
++static s32 signaling_conn_check(SceNpSignalingCtxId ctxId, SceNpSignalingConnId connId)
++{
++    (void)connId;
++    if (!s_initialized) return (s32)SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED;
++    if (ctxId >= SCE_NP_SIGNALING_CTX_MAX || !s_ctx[ctxId].in_use) return (s32)SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND;
++    return (s32)SCE_NP_SIGNALING_ERROR_CONN_NOT_FOUND;
++}
++
+ s32 sceNpSignalingDeactivateConnection(SceNpSignalingCtxId ctxId,
+                                          SceNpSignalingConnId connId)
+ {
+-    (void)ctxId; (void)connId;
+-    return CELL_OK;
++    return signaling_conn_check(ctxId, connId);
++}
++
++s32 sceNpSignalingTerminateConnection(SceNpSignalingCtxId ctxId, SceNpSignalingConnId connId)
++{
++    return signaling_conn_check(ctxId, connId);
+ }
+ 
+ s32 sceNpSignalingGetConnectionStatus(SceNpSignalingCtxId ctxId,
+--- a/libs/network/sceNpSignaling.h
++++ b/libs/network/sceNpSignaling.h
+@@ -16,13 +16,16 @@
+ #endif
+ 
+ /* Error codes */
+-#define SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED       0x80022A01
+-#define SCE_NP_SIGNALING_ERROR_ALREADY_INITIALIZED   0x80022A02
+-#define SCE_NP_SIGNALING_ERROR_INVALID_ARGUMENT      0x80022A03
+-#define SCE_NP_SIGNALING_ERROR_OUT_OF_MEMORY         0x80022A04
+-#define SCE_NP_SIGNALING_ERROR_NOT_CONNECTED         0x80022A05
+-#define SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND         0x80022A06
+-#define SCE_NP_SIGNALING_ERROR_CONN_NOT_FOUND        0x80022A07
++/* R&C 7032: the SDK's values ([src:rpcs3-scenp]); the 0x80022Axx set here was made up. NOT_CONNECTED has no SDK
++ * name: it is the code for a peer that cannot be reached (PEER_UNREACHABLE), which is what no link means. */
++#define SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED       0x8002a801
++#define SCE_NP_SIGNALING_ERROR_ALREADY_INITIALIZED   0x8002a802
++#define SCE_NP_SIGNALING_ERROR_OUT_OF_MEMORY         0x8002a803
++#define SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND         0x8002a805
++#define SCE_NP_SIGNALING_ERROR_CONN_NOT_FOUND        0x8002a80e
++#define SCE_NP_SIGNALING_ERROR_PEER_UNREACHABLE      0x8002a80f
++#define SCE_NP_SIGNALING_ERROR_INVALID_ARGUMENT      0x8002a815
++#define SCE_NP_SIGNALING_ERROR_NOT_CONNECTED         SCE_NP_SIGNALING_ERROR_PEER_UNREACHABLE
+ 
+ /* Constants */
+ #define SCE_NP_SIGNALING_CTX_MAX           8
+--- a/libs/network/sceNpTus.c
++++ b/libs/network/sceNpTus.c
+@@ -1,336 +1,383 @@
+ /*
+  * ps3recomp - sceNpTus HLE implementation
+  *
+- * Local storage for TUS variables and data. Games can set/get
+- * leaderboard scores and binary blobs, stored in memory only
+- * (no PSN connectivity required).
++ * R&C 7032: Title User Storage as a console without PSN answers it. Checks and their order follow
++ * [src:rpcs3-scenptus]; the values are the community codes (sceNp.h).
++ *
++ *   - Init needs sceNpInit; title contexts are local and always work.
++ *   - A transaction context needs a signed-in user: not signed in, CreateTransactionCtx answers INVALID_ONLINE_ID,
++ *     so no request can be made at all; every request checks the sign-in again (INVALID_ONLINE_ID) before it looks
++ *     at the transaction id.
++ *   - Signed in (psnr, or a port's own server), psnr keeps no TUS: each request ends at once with the server's
++ *     NO_SUCH_TITLE (ASSUMPTION: what the server answers a title it has no storage for). An Async request returns
++ *     CELL_OK and hands the error back through PollAsync/WaitAsync; the blocking form returns it.
++ *
++ * Context ids: title and transaction contexts share one table of SCE_NP_TUS_MAX_CTX_NUM ids, 1-based (ASSUMPTION:
++ * the console's id values are not known; SetTimeout takes either kind, so they cannot overlap).
+  */
+ 
+ #include "sceNpTus.h"
+ #include <stdio.h>
+ #include <string.h>
+-#include <stdlib.h>
+-#include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
+-#include "../guest_struct.h"   /* GUEST_EA, vm_read/vm_write: guest EA -> host */
+-
+-/* ---------------------------------------------------------------------------
+- * Internal state
+- * -----------------------------------------------------------------------*/
+-
+-static int s_initialized = 0;
++#include "../../runtime/ppu/ppu_context.h"
++#include "../../runtime/ppu/ppu_memory.h"   /* vm_read, vm_write: guest EA -> host, byte-swapped */
++#include "../../include/ps3emu/nid.h"
+ 
+-typedef struct {
+-    int in_use;
+-} TusCtxSlot;
+-
+-static TusCtxSlot s_ctx[SCE_NP_TUS_MAX_CTX];
++int np_is_initialized(void);   /* sceNp.c: sceNpInit has run */
+ 
+-/* Local variable storage */
+-typedef struct {
+-    int valid;
+-    s64 value;
+-    u64 timestamp;
+-} TusVarSlot;
++#define TUS_COMMUNITY_ERROR_TOO_MANY_OBJECTS 0x8002a107   /* [src:rpcs3-scenp] */
++#define TUS_COMMUNITY_ERROR_ABORTED          0x8002a109
+ 
+-static TusVarSlot s_variables[SCE_NP_TUS_MAX_SLOT_NUM];
++enum { TUS_FREE, TUS_TITLE, TUS_TRANS };
+ 
+-/* Local data storage */
+ typedef struct {
+-    int valid;
+-    u8* data;
+-    u32 dataSize;
+-    SceNpTusDataInfo info;
+-} TusDataSlot;
+-
+-static TusDataSlot s_data[SCE_NP_TUS_MAX_SLOT_NUM];
++    int kind;
++    s32 title;      /* TRANS: its title context */
++    int done;       /* TRANS: a request has finished */
++    s32 result;     /* TRANS: that request's result */
++    u32 timeout;
++} tus_ctx;
++
++static int     s_initialized;
++static tus_ctx s_ctx[SCE_NP_TUS_MAX_CTX_NUM + 1];   /* 1-based */
++
++static tus_ctx* ctx_get(s32 id, int kind)
++{
++    if (id < 1 || id > SCE_NP_TUS_MAX_CTX_NUM || s_ctx[id].kind != kind) return NULL;
++    return &s_ctx[id];
++}
++
++static s32 ctx_new(int kind, s32 title)
++{
++    for (s32 i = 1; i <= SCE_NP_TUS_MAX_CTX_NUM; i++)
++        if (s_ctx[i].kind == TUS_FREE) {
++            memset(&s_ctx[i], 0, sizeof(s_ctx[i]));
++            s_ctx[i].kind = kind;
++            s_ctx[i].title = title;
++            return i;
++        }
++    return (s32)TUS_COMMUNITY_ERROR_TOO_MANY_OBJECTS;   /* ASSUMPTION: the code for a full table */
++}
+ 
+ /* ---------------------------------------------------------------------------
+- * Lifecycle
++ * Lifecycle and contexts
+  * -----------------------------------------------------------------------*/
+ 
+-s32 sceNpTusInit(s32 prio, s32 stackSize, void* option)
++s32 sceNpTusInit(s32 prio)
+ {
+-    (void)prio; (void)stackSize; (void)option;
+-    printf("[sceNpTus] Init()\n");
+-
+-    if (s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_ALREADY_INITIALIZED;
+-
++    (void)prio;
++    if (s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_ALREADY_INITIALIZED;
++    if (!np_is_initialized()) return (s32)SCE_NP_ERROR_NOT_INITIALIZED;
+     memset(s_ctx, 0, sizeof(s_ctx));
+-    memset(s_variables, 0, sizeof(s_variables));
+-    memset(s_data, 0, sizeof(s_data));
+     s_initialized = 1;
+     return CELL_OK;
+ }
+ 
+ s32 sceNpTusTerm(void)
+ {
+-    printf("[sceNpTus] Term()\n");
+-
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!np_is_initialized()) return (s32)SCE_NP_ERROR_NOT_INITIALIZED;
++    memset(s_ctx, 0, sizeof(s_ctx));
++    s_initialized = 0;
++    return CELL_OK;
++}
+ 
+-    /* Free allocated data blobs */
+-    for (int i = 0; i < SCE_NP_TUS_MAX_SLOT_NUM; i++) {
+-        if (s_data[i].valid && s_data[i].data) {
+-            free(s_data[i].data);
+-            s_data[i].data = NULL;
+-        }
+-    }
++/* (const SceNpCommunicationId*, const SceNpCommunicationPassphrase*, const SceNpId* selfNpId): the id (> 0). */
++s32 sceNpTusCreateTitleCtx(u32 communicationId, u32 passphrase, u32 selfNpId)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!communicationId || !passphrase || !selfNpId) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    return ctx_new(TUS_TITLE, 0);
++}
+ 
+-    s_initialized = 0;
++s32 sceNpTusDestroyTitleCtx(s32 titleCtxId)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!ctx_get(titleCtxId, TUS_TITLE)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    for (s32 i = 1; i <= SCE_NP_TUS_MAX_CTX_NUM; i++)   /* its transactions go with it */
++        if (s_ctx[i].kind == TUS_TRANS && s_ctx[i].title == titleCtxId) s_ctx[i].kind = TUS_FREE;
++    s_ctx[titleCtxId].kind = TUS_FREE;
+     return CELL_OK;
+ }
+ 
+-/* ---------------------------------------------------------------------------
+- * Context management
+- * -----------------------------------------------------------------------*/
++s32 sceNpTusCreateTransactionCtx(s32 titleCtxId)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!np_signed_in()) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID;
++    if (!ctx_get(titleCtxId, TUS_TITLE)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    return ctx_new(TUS_TRANS, titleCtxId);
++}
+ 
+-s32 sceNpTusCreateCtx(SceNpTusCtx* ctx)
++s32 sceNpTusDestroyTransactionCtx(s32 transId)
+ {
+-    printf("[sceNpTus] CreateCtx()\n");
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!ctx_get(transId, TUS_TRANS)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    s_ctx[transId].kind = TUS_FREE;
++    return CELL_OK;
++}
+ 
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
+-    if (!ctx)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
+-
+-    for (int i = 0; i < SCE_NP_TUS_MAX_CTX; i++) {
+-        if (!s_ctx[i].in_use) {
+-            s_ctx[i].in_use = 1;
+-            vm_write32((u32)(uintptr_t)ctx, (u32)i);
+-            return CELL_OK;
+-        }
+-    }
+-    return (s32)SCE_NP_TUS_ERROR_OUT_OF_MEMORY;
++/* timeout in microseconds, at least 10 s */
++s32 sceNpTusSetTimeout(s32 ctxId, u32 timeout)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (timeout < 10000000u) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    tus_ctx* c = ctx_get(ctxId, TUS_TRANS);
++    if (!c) c = ctx_get(ctxId, TUS_TITLE);
++    if (!c) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    c->timeout = timeout;
++    return CELL_OK;
+ }
+ 
+-s32 sceNpTusDestroyCtx(SceNpTusCtx ctx)
++/* Every request finishes at once, so there is nothing left to abort; a later poll still sees its result. */
++s32 sceNpTusAbortTransaction(s32 transId)
+ {
+-    printf("[sceNpTus] DestroyCtx(ctx=%u)\n", ctx);
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    tus_ctx* t = ctx_get(transId, TUS_TRANS);
++    if (!t) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    if (!t->done) { t->done = 1; t->result = (s32)TUS_COMMUNITY_ERROR_ABORTED; }
++    return CELL_OK;
++}
+ 
+-    if (ctx >= SCE_NP_TUS_MAX_CTX || !s_ctx[ctx].in_use)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
++/* *result = the request's result; CELL_OK. */
++s32 sceNpTusWaitAsync(s32 transId, u32 result)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    tus_ctx* t = ctx_get(transId, TUS_TRANS);
++    if (!t) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    if (result) vm_write32(result, (u32)(t->done ? t->result : 0));
++    return CELL_OK;
++}
+ 
+-    s_ctx[ctx].in_use = 0;
++/* 0 and *result once finished, 1 while running (ASSUMPTION: a transaction that never got a request counts as
++ * running, as nothing finished). */
++s32 sceNpTusPollAsync(s32 transId, u32 result)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    tus_ctx* t = ctx_get(transId, TUS_TRANS);
++    if (!t) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    if (!t->done) return 1;
++    if (result) vm_write32(result, (u32)t->result);
+     return CELL_OK;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * Variable operations
++ * Requests
+  * -----------------------------------------------------------------------*/
+ 
+-s32 sceNpTusSetVariable(SceNpTusCtx ctx, u32 slotId, s64 variable,
+-                          void* option)
++/* The common tail: initialised, the target, the sign-in, the transaction; then the server's answer. */
++static s32 tus_request(s32 transId, u32 target, int async)
+ {
+-    (void)ctx; (void)option;
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!target) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (!np_signed_in()) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ONLINE_ID;
++    tus_ctx* t = ctx_get(transId, TUS_TRANS);
++    if (!t) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ID;
++    t->done = 1;
++    t->result = (s32)SCE_NP_COMMUNITY_SERVER_ERROR_NO_SUCH_TITLE;
++    return async ? CELL_OK : t->result;
++}
+ 
+-    printf("[sceNpTus] SetVariable(slot=%u, val=%lld)\n",
+-           slotId, (long long)variable);
++static int slots_valid(u32 slotIdArray, s32 n)
++{
++    for (s32 i = 0; i < n; i++)
++        if ((s32)vm_read32(slotIdArray + 4u * (u32)i) < 0) return 0;
++    return 1;
++}
+ 
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
+-    if (slotId >= SCE_NP_TUS_MAX_SLOT_NUM)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
+-
+-    s_variables[slotId].valid = 1;
+-    s_variables[slotId].value = variable;
+-    s_variables[slotId].timestamp++;
+-    return CELL_OK;
++/* (transId, const SceNpId* targetNpId, const SceNpTusSlotId* slotIdArray, const s64* variableArray, arrayNum, option) */
++static s32 set_multislot_variable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray, s32 arrayNum,
++                                  u32 option, int async)
++{
++    if (!slotIdArray || !variableArray) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (arrayNum == 0 || option) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (arrayNum > SCE_NP_TUS_MAX_SLOT_NUM_PER_TRANS) return (s32)SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID;
++    if (!slots_valid(slotIdArray, arrayNum)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    return tus_request(transId, targetNpId, async);
+ }
+ 
+-/* SceNpTusVariable is { s64 variable; u64 lastChangedDate; char ownerNpId[20];
+- * u8 hasData; u8 reserved[3]; }. The two 64-bit fields rule out a
+- * word-at-a-time copy -- big-endian puts the high word first and a
+- * little-endian host the low one -- so it goes out field by field. */
+-static void tus_variable_store(u32 ea, const SceNpTusVariable* h)
+-{
+-    if (!ea)
+-        return;
+-    vm_write64(ea + (u32)offsetof(SceNpTusVariable, variable),        (u64)h->variable);
+-    vm_write64(ea + (u32)offsetof(SceNpTusVariable, lastChangedDate), h->lastChangedDate);
+-    memcpy(vm_base + ea + offsetof(SceNpTusVariable, ownerNpId),
+-           h->ownerNpId, sizeof(h->ownerNpId));
+-    vm_write8(ea + (u32)offsetof(SceNpTusVariable, hasData), h->hasData);
+-    for (u32 i = 0; i < sizeof(h->reserved); i++)
+-        vm_write8(ea + (u32)offsetof(SceNpTusVariable, reserved) + i, 0);
+-}
+-
+-s32 sceNpTusGetVariable(SceNpTusCtx ctx, const void* npId, u32 slotId,
+-                          SceNpTusVariable* outVariable, void* option)
+-{
+-    (void)ctx; (void)npId; (void)option;
+-
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
+-    if (slotId >= SCE_NP_TUS_MAX_SLOT_NUM || !outVariable)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
+-
+-    if (!s_variables[slotId].valid)
+-        return (s32)SCE_NP_TUS_ERROR_DATA_NOT_FOUND;
+-
+-    SceNpTusVariable hv;
+-    memset(&hv, 0, sizeof(hv));
+-    hv.variable        = s_variables[slotId].value;
+-    hv.lastChangedDate = s_variables[slotId].timestamp;
+-    hv.hasData         = 1;
+-    strncpy(hv.ownerNpId, "ps3recomp_user", sizeof(hv.ownerNpId) - 1);
+-    tus_variable_store(GUEST_EA(outVariable), &hv);
+-    return CELL_OK;
++s32 sceNpTusSetMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray, s32 arrayNum, u32 option)
++{
++    return set_multislot_variable(transId, targetNpId, slotIdArray, variableArray, arrayNum, option, 0);
+ }
+ 
+-s32 sceNpTusTryAndSetVariable(SceNpTusCtx ctx, u32 slotId,
+-                                s32 opType, s64 variable,
+-                                SceNpTusVariable* outVariable, void* option)
++s32 sceNpTusSetMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray, s32 arrayNum, u32 option)
+ {
+-    (void)opType;
+-    s32 rc = sceNpTusSetVariable(ctx, slotId, variable, option);
+-    if (rc == CELL_OK && outVariable) {
+-        sceNpTusGetVariable(ctx, NULL, slotId, outVariable, option);
+-    }
+-    return rc;
++    return set_multislot_variable(transId, targetNpId, slotIdArray, variableArray, arrayNum, option, 1);
+ }
+ 
+-s32 sceNpTusAddAndGetVariable(SceNpTusCtx ctx, u32 slotId,
+-                                s64 inVariable, SceNpTusVariable* outVariable,
+-                                void* option)
++/* (transId, targetNpId*, slotIdArray*, SceNpTusVariable* variableArray, variableArraySize, arrayNum, option) */
++static s32 get_multislot_variable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray,
++                                  u32 variableArraySize, s32 arrayNum, u32 option, int async)
+ {
+-    if (slotId >= SCE_NP_TUS_MAX_SLOT_NUM)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
++    if (!slotIdArray || !variableArray) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (arrayNum == 0 || option) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (variableArraySize != (u32)arrayNum * SCE_NP_TUS_VARIABLE_SIZE) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    if (arrayNum > SCE_NP_TUS_MAX_SLOT_NUM_PER_TRANS) return (s32)SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID;
++    if (!slots_valid(slotIdArray, arrayNum)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    return tus_request(transId, targetNpId, async);
++}
+ 
+-    s64 current = s_variables[slotId].valid ? s_variables[slotId].value : 0;
+-    return sceNpTusTryAndSetVariable(ctx, slotId, 0, current + inVariable,
+-                                      outVariable, option);
++s32 sceNpTusGetMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray,
++                                 u32 variableArraySize, s32 arrayNum, u32 option)
++{
++    return get_multislot_variable(transId, targetNpId, slotIdArray, variableArray, variableArraySize, arrayNum, option, 0);
+ }
+ 
+-s32 sceNpTusDeleteMultiSlotVariable(SceNpTusCtx ctx, const u32* slotIds,
+-                                      u32 slotNum, void* option)
++s32 sceNpTusGetMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray,
++                                      u32 variableArraySize, s32 arrayNum, u32 option)
+ {
+-    (void)ctx; (void)option;
++    return get_multislot_variable(transId, targetNpId, slotIdArray, variableArray, variableArraySize, arrayNum, option, 1);
++}
+ 
+-    if (!slotIds)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
++/* (transId, const SceNpId* targetNpIdArray, slotId, variableArray*, variableArraySize, arrayNum, option) */
++static s32 get_multiuser_variable(s32 transId, u32 targetNpIdArray, s32 slotId, u32 variableArray,
++                                  u32 variableArraySize, s32 arrayNum, u32 option, int async)
++{
++    if (!variableArray) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (arrayNum == 0 || option) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (arrayNum > SCE_NP_TUS_MAX_USER_NUM_PER_TRANS) return (s32)SCE_NP_COMMUNITY_ERROR_TOO_MANY_NPID;
++    if (variableArraySize != (u32)arrayNum * SCE_NP_TUS_VARIABLE_SIZE) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    if (slotId < 0) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    return tus_request(transId, targetNpIdArray, async);
++}
+ 
+-    for (u32 i = 0; i < slotNum; i++) {
+-        if (slotIds[i] < SCE_NP_TUS_MAX_SLOT_NUM)
+-            s_variables[slotIds[i]].valid = 0;
+-    }
+-    return CELL_OK;
++s32 sceNpTusGetMultiUserVariable(s32 transId, u32 targetNpIdArray, s32 slotId, u32 variableArray,
++                                 u32 variableArraySize, s32 arrayNum, u32 option)
++{
++    return get_multiuser_variable(transId, targetNpIdArray, slotId, variableArray, variableArraySize, arrayNum, option, 0);
+ }
+ 
+-/* ---------------------------------------------------------------------------
+- * Data operations
+- * -----------------------------------------------------------------------*/
++s32 sceNpTusGetMultiUserVariableAsync(s32 transId, u32 targetNpIdArray, s32 slotId, u32 variableArray,
++                                      u32 variableArraySize, s32 arrayNum, u32 option)
++{
++    return get_multiuser_variable(transId, targetNpIdArray, slotId, variableArray, variableArraySize, arrayNum, option, 1);
++}
+ 
+-s32 sceNpTusSetData(SceNpTusCtx ctx, u32 slotId,
+-                      const void* data, u32 dataSize,
+-                      const SceNpTusDataInfo* info, void* option)
+-{
+-    (void)ctx; (void)option;
+-
+-    printf("[sceNpTus] SetData(slot=%u, size=%u)\n", slotId, dataSize);
+-
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
+-    if (slotId >= SCE_NP_TUS_MAX_SLOT_NUM || !data)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
+-
+-    /* Free existing data */
+-    if (s_data[slotId].data) {
+-        free(s_data[slotId].data);
+-        s_data[slotId].data = NULL;
+-    }
+-
+-    s_data[slotId].data = (u8*)malloc(dataSize);
+-    if (!s_data[slotId].data)
+-        return (s32)SCE_NP_TUS_ERROR_OUT_OF_MEMORY;
+-
+-    memcpy(s_data[slotId].data, GUEST_PTR(data, const void*), dataSize);
+-    s_data[slotId].dataSize = dataSize;
+-    s_data[slotId].valid = 1;
+-
+-    if (info) {
+-        s_data[slotId].info.infoSize = vm_read32(GUEST_EA(info));
+-        memcpy(s_data[slotId].info.data,
+-               vm_base + GUEST_EA(info) + offsetof(SceNpTusDataInfo, data),
+-               sizeof(s_data[slotId].info.data));
+-    } else
+-        memset(&s_data[slotId].info, 0, sizeof(SceNpTusDataInfo));
++/* (transId, targetNpId*, slotId, s64 inVariable, SceNpTusVariable* outVariable, outVariableSize, OptParam* option) */
++static s32 add_and_get_variable(s32 transId, u32 targetNpId, s32 slotId, u32 outVariableSize, u32 option, int async)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (slotId < 0) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if ((option && vm_read32(option) != SCE_NP_TUS_ADD_AND_GET_OPT_SIZE) || outVariableSize != SCE_NP_TUS_VARIABLE_SIZE)
++        return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    return tus_request(transId, targetNpId, async);
++}
+ 
+-    return CELL_OK;
++s32 sceNpTusAddAndGetVariable(s32 transId, u32 targetNpId, s32 slotId, s64 inVariable, u32 outVariable,
++                              u32 outVariableSize, u32 option)
++{
++    (void)inVariable; (void)outVariable;
++    return add_and_get_variable(transId, targetNpId, slotId, outVariableSize, option, 0);
+ }
+ 
+-s32 sceNpTusGetData(SceNpTusCtx ctx, const void* npId, u32 slotId,
+-                      void* data, u32 dataSize, u32* outDataSize,
+-                      SceNpTusDataInfo* outInfo, void* option)
+-{
+-    (void)ctx; (void)npId; (void)option;
+-
+-    if (!s_initialized)
+-        return (s32)SCE_NP_TUS_ERROR_NOT_INITIALIZED;
+-    if (slotId >= SCE_NP_TUS_MAX_SLOT_NUM)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
+-
+-    if (!s_data[slotId].valid)
+-        return (s32)SCE_NP_TUS_ERROR_DATA_NOT_FOUND;
+-
+-    u32 copySize = s_data[slotId].dataSize;
+-    if (copySize > dataSize)
+-        copySize = dataSize;
+-
+-    if (data && copySize > 0)
+-        memcpy(GUEST_PTR(data, void*), s_data[slotId].data, copySize);
+-
+-    if (outDataSize)
+-        vm_write32((u32)(uintptr_t)outDataSize, (u32)s_data[slotId].dataSize);
+-
+-    if (outInfo) {
+-        vm_write32(GUEST_EA(outInfo), s_data[slotId].info.infoSize);
+-        memcpy(vm_base + GUEST_EA(outInfo) + offsetof(SceNpTusDataInfo, data),
+-               s_data[slotId].info.data, sizeof(s_data[slotId].info.data));
+-    }
++s32 sceNpTusAddAndGetVariableAsync(s32 transId, u32 targetNpId, s32 slotId, s64 inVariable, u32 outVariable,
++                                   u32 outVariableSize, u32 option)
++{
++    (void)inVariable; (void)outVariable;
++    return add_and_get_variable(transId, targetNpId, slotId, outVariableSize, option, 1);
++}
+ 
+-    return CELL_OK;
++/* (transId, targetNpId*, slotId, opeType, s64 variable, resultVariable*, resultVariableSize, OptParam* option) */
++static s32 try_and_set_variable(s32 transId, u32 targetNpId, s32 slotId, u32 resultVariable,
++                                u32 resultVariableSize, u32 option, int async)
++{
++    if (!s_initialized) return (s32)SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
++    if (!resultVariable) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (slotId < 0) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if ((option && vm_read32(option) != SCE_NP_TUS_TRY_AND_SET_OPT_SIZE) || resultVariableSize != SCE_NP_TUS_VARIABLE_SIZE)
++        return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    return tus_request(transId, targetNpId, async);
+ }
+ 
+-s32 sceNpTusDeleteMultiSlotData(SceNpTusCtx ctx, const u32* slotIds,
+-                                  u32 slotNum, void* option)
++s32 sceNpTusTryAndSetVariable(s32 transId, u32 targetNpId, s32 slotId, s32 opeType, s64 variable,
++                              u32 resultVariable, u32 resultVariableSize, u32 option)
+ {
+-    (void)ctx; (void)option;
++    (void)opeType; (void)variable;
++    return try_and_set_variable(transId, targetNpId, slotId, resultVariable, resultVariableSize, option, 0);
++}
+ 
+-    if (!slotIds)
+-        return (s32)SCE_NP_TUS_ERROR_INVALID_ARGUMENT;
++s32 sceNpTusTryAndSetVariableAsync(s32 transId, u32 targetNpId, s32 slotId, s32 opeType, s64 variable,
++                                   u32 resultVariable, u32 resultVariableSize, u32 option)
++{
++    (void)opeType; (void)variable;
++    return try_and_set_variable(transId, targetNpId, slotId, resultVariable, resultVariableSize, option, 1);
++}
+ 
+-    for (u32 i = 0; i < slotNum; i++) {
+-        if (slotIds[i] < SCE_NP_TUS_MAX_SLOT_NUM && s_data[slotIds[i]].valid) {
+-            free(s_data[slotIds[i]].data);
+-            s_data[slotIds[i]].data = NULL;
+-            s_data[slotIds[i]].valid = 0;
+-        }
+-    }
+-    return CELL_OK;
++/* (transId, targetNpId*, slotIdArray*, arrayNum, option) */
++static s32 delete_multislot_variable(s32 transId, u32 targetNpId, u32 slotIdArray, s32 arrayNum, u32 option, int async)
++{
++    if (!slotIdArray) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (arrayNum == 0 || option) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (arrayNum > SCE_NP_TUS_MAX_SLOT_NUM_PER_TRANS) return (s32)SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID;
++    if (!slots_valid(slotIdArray, arrayNum)) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    return tus_request(transId, targetNpId, async);
+ }
+ 
+-/* ---------------------------------------------------------------------------
+- * Async polling (all operations are synchronous in this stub)
+- * -----------------------------------------------------------------------*/
++s32 sceNpTusDeleteMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, s32 arrayNum, u32 option)
++{
++    return delete_multislot_variable(transId, targetNpId, slotIdArray, arrayNum, option, 0);
++}
+ 
+-s32 sceNpTusPollAsync(SceNpTusRequestId reqId, s32* result)
++s32 sceNpTusDeleteMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, s32 arrayNum, u32 option)
+ {
+-    (void)reqId;
+-    if (result) vm_write32((u32)(uintptr_t)result, (u32)0); /* always done */
+-    return CELL_OK;
++    return delete_multislot_variable(transId, targetNpId, slotIdArray, arrayNum, option, 1);
+ }
+ 
+-s32 sceNpTusWaitAsync(SceNpTusRequestId reqId, s32* result)
++/* (transId, targetNpId*, slotId, SceNpTusDataStatus* dataStatus, dataStatusSize, void* data, recvSize, option).
++ * The target is checked first here ([src:rpcs3-scenptus]). */
++static s32 get_data(s32 transId, u32 targetNpId, s32 slotId, u32 dataStatusSize, u32 option, int async)
+ {
+-    (void)reqId;
+-    if (result) vm_write32((u32)(uintptr_t)result, (u32)0);
+-    return CELL_OK;
++    if (!targetNpId) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if (option || slotId < 0) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
++    if (dataStatusSize != SCE_NP_TUS_DATA_STATUS_SIZE) return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    return tus_request(transId, targetNpId, async);
+ }
+ 
+-s32 sceNpTusAbortRequest(SceNpTusRequestId reqId)
++s32 sceNpTusGetData(s32 transId, u32 targetNpId, s32 slotId, u32 dataStatus, u32 dataStatusSize, u32 data,
++                    u32 recvSize, u32 option)
+ {
+-    (void)reqId;
+-    return CELL_OK;
++    (void)dataStatus; (void)data; (void)recvSize;
++    return get_data(transId, targetNpId, slotId, dataStatusSize, option, 0);
++}
++
++s32 sceNpTusGetDataAsync(s32 transId, u32 targetNpId, s32 slotId, u32 dataStatus, u32 dataStatusSize, u32 data,
++                         u32 recvSize, u32 option)
++{
++    (void)dataStatus; (void)data; (void)recvSize;
++    return get_data(transId, targetNpId, slotId, dataStatusSize, option, 1);
++}
++
++/* (transId, targetNpId*, slotId, totalSize, sendSize, const void* data, const SceNpTusDataInfo* info, infoStructSize,
++ *  SceNpTusSetDataOptParam* option) */
++s32 np_tus_set_data(s32 transId, u32 targetNpId, s32 slotId, u32 totalSize, u32 sendSize, u32 data, u32 info,
++                    u32 infoStructSize, u32 option, int async)
++{
++    (void)sendSize;
++    if (slotId < 0 || !data || !totalSize) return (s32)SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
++    if ((option && vm_read32(option) != SCE_NP_TUS_SET_DATA_OPT_SIZE) || (info && infoStructSize != SCE_NP_TUS_DATA_INFO_SIZE))
++        return (s32)SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
++    return tus_request(transId, targetNpId, async);
++}
++
++static u64 tus_stack_arg(ppu_context* ctx, int n)   /* n >= 9 */
++{
++    return vm_read64((u32)ctx->gpr[1] + 112u + 8u * (u32)(n - 9));
++}
++
++static void tus_set_data_ctx(ppu_context* ctx, int async)
++{
++    s32 r = np_tus_set_data((s32)ctx->gpr[3], (u32)ctx->gpr[4], (s32)ctx->gpr[5], (u32)ctx->gpr[6], (u32)ctx->gpr[7],
++                            (u32)ctx->gpr[8], (u32)ctx->gpr[9], (u32)ctx->gpr[10], (u32)tus_stack_arg(ctx, 9), async);
++    ctx->gpr[3] = (u64)(s64)r;
++}
++
++static void hle_tus_set_data(ppu_context* ctx)       { tus_set_data_ctx(ctx, 0); }
++static void hle_tus_set_data_async(ppu_context* ctx) { tus_set_data_ctx(ctx, 1); }
++
++extern void ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
++
++void np_tus_register_ctx(void)
++{
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpTusSetData"), "sceNpTusSetData", hle_tus_set_data);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpTusSetDataAsync"), "sceNpTusSetDataAsync", hle_tus_set_data_async);
+ }
+--- a/libs/network/sceNpTus.h
++++ b/libs/network/sceNpTus.h
+@@ -1,8 +1,11 @@
+ /*
+  * ps3recomp - sceNpTus HLE
+  *
+- * NP Title User Storage: per-user cloud storage for game data
+- * (leaderboards, stats, etc.). Offline stub that stores data locally.
++ * NP Title User Storage: per-user variables and data kept on the PSN servers.
++ *
++ * R&C 7032: rewritten to the SDK's API (title contexts, transaction contexts, the Async calls, PollAsync/WaitAsync);
++ * the earlier file had a made-up local API (CreateCtx, SetVariable, ...) under some of the real names. The model is a
++ * console without PSN: see sceNpTus.c.
+  */
+ 
+ #ifndef PS3RECOMP_SCE_NP_TUS_H
+@@ -10,88 +13,68 @@
+ 
+ #include "ps3emu/ps3types.h"
+ #include "ps3emu/error_codes.h"
++#include "sceNp.h"   /* SCE_NP_COMMUNITY_ERROR_*: TUS answers with the community codes ([src:rpcs3-scenptus]) */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+-/* ---------------------------------------------------------------------------
+- * Error codes
+- * -----------------------------------------------------------------------*/
+-#define SCE_NP_TUS_ERROR_NOT_INITIALIZED       0x80022E01
+-#define SCE_NP_TUS_ERROR_ALREADY_INITIALIZED   0x80022E02
+-#define SCE_NP_TUS_ERROR_INVALID_ARGUMENT      0x80022E03
+-#define SCE_NP_TUS_ERROR_OUT_OF_MEMORY         0x80022E04
+-#define SCE_NP_TUS_ERROR_NOT_CONNECTED         0x80022E05
+-#define SCE_NP_TUS_ERROR_DATA_NOT_FOUND        0x80022E06
+-#define SCE_NP_TUS_ERROR_TIMEOUT               0x80022E07
+-
+-/* ---------------------------------------------------------------------------
+- * Constants
+- * -----------------------------------------------------------------------*/
+-#define SCE_NP_TUS_MAX_SLOT_NUM           64
+-#define SCE_NP_TUS_DATA_INFO_MAX_SIZE     384
+-#define SCE_NP_TUS_MAX_CTX               8
+-
+-/* ---------------------------------------------------------------------------
+- * Types
+- * -----------------------------------------------------------------------*/
+-typedef u32 SceNpTusCtx;
+-typedef u32 SceNpTusRequestId;
+-
+-typedef struct SceNpTusVariable {
+-    s64 variable;
+-    u64 lastChangedDate;
+-    char ownerNpId[20];
+-    u8  hasData;
+-    u8  reserved[3];
+-} SceNpTusVariable;
+-
+-typedef struct SceNpTusDataInfo {
+-    u32 infoSize;
+-    u8  data[SCE_NP_TUS_DATA_INFO_MAX_SIZE];
+-} SceNpTusDataInfo;
+-
+-/* ---------------------------------------------------------------------------
+- * Functions
+- * -----------------------------------------------------------------------*/
++/* Constants ([src:rpcs3-scenptus]) */
++#define SCE_NP_TUS_DATA_INFO_MAX_SIZE        384
++#define SCE_NP_TUS_MAX_CTX_NUM               32
++#define SCE_NP_TUS_MAX_SLOT_NUM_PER_TRANS    64
++#define SCE_NP_TUS_MAX_USER_NUM_PER_TRANS    101
++
++/* Guest structure sizes (SDK ABI) */
++#define SCE_NP_TUS_VARIABLE_SIZE             120   /* SceNpTusVariable */
++#define SCE_NP_TUS_DATA_INFO_SIZE            392   /* SceNpTusDataInfo { u32 infoSize; pad[4]; data[384] } */
++#define SCE_NP_TUS_DATA_STATUS_SIZE          488   /* SceNpTusDataStatus */
++#define SCE_NP_TUS_ADD_AND_GET_OPT_SIZE      12    /* SceNpTusAddAndGetVariableOptParam */
++#define SCE_NP_TUS_TRY_AND_SET_OPT_SIZE      16    /* SceNpTusTryAndSetVariableOptParam */
++#define SCE_NP_TUS_SET_DATA_OPT_SIZE         12    /* SceNpTusSetDataOptParam */
+ 
+-/* Lifecycle */
+-s32 sceNpTusInit(s32 prio, s32 stackSize, void* option);
++/* Every pointer is a guest address. */
++s32 sceNpTusInit(s32 prio);
+ s32 sceNpTusTerm(void);
+ 
+-/* Context management */
+-s32 sceNpTusCreateCtx(SceNpTusCtx* ctx);
+-s32 sceNpTusDestroyCtx(SceNpTusCtx ctx);
+-
+-/* Variable operations (leaderboard scores, etc.) */
+-s32 sceNpTusSetVariable(SceNpTusCtx ctx, u32 slotId, s64 variable,
+-                          void* option);
+-s32 sceNpTusGetVariable(SceNpTusCtx ctx, const void* npId, u32 slotId,
+-                          SceNpTusVariable* outVariable, void* option);
+-s32 sceNpTusTryAndSetVariable(SceNpTusCtx ctx, u32 slotId,
+-                                s32 opType, s64 variable,
+-                                SceNpTusVariable* outVariable, void* option);
+-s32 sceNpTusAddAndGetVariable(SceNpTusCtx ctx, u32 slotId,
+-                                s64 inVariable, SceNpTusVariable* outVariable,
+-                                void* option);
+-s32 sceNpTusDeleteMultiSlotVariable(SceNpTusCtx ctx, const u32* slotIds,
+-                                      u32 slotNum, void* option);
+-
+-/* Data operations (binary blobs) */
+-s32 sceNpTusSetData(SceNpTusCtx ctx, u32 slotId,
+-                      const void* data, u32 dataSize,
+-                      const SceNpTusDataInfo* info, void* option);
+-s32 sceNpTusGetData(SceNpTusCtx ctx, const void* npId, u32 slotId,
+-                      void* data, u32 dataSize, u32* outDataSize,
+-                      SceNpTusDataInfo* outInfo, void* option);
+-s32 sceNpTusDeleteMultiSlotData(SceNpTusCtx ctx, const u32* slotIds,
+-                                  u32 slotNum, void* option);
+-
+-/* Poll for async completion */
+-s32 sceNpTusPollAsync(SceNpTusRequestId reqId, s32* result);
+-s32 sceNpTusWaitAsync(SceNpTusRequestId reqId, s32* result);
+-s32 sceNpTusAbortRequest(SceNpTusRequestId reqId);
++s32 sceNpTusCreateTitleCtx(u32 communicationId, u32 passphrase, u32 selfNpId);
++s32 sceNpTusDestroyTitleCtx(s32 titleCtxId);
++s32 sceNpTusCreateTransactionCtx(s32 titleCtxId);
++s32 sceNpTusDestroyTransactionCtx(s32 transId);
++s32 sceNpTusSetTimeout(s32 ctxId, u32 timeout);
++s32 sceNpTusAbortTransaction(s32 transId);
++s32 sceNpTusWaitAsync(s32 transId, u32 result);
++s32 sceNpTusPollAsync(s32 transId, u32 result);
++
++s32 sceNpTusSetMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray, s32 arrayNum, u32 option);
++s32 sceNpTusSetMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray, s32 arrayNum, u32 option);
++s32 sceNpTusGetMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray,
++                                 u32 variableArraySize, s32 arrayNum, u32 option);
++s32 sceNpTusGetMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, u32 variableArray,
++                                      u32 variableArraySize, s32 arrayNum, u32 option);
++s32 sceNpTusGetMultiUserVariable(s32 transId, u32 targetNpIdArray, s32 slotId, u32 variableArray,
++                                 u32 variableArraySize, s32 arrayNum, u32 option);
++s32 sceNpTusGetMultiUserVariableAsync(s32 transId, u32 targetNpIdArray, s32 slotId, u32 variableArray,
++                                      u32 variableArraySize, s32 arrayNum, u32 option);
++s32 sceNpTusAddAndGetVariable(s32 transId, u32 targetNpId, s32 slotId, s64 inVariable, u32 outVariable,
++                              u32 outVariableSize, u32 option);
++s32 sceNpTusAddAndGetVariableAsync(s32 transId, u32 targetNpId, s32 slotId, s64 inVariable, u32 outVariable,
++                                   u32 outVariableSize, u32 option);
++s32 sceNpTusTryAndSetVariable(s32 transId, u32 targetNpId, s32 slotId, s32 opeType, s64 variable,
++                              u32 resultVariable, u32 resultVariableSize, u32 option);
++s32 sceNpTusTryAndSetVariableAsync(s32 transId, u32 targetNpId, s32 slotId, s32 opeType, s64 variable,
++                                   u32 resultVariable, u32 resultVariableSize, u32 option);
++s32 sceNpTusDeleteMultiSlotVariable(s32 transId, u32 targetNpId, u32 slotIdArray, s32 arrayNum, u32 option);
++s32 sceNpTusDeleteMultiSlotVariableAsync(s32 transId, u32 targetNpId, u32 slotIdArray, s32 arrayNum, u32 option);
++s32 sceNpTusGetData(s32 transId, u32 targetNpId, s32 slotId, u32 dataStatus, u32 dataStatusSize, u32 data,
++                    u32 recvSize, u32 option);
++s32 sceNpTusGetDataAsync(s32 transId, u32 targetNpId, s32 slotId, u32 dataStatus, u32 dataStatusSize, u32 data,
++                         u32 recvSize, u32 option);
++/* SetData and SetDataAsync take nine arguments (the option on the stack): context handlers, registered by
++ * np_tus_register_ctx(); this is their common body. */
++s32 np_tus_set_data(s32 transId, u32 targetNpId, s32 slotId, u32 totalSize, u32 sendSize, u32 data, u32 info,
++                    u32 infoStructSize, u32 option, int async);
++void np_tus_register_ctx(void);
+ 
+ #ifdef __cplusplus
+ }
+--- a/libs/network/tests/test_np_commerce2.c
++++ b/libs/network/tests/test_np_commerce2.c
+@@ -24,6 +24,7 @@
+ void spu_lockline_unlock(void) {}
+ void spu_coh_notify_write(uint32_t addr) { (void)addr; }
+ void ps3_ww_report_inline(uint32_t addr, uint64_t val, int width) { (void)addr; (void)val; (void)width; }
++int np_signed_in(void) { return 0; }   /* sceNp.c; R&C 7032: the product browse asks it */
+ 
+ typedef int32_t (*create_ctx5_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+ 
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -612,6 +612,7 @@
+ extern "C" void ps3_net_host_register(unsigned int (*guest_alloc)(unsigned int, unsigned int));
+ extern "C" int ps3_net_online(void);   /* libs/network/net_policy.c (KZ3 4001) */
+ extern "C" void np_score_register_ctx(void);   /* libs/network/sceNpScore.c */
++extern "C" void np_tus_register_ctx(void);     /* libs/network/sceNpTus.c (R&C 7032) */
+ extern "C" void cellSaveData_register_ctx_handlers(void); /* libs/system/cellSaveData.c */
+ extern "C" void avconf_register_ctx(void);     /* libs/misc/cellAvconfExt.c */
+ static uint32_t g_net_errno_ea = 0;
+@@ -944,6 +945,7 @@
+     /* sceNpScore ranking calls take up to 15 arguments: the ones past r10
+      * come off the stack, so they need the full context. */
+     np_score_register_ctx();
++    np_tus_register_ctx();
+     /* cellSaveDataUserAutoLoad/UserAutoSave take nine arguments; the ninth
+      * (userdata) is on the guest stack, so they need the full context too.
+      * Registered here so no project has to remember the call. */

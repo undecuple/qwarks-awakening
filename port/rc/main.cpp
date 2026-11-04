@@ -1,8 +1,8 @@
 /* Ratchet & Clank port host (one exe per game, port/rc/<game>/ for game glue). From the the game port's
  * port/tlp/main.cpp at its a46f947 (itself from KZ2 bffa40a and KZ3 78bf574 port/kz3/main.cpp, based on ps3recomp
  * templates/project, MIT licence: third_party/ps3recomp/LICENSE): the game-independent boot. RC_* switches are RC_*
- * here; the game's display-buffer scan (its own guest addresses) is left out. rc_log.h is a stdio stand-in for KZ3's 
- * logger. Game-specific code goes in port/rc/<game>/, never here. */
+ * here; the game's display-buffer scan (its own guest addresses) is left out. rc_log.h wraps KZ3's 
+ * logger (port/common/log). Game-specific code goes in port/rc/<game>/, never here. */
 #include "ppu_recomp.h"
 
 /* The Win32 names -- Sleep, GetTickCount64, CreateThread, InterlockedIncrement,
@@ -23,7 +23,8 @@
 #include <unistd.h>
 #endif
 #include <sys/stat.h>
-#include "rc_log.h"   /* stdio stand-in for KZ3's logger */
+#include "rc_log.h"   /* the logger (port/common/log, KZ3's logger): file log, crash files, header/end block */
+#include "rc_log_ident.h"   /* generated: game id/title/title ID/version/commit for the log header */
 extern "C" void edat_set_cache_dir(const char* dir);   /* libs/filesystem/edat.c, patch 5002 */
 
 #ifdef _WIN32
@@ -266,7 +267,7 @@ static DWORD WINAPI rc_close_watchdog(LPVOID)
     const int s = (e && atoi(e) > 0) ? atoi(e) : 15;
     Sleep((DWORD)s * 1000u);
     RC_LOGE("exit", "window-close shutdown did not finish in %d s: terminating (exit code 3)", s);
-    rc_log_shutdown();
+    rc_log_exit(3, "window closed, but the shutdown hung: watchdog terminated the process");
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(), 3);
     return 0;
@@ -281,7 +282,7 @@ static void rc_exit_on_window_close(void)
     if (s_rsx_live) rsx_live_draw_shutdown();
     QueryPerformanceCounter(&t1);
     RC_LOGI("exit", "clean exit after %.0f ms (exit code 0)", (double)(t1.QuadPart - t0.QuadPart) * 1e3 / (double)f.QuadPart);
-    rc_log_shutdown();
+    rc_log_exit(0, "window closed by the player, clean shutdown");
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(), 0);
 }
@@ -303,6 +304,55 @@ static DWORD WINAPI rc_test_close(LPVOID)
     int n = 0;
     EnumWindows(rc_test_close_enum, (LPARAM)&n);
     RC_LOGI("test", "RC_TEST_CLOSE=%s: WM_CLOSE posted to %d window(s)", e, n);
+    return 0;
+}
+
+/* The player's error box for a fatal error or a crash (from KZ3 299f1c83 port/kz3/main.cpp kz3_show_error, with the
+ * plain system box only: KZ3's own notice window is not carried). Test runs (RC_LOG_STDOUT=1, hidden display) and
+ * RC_NO_ERROR_BOX=1 never block on a dialog; RC_ERROR_NOTICE=1 forces it on. */
+static int rc_error_box_wanted(void)
+{
+    const char* e = getenv("RC_NO_ERROR_BOX");
+    if (e && *e && *e != '0') return 0;
+    e = getenv("RC_ERROR_NOTICE");
+    if (e && *e == '1') return 1;
+    e = getenv("RC_LOG_STDOUT");
+    return !(e && *e == '1');
+}
+
+static void rc_show_error(const char* what, const char* crash_file)
+{
+    if (!rc_error_box_wanted()) return;
+    char msg[1600];
+    snprintf(msg, sizeof msg, "Qwark's Awakening stopped: %s\n\nLog: %s\nCrash report: %s", what, kz3_log_file_path(),
+             crash_file && *crash_file ? crash_file : "(none)");
+    MessageBoxA(NULL, msg, "Qwark's Awakening", MB_OK | MB_ICONERROR | MB_TOPMOST);
+}
+
+static int rc_fatal_box(const char* message, const char* crash_file, void*)
+{
+    rc_show_error(message, crash_file);
+    return 0;   /* stop the process (exit code KZ3_LOG_FATAL_EXIT) */
+}
+
+/* Called by ppu_crash_report (patch 2030) after the crash file and the minidump are written. */
+extern "C" void kz3_crash_notify(const char* crash_file)
+{
+    rc_show_error("unexpected error (unhandled exception)", crash_file);
+    rc_log_exit(-1, "crash (unhandled exception)");
+}
+
+/* Test triggers for the fatal paths (from KZ3's KZ3_TEST_FATAL / KZ3_TEST_CRASH): RC_TEST_FATAL=<s> calls
+ * kz3_log_fatal after s seconds, RC_TEST_CRASH=<s> makes a host access violation (the unhandled-exception path). */
+static DWORD WINAPI rc_test_fault(LPVOID p)
+{
+    const int crash = (int)(intptr_t)p;
+    const char* e = getenv(crash ? "RC_TEST_CRASH" : "RC_TEST_FATAL");
+    Sleep((DWORD)(atoi(e) * 1000));
+    rc_log_set_thread_label("test");
+    if (!crash) { kz3_log_fatal("test", "RC_TEST_FATAL=%s: forced fatal error", e); return 0; }
+    RC_LOGE("test", "RC_TEST_CRASH=%s: forcing a host access violation", e);
+    *(volatile int*)(uintptr_t)8 = 1;
     return 0;
 }
 
@@ -539,6 +589,10 @@ static void start_diagnostics(void)
     if (wd && *wd) CreateThread(NULL, 0, rc_watchdog, (LPVOID)wd, 0, NULL);
     const char* tc = getenv("RC_TEST_CLOSE");   /* scripted window close for test runs */
     if (tc && *tc) CreateThread(NULL, 0, rc_test_close, NULL, 0, NULL);
+    const char* tf = getenv("RC_TEST_FATAL");   /* forced fatal error / crash, for the log and crash-file tests */
+    if (tf && *tf) CreateThread(NULL, 0, rc_test_fault, (LPVOID)0, 0, NULL);
+    const char* tx = getenv("RC_TEST_CRASH");
+    if (tx && *tx) CreateThread(NULL, 0, rc_test_fault, (LPVOID)1, 0, NULL);
 #ifdef _WIN32
 #endif
 #ifdef _WIN32
@@ -562,6 +616,16 @@ int main(int argc, char** argv)
     if (argc < 2) {
         printf("usage: %s <PPU ELF>\n", argv[0]);
         return 2;
+    }
+
+    {   /* the log: <exe folder>/logs/<game id>/ (RC_LOG_DIR overrides); the header block is written here */
+        rc_run_info ri = {};
+        ri.product = "Qwark's Awakening";   /* tools/release/names.py PRODUCT */
+        ri.version = RC_LOG_PORT_VERSION; ri.commit = RC_LOG_GIT_COMMIT;
+        ri.game_id = RC_LOG_GAME_ID; ri.title = RC_LOG_GAME_TITLE; ri.title_id = RC_LOG_TITLE_ID;
+        ri.update_version = RC_LOG_UPDATE_VERSION;
+        rc_log_open(&ri, 0);
+        kz3_log_set_fatal_hook(rc_fatal_box, NULL);   /* fatal errors reach the player, never swallowed */
     }
 
 #ifdef _WIN32
@@ -603,15 +667,18 @@ int main(int argc, char** argv)
         setenv(e[0], e[1], 0);
 #endif
     }
+    rc_log_note_env();   /* the switches in force, defaults included */
 
     if (!alloc_guest_vm()) {
-        fprintf(stderr, "ERROR: could not allocate the guest address space\n");
+        RC_LOGE("boot", "could not allocate the guest address space");
+        rc_log_exit(1, "could not allocate the guest address space");
         return 1;
     }
 
     uint32_t entry = ppu_load_elf(argv[1]);
     if (!entry) {
-        fprintf(stderr, "ERROR: could not load %s\n", argv[1]);
+        RC_LOGE("boot", "could not load %s", argv[1]);
+        rc_log_exit(1, "could not load the EBOOT");
         return 1;
     }
 
@@ -687,6 +754,7 @@ int main(int argc, char** argv)
         char sfo[1100];
         snprintf(sfo, sizeof sfo, "%s/PS3_GAME/PARAM.SFO", ppu_vfs_root);
         cellGame_init_from_paramsfo(sfo);
+        rc_log_note_sfo(sfo);   /* game version / update version as the game's own PARAM.SFO says */
     }
 
     g_ps3_guest_caller = harness_guest_caller;
@@ -696,6 +764,7 @@ int main(int argc, char** argv)
     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n", entry, STACK_TOP);
     int rc = ppu_run(entry, STACK_TOP);
     printf("\n[boot] ppu_run returned %d (entry function unwound)\n", rc);
-    rc_log_shutdown();
-    return g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
+    const int code = g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
+    rc_log_exit(code, g_sys_process_exit_called ? "the guest called sys_process_exit" : "ppu_run returned (entry function unwound)");
+    return code;
 }

@@ -1,0 +1,199 @@
+cellSpurs: wake an LFQueue waiter by the SPU library's own rule, and give each taskset a real workload id.
+
+Games: A Crack in Time 1.20 (run acit-boot2): _LFQueueInitialize(owner = spurs|1 = 0x00FDF981, q = 0x00F77400, dir 3), the Edge
+task 0 of taskset 0x409AA200 (the game's own taskset object, passed to CreateTasksetWithAttribute) waits on the empty queue, the
+PPU push succeeds, and 7030 signalled "task 0 of taskset 0x00FDF980" (eaSignal & ~1 = the SPURS instance), so the task never woke
+and the PPU blocked forever in cellSpursEventFlagWait. Tools of Destruction (owner = the taskset, dir 2) uses the same SPU code.
+
+Wake rule, decoded from the game's SPU task library (ACiT Edge task elf_00be3800, ToD elf_008ea200 has the same code):
+ - a waiting consumer stores id = (wklCurrentId << 8) | taskId in the ring (id callback @0x97F8, ToD @0x99E8:
+   LS 0x1DC << 8 | u32 at [LS 0x2FB8] + 0xD4 = LS 0x27D4; SpursKernelContext.wklCurrentId, SpursTasksetContext.taskId);
+ - fpSendSignal @0x99F8 (called @0xA798 with eaSignal = line +0x70): eaSignal & 15 == 0 -> eaSignal is the taskset;
+   otherwise (IWL, owner = spurs | 1) wid = id >> 8 (> 15 -> 0x80410902), taskset = wklInfo1[wid].arg (@0x9778 DMAs
+   spurs + 0xB00 + 32 * wid); then cellSpursSendSignal(taskset, id & 0xFF) (@0x9828: taskset 0 -> 0x80410911, taskset & 0x7F ->
+   0x80410910, task > 127 -> 0x80410902).
+ - console CreateTaskset adds a workload (taskset PM, argument = the taskset EA) and stores its id in taskset->wid (+0x74)
+   [src:rpcs3-cellspurs: _spurs::create_taskset, cellSpursLookUpTasksetAddress, cellSpursEventFlagSet's IWL path].
+
+Changes:
+ - _cellSpursLFQueuePushBody: rc_lfq_wake routes the waiter by that rule (was: spu_taskset_signal_task(eaSignal & ~1, id));
+   the first 8 wakes are logged "[cellSpurs] LFQueuePush wake q=... id=... -> taskset ... task ...".
+ - spurs_create_taskset: reserves a workload id for the taskset (wklInfo1[wid].arg = taskset, taskset +0x74 = wid), without a
+   policy module: wklEnabled/wklState stay 0 and the PM is marked missing, so the port kernel never selects it (the port runs
+   taskset tasks itself, spu_workload.c). The same taskset re-created at its EA keeps its slot; JoinTaskset frees it.
+   No free slot (the port's 16-slot table is shared by every instance) -> logged, wid stays 0 as before.
+ - spurs_pm_build_context: LS 0x1DC (wklCurrentId) = taskset +0x74, as when the kernel runs the taskset PM. It was 0, so every
+   task looked like a task of workload 0 (ACiT: Wws_Job SharedList0).
+
+ASSUMPTIONs:
+ - the PPU push in libsre routes a waiter like the SPU's fpSendSignal (no PPU push code exists in the EBOOT);
+ - the spurs base for an IWL lookup is eaSignal & ~15 (the SPU uses its kernel context's spurs at LS 0x1C0, the same instance);
+ - wklInfo1[wid].addr/size of a taskset workload stay 0 (console: the firmware taskset PM image).
+Host test: port/rc/tests/test_lfqueue.c (case owner = spurs|1, waiter in the taskset of wid 2; fails on 7030 alone).
+
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -64,6 +64,7 @@ typedef struct {
+     u32         maxContention;
+     u32         readyCount;
+     int         started;       /* its SPU program has been dispatched        */
++    u32         taskset_ea;    /* patch 7031: != 0 = this wid is that taskset's workload (no PM run by the port kernel) */
+ } SpursWorkload;
+ 
+ typedef struct {
+@@ -1103,6 +1104,9 @@ static int spurs_guest_range_valid(u32 ea, u32 bytes)
+  * Taskset
+  * =====================================================================*/
+ 
++static u32 rc_spurs_taskset_wid_take(u32 spurs_ea, u32 taskset_ea);   /* patch 7031, defined at the end */
++static void rc_spurs_taskset_wid_free(u32 taskset_ea);
++
+ static s32 spurs_create_taskset(CellSpurs* spurs, CellSpursTaskset* taskset,
+                                 u64 args, const u8* priority, u32 maxContention,
+                                 u32 taskset_size)
+@@ -1136,12 +1140,17 @@ static s32 spurs_create_taskset(CellSpurs* spurs, CellSpursTaskset* taskset,
+     /* Write the REAL big-endian CellSpursTaskset layout (fork Option-B) so the lifted
+      * SPU leaf + spurs_pm_build_context read valid data (the native writes above are
+      * little-endian = garbage to the SPU). Overwrites 0x00-0x80 with BE fields. */
+-    spurs_taskset_init(taskset_ea, spurs_ea, args, /*wid*/0,
++    /* patch 7031: on the console the taskset IS a workload of its SPURS instance (taskset PM, workload argument = the
++     * taskset EA, taskset->wid = its id; [src:rpcs3-cellspurs] _spurs::create_taskset). The SPU task library names a
++     * waiting task as (wklCurrentId << 8) | taskId and resolves an IWL waiter's taskset through wklInfo[wid].arg
++     * (ACiT Edge task, id callback @0x97F8, fpSendSignal @0x99F8 -> @0x9778), so the wid must be real. */
++    u32 ts_wid = rc_spurs_taskset_wid_take(spurs_ea, taskset_ea);
++    spurs_taskset_init(taskset_ea, spurs_ea, args, ts_wid < CELL_SPURS_MAX_WORKLOAD ? ts_wid : 0,
+                        taskset_size, /*evf1*/0, /*evf2*/0);
+     g_ydkj_real_taskset_ea = taskset_ea;
+ 
+     g_ydkj_real_spurs_ea = spurs_ea;   /* capture for the taskset-policy handoff (LS[0x1C0]) */
+-    printf("[cellSpurs] CreateTaskset() ea=0x%08X spurs=0x%08X (real BE layout)\n", taskset_ea, spurs_ea);
++    printf("[cellSpurs] CreateTaskset() ea=0x%08X spurs=0x%08X wid=%u (real BE layout)\n", taskset_ea, spurs_ea, ts_wid);
+     return CELL_OK;
+ }
+ 
+@@ -1366,6 +1375,7 @@ s32 cellSpursJoinTaskset(CellSpursTaskset* taskset)
+     /* KZ3 patch 1066 (+1093: no bound): wait for the taskset's running tasks, then cut off the parked ones, so a taskset
+      * re-created at the same address does not share task ids with the old tasks (spu_taskset_join_wait). */
+     { extern int spu_taskset_join_wait(uint32_t); spu_taskset_join_wait(taskset_ea); }
++    rc_spurs_taskset_wid_free(taskset_ea);   /* patch 7031: the taskset's workload ends with the join */
+     return CELL_OK;
+ }
+ 
+@@ -4544,6 +4554,7 @@ s32 cellSpursSetGlobalExceptionEventHandler(u64 spurs_ea, u64 handler_ea, u64 ar
+ /* Optional PPU stop request for a blocking push (the runtime has no such flag today: the process ends with exit()). */
+ int (*g_rc_lfq_stop_requested)(void);
+ 
++static int s_rc_lfq_wake_n;
+ static inline u16 rc_lfq_r16(u32 a) { return vm_read16(a); }
+ /* Raw store: only under the line's lock (vm_write16 would take it again). */
+ static inline void rc_lfq_w16(u32 a, u16 v) { u16 r = ps3_bswap16(v); memcpy(vm_ptr8(a), &r, 2); }
+@@ -4599,6 +4610,38 @@ static int rc_lfq_publish(u32 q, u32 depth, u32 slot, u32 direction)
+     return waiter;
+ }
+ 
++/* patch 7031: wake the waiter taken off the ring, the way the SPU task library's fpSendSignal does it (ACiT Edge task
++ * elf_00be3800 @0x99F8, ToD elf_008ea200 the same code; called with eaSignal = line +0x70 and the ring id @0xA798):
++ *  - the id is (wklCurrentId << 8) | taskId: id callback @0x97F8 = (LS 0x1DC << 8) | u32 at [LS 0x2FB8] + 0xD4 = 0x27D4
++ *    (SpursKernelContext.wklCurrentId, SpursTasksetContext.taskId, [src:rpcs3-cellspurs]);
++ *  - eaSignal & 15 == 0: eaSignal is the taskset, signal task (id & 0xFF);
++ *  - otherwise (cellSpursLFQueueInitializeIWL style, owner = spurs | 1): wid = id >> 8, refused when > 15
++ *    (0x80410902), taskset = wklInfo1[wid].arg = u64 at spurs + 0xB00 + 32 * wid + 8 (@0x9778 DMAs that entry), then
++ *    signal task (id & 0xFF);
++ *  - the send (@0x9828) refuses taskset 0 (0x80410911), taskset & 0x7F (0x80410910), task > 127 (0x80410902).
++ * ASSUMPTION: the PPU push in libsre routes a waiter the same way (no PPU push code exists in the EBOOT); the spurs
++ * base is taken from eaSignal & ~15 where the SPU reads its own kernel context's spurs (LS 0x1C0): the same instance. */
++static int rc_lfq_wake(u32 q, u32 id, int logit)
++{
++    u64 eas = vm_read64(q + 0x70);
++    u32 tid = id & 0xFF, wid = id >> 8, ts;
++    if (!(eas & 15)) ts = (u32)eas;
++    else {
++        if (wid > 15) { printf("[cellSpurs] LFQueuePush wake q=0x%08X id=0x%04X: wid %u > 15, no signal\n", q, id, wid); return -1; }
++        ts = (u32)vm_read64((u32)(eas & ~15ull) + 0xB00 + 32 * wid + 8);
++    }
++    if (!ts || (ts & 0x7F) || tid > 127) {
++        printf("[cellSpurs] LFQueuePush wake q=0x%08X id=0x%04X eaSignal=0x%llX: bad target taskset 0x%08X task %u, no signal\n",
++               q, id, (unsigned long long)eas, ts, tid);
++        return -1;
++    }
++    if (logit || PS3_LOG_FIRST(s_rc_lfq_wake_n, 8))
++        printf("[cellSpurs] LFQueuePush wake q=0x%08X id=0x%04X -> taskset 0x%08X task %u (%s wid %u)\n", q, id, ts, tid,
++               (eas & 15) ? "IWL" : "taskset", wid);
++    spu_taskset_signal_task(ts, tid);
++    return 0;
++}
++
+ s32 _cellSpursLFQueuePushBody(u64 queue_ea, u64 elem_ea, u64 is_blocking)
+ {
+     u32 q = (u32)queue_ea, src = (u32)elem_ea;
+@@ -4628,13 +4671,53 @@ s32 _cellSpursLFQueuePushBody(u64 queue_ea, u64 elem_ea, u64 is_blocking)
+     u32 dst = (u32)buf + size * (slot >= depth ? slot - depth : slot);
+     vm_memcpy_to(dst, vm_ptr8(src), size);     /* the element is in place before h5 can move past it */
+     int waiter = rc_lfq_publish(q, depth, slot, direction);
+-    if (waiter >= 0) {
+-        u32 owner = (u32)vm_read64(q + 0x70) & ~1u;
+-        if (owner) spu_taskset_signal_task(owner, (u32)waiter);
+-    }
++    if (waiter >= 0) rc_lfq_wake(q, (u32)waiter, logit);
+     if (logit) {
+         printf("[cellSpurs] LFQueuePush(q=0x%08X dir=%u slot=%u dst=0x%08X waiter=%d)\n", q, direction, slot, dst, waiter);
+         rc_lfq_dump("after", q);
+     }
+     return CELL_OK;
+ }
++
++/* ---- patch 7031: a taskset's workload id ----
++ * Console: _spurs::create_taskset adds a workload (taskset PM, argument = taskset EA) and stores its id in taskset->wid
++ * (+0x74) [src:rpcs3-cellspurs]; the SPU library finds a taskset from (spurs, wid) through wklInfo1[wid].arg. The port
++ * runs taskset tasks itself (spu_workload.c), so the slot is reserved without a PM: wklEnabled and wklState stay 0 and
++ * the PM is marked missing, so no port kernel thread ever selects it. ASSUMPTION: wklInfo addr/size 0 (console: the
++ * firmware's taskset PM image). The port's workload table is shared by all instances (16 slots). Returns the wid or
++ * CELL_SPURS_MAX_WORKLOAD when every slot is taken (logged; the taskset then keeps wid 0 as before this patch). */
++static u32 rc_spurs_taskset_wid_take(u32 spurs_ea, u32 taskset_ea)
++{
++    u32 w = CELL_SPURS_MAX_WORKLOAD;
++    for (u32 i = 0; i < CELL_SPURS_MAX_WORKLOAD && w == CELL_SPURS_MAX_WORKLOAD; i++)   /* re-created at the same EA */
++        if (s_workloads[i].in_use && s_workloads[i].taskset_ea == taskset_ea && s_workloads[i].spurs_ea == spurs_ea) w = i;
++    for (u32 i = 0; i < CELL_SPURS_MAX_WORKLOAD && w == CELL_SPURS_MAX_WORKLOAD; i++)
++        if (!s_workloads[i].in_use) w = i;
++    if (w == CELL_SPURS_MAX_WORKLOAD) {
++        printf("[cellSpurs] CreateTaskset 0x%08X: no free workload id (16 taken), taskset wid stays 0\n", taskset_ea);
++        return w;
++    }
++    memset(&s_workloads[w], 0, sizeof s_workloads[w]);
++    s_workloads[w].in_use = 1;
++    s_workloads[w].spurs_ea = spurs_ea;
++    s_workloads[w].data = taskset_ea;
++    s_workloads[w].taskset_ea = taskset_ea;
++    s_wkl_pm[w].fn = NULL; s_wkl_pm[w].image_id = -1; s_wkl_pm[w].resolved = -1;
++    u32 info = spurs_ea + SPURS_WKL_INFO1 + w * SPURS_WKL_INFO_SZ;
++    vm_write64(info + 0x00, 0);
++    vm_write64(info + 0x08, (u64)taskset_ea);       /* wklInfo1[wid].arg = the taskset */
++    vm_write32(info + 0x10, 0);
++    vm_write32(info + 0x14, w << 24);               /* uniqueId, as AddWorkload */
++    vm_write64(info + 0x18, 0);
++    return w;
++}
++
++static void rc_spurs_taskset_wid_free(u32 taskset_ea)
++{
++    for (u32 i = 0; i < CELL_SPURS_MAX_WORKLOAD; i++)
++        if (s_workloads[i].in_use && s_workloads[i].taskset_ea == taskset_ea) {
++            vm_write64(s_workloads[i].spurs_ea + SPURS_WKL_INFO1 + i * SPURS_WKL_INFO_SZ + 0x08, 0);
++            memset(&s_workloads[i], 0, sizeof s_workloads[i]);
++            memset(&s_wkl_pm[i], 0, sizeof s_wkl_pm[i]);   /* a later AddWorkload in this slot resolves its own PM */
++        }
++}
+--- a/libs/spurs/spurs_pm.c
++++ b/libs/spurs/spurs_pm.c
+@@ -94,6 +94,10 @@ uint64_t spurs_pm_build_context(uint8_t* ls, uint32_t taskset_ea, uint32_t taskI
+          * (ceqh of rotqbyi(LS[0x1E0],6), select-mask bit -> word0); stamp the
+          * neighboring slots too -- they are all inside the moduleId/pad area
+          * the real PM owns and nothing else reads them. */
++        /* patch 7031: wklCurrentId = the taskset's workload id (taskset +0x74), as when the kernel runs the taskset PM
++         * [src:rpcs3-cellspurs]. The task library names a waiting task (wklCurrentId << 8) | taskId (ACiT Edge task id
++         * callback @0x97F8); a zero here made every LFQueue waiter look like a task of workload 0. */
++        LS_BE32(0x1DC, vm_read32(taskset_ea + 0x74));
+         ls[0x1E4] = 'T'; ls[0x1E5] = 'K';
+         ls[0x1E6] = 'T'; ls[0x1E7] = 'K';
+         ls[0x1E8] = 'T'; ls[0x1E9] = 'K';

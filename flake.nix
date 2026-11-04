@@ -103,6 +103,7 @@
         # `nix develop` : everything
         default = pkgs.mkShell {
           packages = reTools ++ runtimeTools ++ buildTools;
+          buildInputs = [ pkgs.sdl3 ];   # native launcher preview build
           shellHook = fixLdflags + ''
             export RC_ROOT="$PWD"
             export RC_GAME="$PWD/Game"

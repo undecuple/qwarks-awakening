@@ -1,9 +1,16 @@
-/* Ratchet & Clank port (from Toro a46f947 port/tlp/rc_log.h): a stdio stand-in for KZ3's file logger (KZ3 78bf574 port/kz3/kz3_log.h), so the boot code
- * copied from port/kz3/main.cpp keeps its log calls. ENHANCEMENT candidate: bring the real logger over when the port
- * needs log files and crash files (patches 2030/2032 call into it only with KZ3_LOG_REDIRECT_STDIO, not defined here). */
+/* Ratchet & Clank port: the game exe's log calls, a thin wrapper over the real logger (port/common/log/kz3_log.c, from
+ * the Killzone 3 sibling port's logger; rc_log_info.c adds the header and end block). Before 2026-11-03 this was a
+ * stdio stand-in. The exe builds define KZ3_LOG_REDIRECT_STDIO, so printf/fprintf(stderr)/puts go through the logger's
+ * line router too (see port/rc/CMakeLists.txt). */
 #pragma once
-#include <stdio.h>
-#define RC_LOGE(tag, ...) (fprintf(stderr, "[E][%s] ", tag), fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
-#define RC_LOGI(tag, ...) (fprintf(stderr, "[I][%s] ", tag), fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
-static inline void rc_log_shutdown(void) { fflush(stdout); fflush(stderr); }
-static inline void rc_log_set_thread_label(const char* label) { (void)label; }
+#include "kz3_log.h"
+#include "rc_log_info.h"
+#define RC_LOGE(tag, ...) KZ3_LOGE(tag, __VA_ARGS__)
+#define RC_LOGW(tag, ...) KZ3_LOGW(tag, __VA_ARGS__)
+#define RC_LOGI(tag, ...) KZ3_LOGI(tag, __VA_ARGS__)
+#define RC_LOGD(tag, ...) KZ3_LOGD(tag, __VA_ARGS__)
+#define RC_LOGT(tag, ...) KZ3_LOGT(tag, __VA_ARGS__)
+/* Close the log (the end block is written by the logger's end hook). Exit paths that know their code call
+ * rc_log_exit(code, reason) instead. */
+static inline void rc_log_shutdown(void) { kz3_log_shutdown(); }
+static inline void rc_log_set_thread_label(const char* label) { kz3_log_set_thread_label(label); }

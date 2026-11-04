@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Lift every SPU image of a title into work/spu/<game>/lift, the SPU_DIR tools/build-rc.sh points the build at.
-#   nix develop .#re --command tools/sandbox.sh -- tools/spu/lift_spu.sh [GAME]      (GAME: tods (default), acit, nexus, acit120, nexus101, ffa, a4o)
+#   nix develop .#re --command tools/sandbox.sh -- tools/spu/lift_spu.sh [GAME]      (GAME: tods (default), acit, nexus, acit120, nexus101, ffa, a4o, qfb; dlhd and collection* have tables but no policy module yet)
 # 1. tools/spu/spu_lift.py GAME: the WWS job modules, the EDGE inflate ELF (when the title has one), the policy module, spu_workloads.c,
 #    jobmods_register.c (it recreates the lift dir, so it runs first); tables: data/titles/<game>_spu_{config,jobs,code}.json
 #    and the optional lift table named in the config;
@@ -15,7 +15,11 @@ GAME="${1:-tods}"
 WORK="${RC_ROOT:-$ROOT}"
 [[ -f "$ROOT/data/titles/${GAME}_spu_config.json" ]] || { echo "lift_spu.sh: no SPU tables for '$GAME' (data/titles/${GAME}_spu_config.json)" >&2; exit 2; }
 case "$GAME" in ffa) BIN=ffa105 ;; a4o) BIN=a4o103 ;; *) BIN="$GAME" ;; esac   # update executables live under their package version
-ELF="${RC_EBOOT_ELF:-$WORK/work/bin/$BIN/EBOOT.elf}"
+# Collection: tables collection (launcher EBOOT.elf), collection_rc1/2/3 (work/bin/collection/RC<n>.ppu.elf)
+case "$GAME" in collection_rc?) BIN=collection; RCN="${GAME#collection_}"; RCN="${RCN^^}"; ELFNAME="$RCN.ppu.elf" ;; *) ELFNAME=EBOOT.elf ;; esac
+ELF="${RC_EBOOT_ELF:-$WORK/work/bin/$BIN/$ELFNAME}"
+# a separate git worktree has no work/bin of its own: fall back to the main checkout's (RC_MAIN names it)
+[[ -f "$ELF" || -z "${RC_MAIN:-}" ]] || ELF="$RC_MAIN/work/bin/$BIN/$ELFNAME"
 PS3="$WORK/work/ps3recomp-patched"
 OUT="${RC_SPU_OUT:-$WORK/work/spu/$GAME}"
 [[ -f "$ELF" ]] || { echo "lift_spu.sh: no $ELF" >&2; exit 1; }

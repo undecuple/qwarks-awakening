@@ -14,6 +14,7 @@
 #   acit: code end 0xa4aebc, TOC 0xd349c8; nexus: code end 0xb60114, TOC 0xd8ee08 (2026-10-26, same rule: end of the
 #         last SHF_EXECINSTR section, the entry OPD's TOC)  -> work/analysis/<game>, work/recomp/<game>
 #   acit120 / nexus101 / ffa (ELF work/bin/ffa105) / a4o (work/bin/a4o103): the update executables (2026-11-03), code end and TOC read the same way.
+#   qfb / dlhd / collection (launcher) / collection_rc1, _rc2, _rc3 (work/bin/collection/RC<n>.ppu.elf): 2026-11-03, same rule.
 #   RC_ROOT: the checkout whose work/ holds ELF, patched tree and outputs (a lane worktree runs its script against the main checkout's work/);
 #   RC_SKIP_PATCHED=1: do not regenerate work/ps3recomp-patched.
 # Steps: work/ps3recomp-patched fresh (tools/ps3recomp-patched.sh); ppu_loader + find_functions when
@@ -30,7 +31,7 @@ case ",${RC_HELD_LOCKS:-}," in
   *,build,*) ;;
   *) echo "lift.sh: warning: no build slot held (run it under KZ3's lock.sh build, see the header)" >&2 ;;
 esac
-GAME="${1:-tods}"; BIN=""
+GAME="${1:-tods}"; BIN=""; ELFNAME=""
 PT="${RC_PATCHED_DIR:-work/ps3recomp-patched}"   # RC_PATCHED_DIR / RC_ANALYSIS_DIR / RC_RECOMP_DIR: a side-by-side lift (v0.16.0 bump check)
 case "$GAME" in
   tods) CODE_END=0x83a50c; TOC=0x88ff38 ;;
@@ -41,22 +42,31 @@ case "$GAME" in
   nexus101) CODE_END=0xb61d44; TOC=0xd8ee18 ;;
   ffa|ffa105) GAME=ffa; BIN=ffa105; CODE_END=0xc3a1ac; TOC=0xe6ef98 ;;
   a4o|a4o103) GAME=a4o; BIN=a4o103; CODE_END=0xbd2c48; TOC=0xdfd988 ;;
-  *) echo "lift.sh: unknown game '$GAME' (tods acit nexus acit120 nexus101 ffa105 a4o103)" >&2; exit 2 ;;
+  # remaining titles (2026-11-03), code end = end of the last SHF_EXECINSTR section, TOC = the entry OPD's TOC (all have section headers)
+  qfb) CODE_END=0x77af2c; TOC=0x8400e8 ;;
+  dlhd) CODE_END=0x8891d4; TOC=0x9bcd58 ;;
+  # Collection: launcher EBOOT plus three per-game PPU ELFs in work/bin/collection
+  collection) BIN=collection; CODE_END=0x1444dc; TOC=0x214f78 ;;
+  collection_rc1) BIN=collection; ELFNAME=RC1.ppu.elf; CODE_END=0x69e674; TOC=0x772350 ;;
+  collection_rc2) BIN=collection; ELFNAME=RC2.ppu.elf; CODE_END=0x12266cc; TOC=0x131d100 ;;
+  collection_rc3) BIN=collection; ELFNAME=RC3.ppu.elf; CODE_END=0xaf0c34; TOC=0xc0a4f0 ;;
+  *) echo "lift.sh: unknown game '$GAME' (tods acit nexus acit120 nexus101 ffa105 a4o103 qfb dlhd collection collection_rc1 collection_rc2 collection_rc3)" >&2; exit 2 ;;
 esac
-ELF=work/bin/${BIN:-$GAME}/EBOOT.elf AN="${RC_ANALYSIS_DIR:-work/analysis/$GAME}" OUT="${RC_RECOMP_DIR:-work/recomp/$GAME}" OVR="$ROOT/port/rc/$GAME/ppu_overrides.txt"
+ELF=work/bin/${BIN:-$GAME}/${ELFNAME:-EBOOT.elf} AN="${RC_ANALYSIS_DIR:-work/analysis/$GAME}" OUT="${RC_RECOMP_DIR:-work/recomp/$GAME}" OVR="$ROOT/port/rc/$GAME/ppu_overrides.txt"
 [[ -f "$ELF" ]] || { echo "missing $ELF (the player's own decrypted EBOOT)" >&2; exit 1; }
 
 [[ "${RC_SKIP_PATCHED:-0}" = 1 ]] || "$ROOT/tools/ps3recomp-patched.sh"   # RC_SKIP_PATCHED=1: use the existing work/ps3recomp-patched as is
 
+STEM="$(basename "$ELF" .elf)"   # ppu_loader names its outputs after the ELF (EBOOT, RC1.ppu, ...)
 mkdir -p "$AN" "$OUT"
 if [[ ! -f "$AN/functions.json" ]]; then
   python3 "$PT/tools/ppu_loader.py" "$ELF" -o "$AN/"
-  python3 "$PT/tools/find_functions.py" "$ELF" --seed-json "$AN/EBOOT.functions.json" --output "$AN/functions.json"
+  python3 "$PT/tools/find_functions.py" "$ELF" --seed-json "$AN/$STEM.functions.json" --output "$AN/functions.json"
 fi
 ovr=(); [[ -f "$OVR" ]] && ovr=(--overrides "$OVR")
 RC_LIFT_CHUNKS="${RC_LIFT_CHUNKS:-64}"
 nice -n 10 python3 "$PT/tools/ppu_lifter.py" "$ELF" --functions "$AN/functions.json" \
-  --hle-stubs "$AN/EBOOT.imports.json" --toc "$TOC" --code-end "$CODE_END" \
+  --hle-stubs "$AN/$STEM.imports.json" --toc "$TOC" --code-end "$CODE_END" \
   "${ovr[@]}" -j 4 --chunks "$RC_LIFT_CHUNKS" --output "$OUT" > "$OUT/lift.log" 2>&1
 tail -5 "$OUT/lift.log"
 printf 'game=%s elf=%s overrides=%s patchset=%s chunks=%s date=%s\n' "$GAME" "$(sha256sum "$ELF" | cut -c1-16)" \

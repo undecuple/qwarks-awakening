@@ -35,12 +35,16 @@ def main():
         name = "jobmod_%s_e%04X.bin" % (hashlib.sha256(raw).hexdigest()[:12], ent)
         open(os.path.join(out, "jobmods", name), "wb").write(raw)
         rows.append((k, name, size, how, foot, gap))
-    pm_off = int(j["workload_creation_wrapper"]["policy_module"]["file_offset"], 16)
-    pm_sz = (int(j["workload_creation_wrapper"]["policy_module"]["size"], 16) + 0x7F) & ~0x7F
-    open(os.path.join(out, "policy", "pm_%s.bin" % j["workload_creation_wrapper"]["policy_module"]["ea"]), "wb").write(d[pm_off:pm_off + pm_sz])
+    pm = (j.get("workload_creation_wrapper") or {}).get("policy_module")
+    if pm:                                   # tables from make_spu_tables.py carry policy_module null when none was located
+        pm_off = int(pm["file_offset"], 16)
+        pm_sz = (int(pm["size"], 16) + 0x7F) & ~0x7F
+        open(os.path.join(out, "policy", "pm_%s.bin" % pm["ea"]), "wb").write(d[pm_off:pm_off + pm_sz])
+    else:
+        pm_sz = 0
     for r in rows:
         print("%2d %s size=%d (%s) footprint=%#x gap=%s" % r)
-    print("policy module bytes:", pm_sz)
+    print("policy module bytes:", pm_sz, "" if pm_sz else "(none located)")
 
 
 if __name__ == "__main__":

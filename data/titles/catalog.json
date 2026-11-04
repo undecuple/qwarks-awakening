@@ -1,0 +1,597 @@
+{
+ "schema": 1,
+ "port_version": "0.1.0",
+ "note": "Numbers, ids and versions only. eboot_sha256 stays empty until decrypted EBOOT hashes are recorded (ASSUMPTION: an EBOOT.elf is then attributed by path).",
+ "games": [
+  {
+   "id": "tods",
+   "title": "Ratchet & Clank Future: Tools of Destruction",
+   "year": 2007,
+   "order": 1,
+   "readme_state": "first target: starts and plays by hand, not playable yet",
+   "supported": true,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS98127"
+     ]
+    },
+    "digital": {}
+   },
+   "update": null,
+   "exe": "tods.exe",
+   "estimate": {
+    "minutes": 12,
+    "disk_gb": 1.2,
+    "note": "ASSUMPTION: same as ACiT, not measured separately"
+   },
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": 1792,
+    "cover": "co8542",
+    "artwork": null
+   },
+   "build_title": "tods",
+   "disc_version": "02.00",
+   "children": [],
+   "eboot_sha256": []
+  },
+  {
+   "id": "qfb",
+   "title": "Ratchet & Clank Future: Quest for Booty",
+   "year": 2008,
+   "order": 2,
+   "readme_state": "SPU code lifted; PPU code not yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {
+     "EU": [
+      "BCES00301"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80145"
+     ]
+    }
+   },
+   "update": null,
+   "exe": "qfb.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the installed PSN game folder (holds PARAM.SFO and USRDIR)"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [],
+   "build_title": "qfb",
+   "eboot_sha256": []
+  },
+  {
+   "id": "acit",
+   "title": "Ratchet & Clank Future: A Crack in Time",
+   "year": 2009,
+   "order": 3,
+   "readme_state": "next: builds and starts (1.20 update); ends after a few seconds on a black screen",
+   "supported": true,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS98124"
+     ],
+     "EU": [
+      "BCES00511",
+      "BCES00726",
+      "BCES00748"
+     ],
+     "JP": [
+      "BCJS30038"
+     ]
+    },
+    "digital": {}
+   },
+   "update": {
+    "version": "01.20",
+    "title_ids": [
+     "BCUS98124",
+     "BCES00511",
+     "BCES00726",
+     "BCES00748",
+     "BCJS30038"
+    ],
+    "what": "title update 01.20 as a PKG file or an installed folder"
+   },
+   "exe": "acit.exe",
+   "estimate": {
+    "minutes": 12,
+    "disk_gb": 1.2,
+    "note": "715 s at -j6 under Linux (2026-11-03) plus about 190 MB of lifted sources"
+   },
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "version": "01.20",
+     "title_ids": [
+      "BCUS98124",
+      "BCES00511",
+      "BCES00726",
+      "BCES00748",
+      "BCJS30038"
+     ],
+     "what": "title update 01.20 as a PKG file or an installed folder"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "build_title": "acit120",
+   "children": [],
+   "eboot_sha256": []
+  },
+  {
+   "id": "a4o",
+   "title": "Ratchet & Clank: All 4 One",
+   "year": 2011,
+   "order": 4,
+   "readme_state": "PPU code of the 1.03 update lifted; not built yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS98175"
+     ],
+     "EU": [
+      "BCES01141",
+      "BCES01142"
+     ],
+     "AS": [
+      "BCAS20200"
+     ],
+     "JP": [
+      "BCJS30081"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80695"
+     ],
+     "EU": [
+      "NPEA00356"
+     ]
+    }
+   },
+   "update": {
+    "version": "01.03",
+    "title_ids": [
+     "BCUS98175",
+     "BCES01141",
+     "BCES01142",
+     "BCAS20200",
+     "BCJS30081",
+     "NPUA80695",
+     "NPEA00356"
+    ],
+    "what": "title update 01.03 as a PKG file or an installed folder"
+   },
+   "exe": "a4o.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "version": "01.03",
+     "title_ids": [
+      "BCUS98175",
+      "BCES01141",
+      "BCES01142",
+      "BCAS20200",
+      "BCJS30081",
+      "NPUA80695",
+      "NPEA00356"
+     ],
+     "what": "title update 01.03 as a PKG file or an installed folder"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [],
+   "build_title": "a4o",
+   "eboot_sha256": []
+  },
+  {
+   "id": "ffa",
+   "title": "Ratchet & Clank: Full Frontal Assault",
+   "year": 2012,
+   "order": 5,
+   "readme_state": "PPU code of the 1.05 update lifted; not built yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS98380"
+     ],
+     "EU": [
+      "BCES01594",
+      "BCES01626"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80642"
+     ],
+     "EU": [
+      "NPEA00378"
+     ],
+     "JP": [
+      "NPJA00089"
+     ]
+    }
+   },
+   "update": {
+    "version": "01.05",
+    "title_ids": [
+     "BCUS98380",
+     "BCES01594",
+     "BCES01626",
+     "NPUA80642",
+     "NPEA00378",
+     "NPJA00089"
+    ],
+    "what": "title update 01.05 as a PKG file or an installed folder"
+   },
+   "exe": "ffa.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "version": "01.05",
+     "title_ids": [
+      "BCUS98380",
+      "BCES01594",
+      "BCES01626",
+      "NPUA80642",
+      "NPEA00378",
+      "NPJA00089"
+     ],
+     "what": "title update 01.05 as a PKG file or an installed folder"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [],
+   "build_title": "ffa",
+   "eboot_sha256": []
+  },
+  {
+   "id": "nexus",
+   "title": "Ratchet & Clank: Into the Nexus",
+   "year": 2013,
+   "order": 6,
+   "readme_state": "PPU code of the 1.01 update lifted; not built yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS99245"
+     ],
+     "EU": [
+      "BCES01908",
+      "BCES01949"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80908"
+     ],
+     "EU": [
+      "NPEA00457"
+     ],
+     "JP": [
+      "NPJA00101"
+     ]
+    }
+   },
+   "update": {
+    "version": "01.01",
+    "title_ids": [
+     "BCUS99245",
+     "BCES01908",
+     "BCES01949",
+     "NPUA80908",
+     "NPEA00457",
+     "NPJA00101"
+    ],
+    "what": "title update 01.01 as a PKG file or an installed folder"
+   },
+   "exe": "nexus.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "version": "01.01",
+     "title_ids": [
+      "BCUS99245",
+      "BCES01908",
+      "BCES01949",
+      "NPUA80908",
+      "NPEA00457",
+      "NPJA00101"
+     ],
+     "what": "title update 01.01 as a PKG file or an installed folder"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [],
+   "build_title": "nexus",
+   "eboot_sha256": []
+  },
+  {
+   "id": "collection",
+   "title": "Ratchet & Clank Collection",
+   "year": 2012,
+   "order": 7,
+   "readme_state": "last: a different engine; surveyed, nothing lifted yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {
+     "US": [
+      "BCUS98282"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80643"
+     ],
+     "EU": [
+      "NPEA00385",
+      "NPEA00386",
+      "NPEA00387"
+     ]
+    }
+   },
+   "update": null,
+   "exe": "collection.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [
+    {
+     "id": "rc1",
+     "title": "Ratchet & Clank 1 (Collection)",
+     "year": 2012,
+     "order": 1,
+     "readme_state": "last: a different engine; surveyed, nothing lifted yet",
+     "supported": false,
+     "title_ids": {
+      "disc": {
+       "US": [
+        "BCUS98282"
+       ]
+      },
+      "digital": {
+       "US": [
+        "NPUA80643"
+       ],
+       "EU": [
+        "NPEA00385"
+       ]
+      }
+     },
+     "update": null,
+     "exe": "rc1.exe",
+     "estimate": null,
+     "player_files": [
+      {
+       "key": "disc",
+       "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+      },
+      {
+       "key": "eboot",
+       "what": "the decrypted EBOOT.elf made from your own copy"
+      }
+     ],
+     "igdb": {
+      "game": null,
+      "cover": null,
+      "artwork": null
+     },
+     "build_title": "rc1",
+     "eboot_sha256": [],
+     "children": []
+    },
+    {
+     "id": "rc2",
+     "title": "Ratchet & Clank 2 (Collection)",
+     "year": 2012,
+     "order": 2,
+     "readme_state": "last: a different engine; surveyed, nothing lifted yet",
+     "supported": false,
+     "title_ids": {
+      "disc": {
+       "US": [
+        "BCUS98282"
+       ]
+      },
+      "digital": {
+       "EU": [
+        "NPEA00386"
+       ]
+      }
+     },
+     "update": null,
+     "exe": "rc2.exe",
+     "estimate": null,
+     "player_files": [
+      {
+       "key": "disc",
+       "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+      },
+      {
+       "key": "eboot",
+       "what": "the decrypted EBOOT.elf made from your own copy"
+      }
+     ],
+     "igdb": {
+      "game": null,
+      "cover": null,
+      "artwork": null
+     },
+     "build_title": "rc2",
+     "eboot_sha256": [],
+     "children": []
+    },
+    {
+     "id": "rc3",
+     "title": "Ratchet & Clank 3 (Collection)",
+     "year": 2012,
+     "order": 3,
+     "readme_state": "last: a different engine; surveyed, nothing lifted yet",
+     "supported": false,
+     "title_ids": {
+      "disc": {
+       "US": [
+        "BCUS98282"
+       ]
+      },
+      "digital": {
+       "EU": [
+        "NPEA00387"
+       ]
+      }
+     },
+     "update": null,
+     "exe": "rc3.exe",
+     "estimate": null,
+     "player_files": [
+      {
+       "key": "disc",
+       "what": "the disc as a folder (holds PS3_GAME) or a decrypted disc ISO"
+      },
+      {
+       "key": "eboot",
+       "what": "the decrypted EBOOT.elf made from your own copy"
+      }
+     ],
+     "igdb": {
+      "game": null,
+      "cover": null,
+      "artwork": null
+     },
+     "build_title": "rc3",
+     "eboot_sha256": [],
+     "children": []
+    }
+   ],
+   "build_title": "collection",
+   "eboot_sha256": []
+  },
+  {
+   "id": "dlhd",
+   "title": "Ratchet: Deadlocked HD",
+   "year": 2013,
+   "order": 8,
+   "readme_state": "last: a different engine; surveyed, nothing lifted yet",
+   "supported": false,
+   "title_ids": {
+    "disc": {},
+    "digital": {
+     "US": [
+      "NPUA80646"
+     ]
+    }
+   },
+   "update": null,
+   "exe": "dlhd.exe",
+   "estimate": null,
+   "player_files": [
+    {
+     "key": "disc",
+     "what": "the installed PSN game folder (holds PARAM.SFO and USRDIR)"
+    },
+    {
+     "key": "eboot",
+     "what": "the decrypted EBOOT.elf made from your own copy"
+    }
+   ],
+   "igdb": {
+    "game": null,
+    "cover": null,
+    "artwork": null
+   },
+   "children": [],
+   "build_title": "dlhd",
+   "eboot_sha256": []
+  }
+ ]
+}

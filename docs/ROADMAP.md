@@ -20,17 +20,19 @@ mouse with rebindable controls, gamepad prompts. Gameplay changes stay optional.
 
 ## 3. The other games
 
-One at a time, after the first game works. The order is not fixed. The main-CPU (PPU) code of two of them is already
-lifted to C with the same tools. One of them, A Crack in Time, also builds into its own program, not tested yet.
+One at a time, after the first game works. The working order, from a survey of each game's program and files: A Crack
+in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as
+each one is tried. The main-CPU (PPU) code of four of them is already lifted to C with the same tools, and A Crack in Time
+builds into its own program and starts.
 
 | Game | PS3 release | State |
 |---|---|---|
-| Ratchet & Clank Future: Quest for Booty | 2008 | planned |
-| Ratchet & Clank Future: A Crack in Time | 2009 | PPU code lifted; builds, not tested yet |
-| Ratchet & Clank: All 4 One | 2011 | planned |
-| Ratchet & Clank: Full Frontal Assault | 2012 | planned |
-| Ratchet & Clank: Into the Nexus | 2013 | PPU code lifted; not linked or running yet |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last, under review |
+| Ratchet & Clank Future: Quest for Booty | 2008 | SPU code lifted; PPU code not yet |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and starts (1.20 update); ends after a few seconds on a black screen |
+| Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
+| Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
+| Ratchet & Clank: Into the Nexus | 2013 | PPU code of the 1.01 update lifted; not built yet |
+| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; surveyed, nothing lifted yet |
 
 ## Not planned
 

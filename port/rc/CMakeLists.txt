@@ -180,8 +180,59 @@ set(GAME_OVERRIDES "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${RC_GAME}/${RC_GAME}_ppu_overrides.cpp")
     set(GAME_OVERRIDES "${RC_GAME}/${RC_GAME}_ppu_overrides.cpp")
 endif()
+# The logger (port/common/log: KZ3's logger plus rc_log_info.c, the header and end block) and the game's identity
+# for the log header, read from data/titles/catalog.json by build_title (acit120 -> id acit).
+set(RC_LOG_DIR_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../common/log")
+set(RC_LOG_SOURCES "${RC_LOG_DIR_SRC}/kz3_log.c" "${RC_LOG_DIR_SRC}/rc_log_info.c")
+set(RC_GAME_ID "${RC_GAME}")
+set(RC_GAME_TITLE "${RC_GAME}")
+set(RC_GAME_TITLE_ID "")
+set(RC_GAME_UPDATE "")
+set(RC_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/../../data/titles/catalog.json")
+if(EXISTS "${RC_CATALOG}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${RC_CATALOG}")
+    file(READ "${RC_CATALOG}" RC_CATALOG_JSON)
+    string(JSON RC_NGAMES LENGTH "${RC_CATALOG_JSON}" games)
+    math(EXPR RC_LAST "${RC_NGAMES} - 1")
+    foreach(i RANGE ${RC_LAST})
+        string(JSON bt GET "${RC_CATALOG_JSON}" games ${i} build_title)
+        if(bt STREQUAL RC_GAME)
+            string(JSON RC_GAME_ID GET "${RC_CATALOG_JSON}" games ${i} id)
+            string(JSON RC_GAME_TITLE GET "${RC_CATALOG_JSON}" games ${i} title)
+            string(JSON nreg LENGTH "${RC_CATALOG_JSON}" games ${i} title_ids disc)
+            if(nreg GREATER 0)
+                math(EXPR nreg1 "${nreg} - 1")
+                foreach(r RANGE ${nreg1})
+                    # the US disc id (the one the setup accepts); another region only when there is no US one
+                    string(JSON reg MEMBER "${RC_CATALOG_JSON}" games ${i} title_ids disc ${r})
+                    string(JSON nid LENGTH "${RC_CATALOG_JSON}" games ${i} title_ids disc ${reg})
+                    if(nid GREATER 0 AND (RC_GAME_TITLE_ID STREQUAL "" OR reg STREQUAL "US"))
+                        string(JSON RC_GAME_TITLE_ID GET "${RC_CATALOG_JSON}" games ${i} title_ids disc ${reg} 0)
+                    endif()
+                endforeach()
+            endif()
+            string(JSON utype TYPE "${RC_CATALOG_JSON}" games ${i} update)
+            if(utype STREQUAL "OBJECT")
+                string(JSON RC_GAME_UPDATE GET "${RC_CATALOG_JSON}" games ${i} update version)
+            endif()
+            break()
+        endif()
+    endforeach()
+endif()
+set(RC_GIT_COMMIT "")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=9 HEAD
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    OUTPUT_VARIABLE RC_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
+message(STATUS "Log identity:    ${RC_GAME_ID} / ${RC_GAME_TITLE} / ${RC_GAME_TITLE_ID} / update '${RC_GAME_UPDATE}' / commit '${RC_GIT_COMMIT}'")
+# The identity goes into a generated header that only main.cpp includes (a commit change rebuilds one file, not the lift).
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rc_log_ident.h.in" "${CMAKE_CURRENT_BINARY_DIR}/rc_log_ident.h" @ONLY)
+
 add_executable(${PROJECT_NAME}
     main.cpp
+    ${RC_LOG_SOURCES}
     stubs.cpp
     ${RC_GAME}/hle_${RC_GAME}.cpp            # the game's HLE for imports the runtime leaves unresolved
     ${GAME_OVERRIDES}
@@ -231,12 +282,30 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ps3recomp_runtime
 )
+
+# KZ3 logger: route the runtime's and the port's printf/fprintf/puts/fputs/fflush through kz3_log (the line router:
+# [tag] -> level; log file in <exe dir>/logs/<game id>; stdout only with RC_LOG_STDOUT=1). Only the runtime library, the
+# PPU scaffold and the port's own .cpp files get it: the lifted PPU/SPU sources keep their compile command (changing it
+# would rebuild all of them) and print nothing of their own. The logger's own sources must not get the redirect.
+# This is what turns patches 2030/2032 (crash files, thread labels, minidump) on.
+option(RC_LOG_REDIRECT "route the runtime's stdio through the logger" ON)
+target_include_directories(${PROJECT_NAME} PRIVATE "${RC_LOG_DIR_SRC}")
+target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+if(RC_LOG_REDIRECT)
+    set(RC_LOG_HEADER "${RC_LOG_DIR_SRC}/kz3_log.h")
+    target_compile_definitions(ps3recomp_runtime PRIVATE KZ3_LOG_REDIRECT_STDIO)
+    target_compile_options(ps3recomp_runtime PRIVATE -include "${RC_LOG_HEADER}")
+    target_include_directories(ps3recomp_runtime PRIVATE "${RC_LOG_DIR_SRC}")
+    set(RC_REDIRECTED main.cpp stubs.cpp ${RC_GAME}/hle_${RC_GAME}.cpp ${GAME_OVERRIDES} ${PS3RECOMP_SCAFFOLD})
+    set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_DEFINITIONS KZ3_LOG_REDIRECT_STDIO)
+    set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_OPTIONS -include "${RC_LOG_HEADER}")
+endif()
 # Patch 6010: the name in the player's settings folder (%APPDATA%\Qwark's Awakening) and the settings files' comments
 # (tools/release/names.py PRODUCT). PUBLIC so main.cpp's display.ini writer gets the same name.
 target_compile_definitions(ps3recomp_runtime PUBLIC "PS3RECOMP_PRODUCT_NAME=\"Qwark's Awakening\"")
 
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${RC_EXE}")   # tods.exe, acit.exe
-# No lifted SPU images registered yet, no file logger (KZ3 ), no online setup: added when the port has its own.
+# No online setup: added when the port has its own. The file logger (KZ3 ) is above (port/common/log).
 
 
 # The runtime is C++, and on Apple also Objective-C. Letting CMake infer the

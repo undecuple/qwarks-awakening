@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host test of patch 7030 (SPURS LFQueue: _cellSpursLFQueueInitialize layout + _cellSpursLFQueuePushBody): a unity build of the
+# Host test of patches 7030 + 7031 (SPURS LFQueue: _cellSpursLFQueueInitialize layout, _cellSpursLFQueuePushBody, waiter wake rule and taskset wid): a unity build of the
 # patched libs/spurs/cellSpurs.c with test_lfqueue.c (model SPU consumer, threads). RC_P3R_TREE = a tree made by
 # tools/ps3recomp-patched.sh (default work/rt-lfq-patched of this worktree). gcc (CC). Exit 0 = PASS.
 #   nix develop --command tools/sandbox.sh -- env RC_P3R_TREE=work/rt-lfq-patched port/rc/tests/run_lfqueue_test.sh

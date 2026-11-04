@@ -6,6 +6,26 @@ body:
     attributes:
       value: |
         Questions, comments and ideas are welcome. For something that is broken use the bug report. Never attach game files.
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      description: "Which game this is about, if it is about one."
+      options:
+        - "Tools of Destruction"
+        - "Quest for Booty"
+        - "A Crack in Time"
+        - "All 4 One"
+        - "Full Frontal Assault"
+        - "Into the Nexus"
+        - "Collection: Ratchet & Clank"
+        - "Collection: Going Commando"
+        - "Collection: Up Your Arsenal"
+        - "Deadlocked HD"
+        - "Launcher or installer (no game running)"
+        - "Not about one game"
+    validations:
+      required: false
   - type: textarea
     id: what
     attributes:

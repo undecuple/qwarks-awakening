@@ -30,8 +30,9 @@ What is true and checked today:
 - **Tested under Proton on Linux.** Every test run so far has been the Windows program under Proton on Linux (the
   setups are in the table below). It has not been run on Windows itself yet.
 - **One runtime for the series.** All the games share one runtime and one set of tools, with one program per game. The
-  PPU code of *A Crack in Time* and *Into the Nexus* is already lifted to C with the same tools. *A Crack in Time* also
-  builds into its own program, not tested yet; *Into the Nexus* is not linked yet.
+  PPU code of *A Crack in Time*, *All 4 One*, *Full Frontal Assault* and *Into the Nexus* is already lifted to C with the
+  same tools. *A Crack in Time* also builds into its own program and starts, but ends after a few seconds on a black
+  screen; the others are not built yet.
 - **Fixes sent upstream.** General fixes found while porting go back to ps3recomp as pull requests:
   [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#408](https://github.com/sp00nznet/ps3recomp/pull/408),
   [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429) and
@@ -62,12 +63,12 @@ What the runs on Proton showed, all on *Tools of Destruction*:
 | Game | PS3 release | State |
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
-| Ratchet & Clank Future: Quest for Booty | 2008 | planned |
-| Ratchet & Clank Future: A Crack in Time | 2009 | PPU code lifted; builds, not tested yet |
-| Ratchet & Clank: All 4 One | 2011 | planned |
-| Ratchet & Clank: Full Frontal Assault | 2012 | planned |
-| Ratchet & Clank: Into the Nexus | 2013 | PPU code lifted; not linked or running yet |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last, under review |
+| Ratchet & Clank Future: Quest for Booty | 2008 | SPU code lifted; PPU code not yet |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and starts (1.20 update); ends after a few seconds on a black screen |
+| Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
+| Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
+| Ratchet & Clank: Into the Nexus | 2013 | PPU code of the 1.01 update lifted; not built yet |
+| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; surveyed, nothing lifted yet |
 
 ## Getting started
 
@@ -85,9 +86,12 @@ Nix and 16 GB of memory or more. To run: a Direct3D 12 GPU. Hardware figures for
 **Steps:** build the program from source with your own copy ([docs/BUILDING.md](docs/BUILDING.md)), then start
 `tods.exe` with the path of your decrypted `EBOOT.elf`.
 
-**Where your data goes.** Nothing is installed and no launcher exists yet. The developer build reads your own game
-folder and keeps its saves and caches in folders you point it at (the test scripts use `work/`). Proper locations for
-saves, settings and caches: not yet.
+**Where your data goes.** Nothing is installed yet. The developer build reads your own game folder and keeps its saves
+and caches in folders you point it at (the test scripts use `work/`). Each game writes its log, and a crash report if it
+crashes, to `logs/<game>/` beside the program; your user name and home folder are removed from them, so a log can be
+attached to an issue as it is. Proper locations for saves, settings and caches: not yet. A launcher preview is in
+`launcher/`: it lists the games and their state and has screens for choosing where your files are (not tried on Windows
+yet); it does not build or start a game yet.
 
 **What goes online.** The port has no update check, no crash reporting and no telemetry. Online play of the original
 game is not supported and untested. Whether the shared runtime opens network connections for the game's own network
