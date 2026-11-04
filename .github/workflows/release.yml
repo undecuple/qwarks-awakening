@@ -1,0 +1,220 @@
+# Release build: the launcher preview for Windows x64, as a portable zip, on a GitHub Windows runner;
+# adapted from Project Helghast, the Killzone 3 PC port's release workflow (same author, MIT).
+#
+# Triggers: a pushed tag vMAJOR.MINOR.PATCH (builds, then creates a DRAFT release) and workflow_dispatch (a dry run:
+# builds and uploads the workflow artifact, never publishes). Nothing runs on a push to a branch or on a pull request.
+# Release rules: the version comes from the tag and must equal tools/release/names.py VERSION (checked in the build and
+# the publish job; bump_version.py keeps the same string in the launcher, the port's CMakeLists.txt and CITATION.cff);
+# the release is a pre-release while the major version is 0; its title is the tag; its notes are written from the
+# version's CHANGELOG.md section (tools/release/release_notes.py, which refuses a version without one) before the
+# build; SHA256SUMS and one .sha256 per file sit beside the assets; an existing release is never touched, no tag is
+# created, moved or deleted, and no asset is overwritten. The maintainer reads the draft and publishes it.
+#
+# What is built: the launcher only (launcher/, SDL3 + Dear ImGui). Never a game program: a game is built on the
+# player's own computer from their own copy of it. No game file is read, used or produced here. No installer yet
+# (the Killzone 3 workflow's Inno Setup steps are left out until the port has one).
+#
+# Third-party pieces: actions/checkout and actions/upload-artifact (GitHub, MIT), the gh CLI (MIT, on the image),
+# Dear ImGui (MIT, the third_party/imgui submodule). Downloads at build time, each pinned by SHA-256 in
+# tools/release/toolchain.json: llvm-mingw (Apache-2.0 WITH LLVM-exception; MinGW-w64 and winpthreads licences),
+# SDL3's MinGW development package (zlib; its SDL3.dll ships in the zip), CMake (BSD-3-Clause), Ninja (Apache-2.0),
+# and the Python embeddable package for Windows x64 (Python Software Foundation, PSF-2.0; it ships unmodified in the
+# zip's python\ folder and runs the launcher's setup engine, so a player needs no Python of their own).
+#
+# Published files (names from tools/release/names.py, checked by tools/release/test_names.py):
+#   Qwarks-Awakening-<version>-launcher-windows-x64.zip, its .sha256, SHA256SUMS
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:   # dry run only: no inputs, version = names.py VERSION, publishing is skipped
+
+permissions:
+  contents: read    # default for every job; only the publish job below gets write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  launcher:
+    permissions:
+      contents: read    # builds and uploads the artifact only; the publish job below is the one with write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      artifact: ${{ steps.ver.outputs.artifact }}
+      zip: ${{ steps.ver.outputs.zip }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash          # Git Bash on the image: the same scripts as the Linux build
+    steps:
+      # Git for Windows checks text files out with CRLF by default: the bash scripts would stop on "\r", and the
+      # README, licences and catalogue in the zip would differ from the repository. Keep the repository's bytes.
+      - name: Line endings as committed
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dear ImGui only: the launcher needs nothing else. Not `submodules: true` on the checkout: that would also fetch
+      # third_party/ps3recomp (the game build's, large, unused here).
+      - name: Dear ImGui submodule
+        run: git submodule update --init --depth 1 third_party/imgui
+
+      # The scripts call python3; the image has python.exe (a WindowsApps python3 may be the store stub).
+      - name: python3 on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/bin/python3"
+          chmod +x "$RUNNER_TEMP/bin/python3"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Version (from the tag; must equal names.py VERSION)
+        id: ver
+        run: |
+          want=$(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.VERSION)')
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+            case "$v" in
+              *[!0-9.]*|.*|*.|*..*|"") echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1 ;;
+            esac
+            if [ "$v" != "$want" ]; then
+              echo "::error::tag $GITHUB_REF_NAME says $v but tools/release/names.py VERSION is $want"; exit 1
+            fi
+          else
+            v="$want"
+          fi
+          # the version's mirrors (tools/release/bump_version.py writes them together); ve is $v with its dots escaped,
+          # so 0.2.0 cannot match 0x2y0 in these regular expressions
+          ve=$(printf '%s' "$v" | sed 's/[.]/\\./g')
+          grep -qE "^project\(qwark_launcher VERSION $ve " launcher/CMakeLists.txt \
+            || { echo "::error::launcher/CMakeLists.txt project VERSION is not $v"; exit 1; }
+          grep -qE "^ +VERSION $ve\s*$" port/rc/CMakeLists.txt \
+            || { echo "::error::port/rc/CMakeLists.txt project VERSION is not $v"; exit 1; }
+          grep -qE "^version: \"?$ve\"?\s*$" CITATION.cff \
+            || { echo "::error::CITATION.cff version is not $v"; exit 1; }
+          # shellcheck disable=SC2046  # two words: the asset stem and the zip name (no spaces in either)
+          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.launcher_zip_name(sys.argv[1]))' "$v")
+          stem="$1"; zip="$2"
+          {
+            echo "version=$v"
+            echo "artifact=$stem-$v-launcher"
+            echo "zip=$zip"
+          } >> "$GITHUB_OUTPUT"
+
+      # The notes first, so a missing or empty CHANGELOG section fails before the build. A dry run of a version
+      # without a section builds anyway (a warning); a tag never does.
+      - name: Release notes (from CHANGELOG.md)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p build/release-out
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            python3 tools/release/release_notes.py "$VERSION" --out build/release-out/release-body.md
+          else
+            python3 tools/release/release_notes.py "$VERSION" --out build/release-out/release-body.md \
+              || echo "::warning::no CHANGELOG section for $VERSION: a tag for it would fail here"
+          fi
+          cat build/release-out/release-body.md 2>/dev/null || true
+
+      - name: Host tests of the release tools
+        # every test runs; the step fails at the end and names the failed ones. test_catalog.py and the rest run on
+        # Linux in ci.yml.
+        run: |
+          failed=""
+          for t in test_names test_release_notes test_fetch_toolchain test_pack_zip test_stage_sdl3 test_workflows \
+                   test_pe_imports test_launcher_src; do
+            python3 "tools/release/$t.py" || failed="$failed $t"
+          done
+          if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
+
+      - name: Toolchain manifest (every download pinned)
+        run: python3 tools/release/fetch_toolchain.py --check --strict
+
+      - name: Toolchain (llvm-mingw, SDL3 devel, CMake, Ninja, Python embeddable; SHA-256 checked)
+        # the Windows-host entries only (llvm-mingw-linux is ci.yml's Linux cross build)
+        run: python3 tools/release/fetch_toolchain.py --only llvm-mingw,sdl3,cmake,ninja,python
+
+      - name: Launcher (built with the pinned llvm-mingw)
+        # build_launcher.sh puts llvm-mingw's bin first on PATH (windres and clang run their helpers from there)
+        run: tools/release/build_launcher.sh build/launcher-release
+
+      # The zip carries SDL3.dll and nothing else of the toolchain: a libc++.dll, libunwind.dll or libwinpthread-1.dll
+      # import (a lost -static-libstdc++ / -static-libgcc) would stop the exe on a player's PC. System DLLs and SDL3.dll only.
+      - name: Launcher imports (system DLLs and SDL3.dll only)
+        run: python3 tools/release/pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe
+
+      - name: SDL3.dll and its licence (from the pinned devel package)
+        run: |
+          T=work/release/toolchain-cache/trees/sdl3
+          python3 tools/release/stage_sdl3.py --dll "$T/x86_64-w64-mingw32/bin/SDL3.dll" --license "$T/LICENSE.txt" \
+            --out work/release/sdl3
+
+      - name: Portable zip (and its .sha256)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 tools/release/pack_zip.py --exe build/launcher-release/launcher.exe --sdl3 work/release/sdl3 \
+            --python work/release/toolchain-cache/trees/python --version "$VERSION" --out build/release-out
+          cd build/release-out
+          sha256sum -c ./*.sha256
+          ls -l
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ${{ steps.ver.outputs.artifact }}
+          path: |
+            build/release-out/${{ steps.ver.outputs.zip }}
+            build/release-out/${{ steps.ver.outputs.zip }}.sha256
+            build/release-out/release-body.md
+          if-no-files-found: error
+          # The artifact is kept 14 days: publish downloads it from this run, so re-running the publish job of a run
+          # older than that fails at the download; a later release needs a new tag push (a new build).
+          retention-days: 14
+
+  # Tag pushes only; a dispatch never publishes (the job is skipped). The only job with write access; it checks out
+  # no code. A draft pre-release (major 0) titled with the tag. If a release for the tag already exists the job
+  # fails: nothing is edited, re-uploaded or clobbered, and no tag is touched (--verify-tag refuses to create one).
+  # The assets and the notes are the launcher job's artifact (gh run download of this run needs actions: read).
+  publish:
+    needs: launcher
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    permissions:
+      contents: write   # gh release create; nothing else is written
+      actions: read     # gh run download of this run's artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Draft release with SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # gh runs with no checkout
+          VERSION: ${{ needs.launcher.outputs.version }}
+          ARTIFACT: ${{ needs.launcher.outputs.artifact }}
+          ZIP: ${{ needs.launcher.outputs.zip }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] \
+            || { echo "::error::tag $GITHUB_REF_NAME is not v$VERSION (names.py VERSION of the build)"; exit 1; }
+          # outside any checkout: the repository has its own assets/ folder (README art)
+          out="$RUNNER_TEMP/release-assets"
+          mkdir "$out"
+          gh run download "$GITHUB_RUN_ID" --name "$ARTIFACT" --dir "$out"
+          cd "$out"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::a release for $GITHUB_REF_NAME already exists; refusing to touch it"; exit 1
+          fi
+          test -s release-body.md
+          sha256sum -c "$ZIP.sha256"
+          sha256sum "$ZIP" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+          pre=""; case "$VERSION" in 0.*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --draft $pre --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-body.md \
+            "$ZIP" "$ZIP.sha256" SHA256SUMS

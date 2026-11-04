@@ -3,7 +3,7 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-03 (pre-release)
 
 ### Added
 - A log file per game: each game writes `logs/<game>/` beside its program, with a header (port version, game and
@@ -13,15 +13,36 @@ project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.m
 - A launcher preview in `launcher/` (SDL3 and Dear ImGui): it lists all eight games with their state, shows which of your
   files it found, and has screens for choosing the folders by hand (seen in screenshots on Linux; not tried on Windows
   yet). It does not build or start a game yet.
+- The launcher preview as a Windows x64 download: the release page carries
+  `Qwarks-Awakening-0.2.0-launcher-windows-x64.zip`, built from this repository by the release workflow on GitHub. It
+  holds the launcher, SDL3, its fonts, the file-finding tool with the Python that runs it (nothing else to install)
+  and the licences; no game files and no game program. On the first start it looks in RPCS3's usual folders and
+  writes its game list.
 - Offline behaviour for the network and PlayStation Network functions the later games import (HTTP, SSL, network
   sockets and status, PSN sign-in, friends, scores, matching, store): they answer as a console with no network
   connection does. Host-tested; no game has run with them yet.
 - Issue forms ask which game a report is about.
+- Keyboard controls for *Tools of Destruction*, with default keys for every pad button, played by hand under Proton on
+  2026-11-03. Mouse look is in the code but off by default until it has been tested.
+- Settings per game: each game keeps its own `keybinds.ini`, `display.ini` and `settings.ini` in its own folder, so
+  keys and display choices for one game do not change another.
+- *Tools of Destruction*: QUIT TO DESKTOP and QUIT TO MAIN MENU entries at the end of the pause menu's OPTIONS page,
+  off unless `RC_PAUSE_QUIT=1` is set. Quitting to the desktop works in a scripted run. Known problems, which are why it
+  is off: the two entries are drawn below the menu's box and the label shown can name the other entry, and QUIT TO MAIN
+  MENU loads the last save again instead of stopping at the title screen.
 
 ### Changed
-- *A Crack in Time* (1.20 update) now starts and runs for a few seconds on a black screen, then ends: a lock-free queue
-  push between the main processor and the SPU tasks now wakes the waiting task. *Tools of Destruction* was checked
-  with the same change: a new game and a saved game, five minutes each, without a crash.
+- *A Crack in Time* (1.20 update) now starts and shows its intro: Qwark's cinematic is drawn on screen. It runs very
+  slowly (about one frame per second) and is not playable. Three changes got it there: a lock-free queue push between
+  the main processor and the SPU tasks now wakes the waiting task; an error raised inside the game's Lua scripts now
+  returns to the script's error handler instead of ending the game after seven seconds; and an SPU task scheduler
+  that the game ships as SPU code, and that is not translated yet, now runs in the runtime's SPU interpreter.
+- *Into the Nexus* (1.01 update) is built for the first time and shows its intro, the Polaris News broadcast with
+  subtitles, at the same slow speed; not playable.
+- *Tools of Destruction* was checked with these changes: a new game and a saved game, five minutes each, without a
+  crash.
+- The PPU code of *Quest for Booty*, *Ratchet: Deadlocked HD* and the *Ratchet & Clank Collection*'s programs is
+  lifted, and *Quest for Booty*'s SPU programs are found and translated; none of these is built yet.
 
 ## [0.1.0] - 2026-11-03 (pre-release)
 

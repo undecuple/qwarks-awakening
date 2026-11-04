@@ -1,0 +1,81 @@
+{
+ "format": 1,
+ "about": "Pinned build toolchain of the release workflow (.github/workflows/release.yml): the launcher is built on a GitHub Windows runner with these, nothing else is downloaded. fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. Only SDL3.dll and the Python embeddable package (with their licence texts) reach the release zip; the compiler, CMake and Ninja never ship.",
+ "components": [
+  {
+   "name": "llvm-mingw",
+   "version": "20261006",
+   "llvm": "23.1.3",
+   "pin": "confirmed",
+   "release_page": "https://github.com/mstorsjo/llvm-mingw/releases",
+   "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/{version}/llvm-mingw-{version}-ucrt-x86_64.zip",
+   "sha256": "317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a",
+   "archive": "zip",
+   "strip_top": true,
+   "license": "Apache-2.0 WITH LLVM-exception (clang, lld, compiler-rt, libc++, libunwind); MinGW-w64 and winpthreads under their own permissive terms; build scripts ISC",
+   "about": "The C++ compiler for the launcher (clang++, lld, windres). Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin of the same file."
+  },
+  {
+   "name": "llvm-mingw-linux",
+   "version": "20261006",
+   "llvm": "23.1.3",
+   "pin": "confirmed",
+   "release_page": "https://github.com/mstorsjo/llvm-mingw/releases",
+   "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/{version}/llvm-mingw-{version}-ucrt-ubuntu-22.04-x86_64.tar.xz",
+   "sha256": "5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4",
+   "archive": "tar",
+   "strip_top": true,
+   "license": "Apache-2.0 WITH LLVM-exception (clang, lld, compiler-rt, libc++, libunwind); MinGW-w64 and winpthreads under their own permissive terms; build scripts ISC",
+   "about": "CI only (ci.yml launcher-build on ubuntu-latest): the same llvm-mingw release built for a Linux host, so every push cross-compiles the launcher for Windows the way the release does (fetch_toolchain.py --only llvm-mingw-linux,sdl3). Never fetched by release.yml. Hash from a download on 2026-11-03."
+  },
+  {
+   "name": "sdl3",
+   "version": "3.4.16",
+   "pin": "confirmed",
+   "release_page": "https://github.com/libsdl-org/SDL/releases",
+   "url": "https://github.com/libsdl-org/SDL/releases/download/release-{version}/SDL3-devel-{version}-mingw.zip",
+   "sha256": "9828bb735cf8a007bcf0ac5aa9f01f3fcb54b7ca67c932e775c905c5d5053a60",
+   "archive": "zip",
+   "strip_top": true,
+   "license": "zlib",
+   "about": "SDL3's official MinGW development package: headers, import library and CMake config for the launcher build, and x86_64-w64-mingw32/bin/SDL3.dll plus LICENSE.txt, which go into the zip. The same SDL version the Killzone 3 port pins. Hash from a download on 2026-11-03, equal to the digest GitHub shows for the release asset."
+  },
+  {
+   "name": "cmake",
+   "version": "4.4.4",
+   "pin": "confirmed",
+   "release_page": "https://cmake.org/download/",
+   "url": "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-windows-x86_64.zip",
+   "sha256_list": "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-SHA-256.txt",
+   "sha256": "bace36e94b31c68ab6fa295f26dfa11219e0701cf7c94b0284a7d1cb13dac536",
+   "archive": "zip",
+   "strip_top": true,
+   "license": "BSD-3-Clause",
+   "about": "Configures the launcher build. Hash from a download on 2026-11-03, in Kitware's published SHA-256 list and equal to the Killzone 3 port's pin."
+  },
+  {
+   "name": "ninja",
+   "version": "1.13.2",
+   "pin": "confirmed",
+   "release_page": "https://github.com/ninja-build/ninja/releases",
+   "url": "https://github.com/ninja-build/ninja/releases/download/v{version}/ninja-win.zip",
+   "sha256": "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65",
+   "archive": "zip",
+   "strip_top": false,
+   "license": "Apache-2.0",
+   "about": "Runs the launcher compile. Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin."
+  },
+  {
+   "name": "python",
+   "version": "3.13.16",
+   "pin": "confirmed",
+   "release_page": "https://www.python.org/downloads/windows/",
+   "url": "https://www.python.org/ftp/python/{version}/python-{version}-embed-amd64.zip",
+   "sha256": "97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297",
+   "archive": "zip",
+   "strip_top": false,
+   "license": "PSF-2.0 (its LICENSE.txt also carries the terms of the libraries CPython bundles)",
+   "about": "The Python embeddable package (Windows x64) that runs the launcher's engine, tools/release/catalog.py (standard library only). Unpacked to python/ in the zip, its LICENSE.txt also in licenses/. Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin of the same file."
+  }
+ ]
+}

@@ -41,7 +41,7 @@ body:
     id: version
     attributes:
       label: Port build
-      description: "The commit (`git rev-parse --short HEAD`) of the build you ran."
+      description: "The version and commit at the top of the game's log file, or the name of the release file you downloaded, or for a build from source the commit (`git rev-parse --short HEAD`)."
     validations:
       required: true
   - type: input
@@ -60,4 +60,4 @@ body:
     id: logs
     attributes:
       label: Log file
-      description: "Attach the newest log file the program wrote, if any. Before attaching, open it and remove your Windows or Linux user name, home folder paths and any host name (search for your user name). Never attach game files, decrypted binaries, saves or keys."
+      description: "Attach the newest log from the `logs\\<game>\\` folder beside the game program (and the crash report, if there is one). The program already removes your user name and home folder from it; still open it and check, and remove any host name. Never attach game files, decrypted binaries, saves or keys."

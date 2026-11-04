@@ -1211,7 +1211,9 @@ def main(argv=None):
             if f["path"] not in rp:
                 rp.append(f["path"])
             print(f"RPCS3 folder: {f['path']}", file=sys.stderr)
-    if not a.dirs and not rp and not loc.get("library_folders") and not loc.get("rpcs3_folders"):
+    # --find-rpcs3 alone is a complete request even when no RPCS3 folder turns up: the launcher's first start runs
+    # `scan --library FILE --find-rpcs3` to create library.json (every game listed, "not added" until found).
+    if not a.dirs and not rp and not a.find_rpcs3 and not loc.get("library_folders") and not loc.get("rpcs3_folders"):
         ap.error("give a folder, --rpcs3 FOLDER or --find-rpcs3")
     games = scan(a.dirs, prior, depth=a.depth, rpcs3=rp)
     lib = make_library(games, prior=prior)

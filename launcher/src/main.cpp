@@ -331,8 +331,10 @@ static void BrowseFile(int field, const std::string& tag = "", bool elf = false)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Engine: `python3 tools/release/catalog.py` by default; --engine "CMD" or $RC_LAUNCHER_ENGINE replace it. The command is split
-// on spaces (double quotes group); every later argument is its own argv entry, so paths with spaces never meet a shell.
+// Engine: --engine "CMD" or $RC_LAUNCHER_ENGINE when given; else the bundled Python of the release zip
+// (<exe dir>/python/pythonw.exe <exe dir>/tools/release/catalog.py, see DefaultEngine); else `python3 tools/release/catalog.py`
+// from the working folder (a source checkout). The command is split on spaces (double quotes group); every later
+// argument is its own argv entry, so paths with spaces never meet a shell.
 static std::vector<std::string> SplitCommand(const std::string& c) {
     std::vector<std::string> out; std::string cur; bool q = false, any = false;
     for (char ch : c) {
@@ -342,6 +344,23 @@ static std::vector<std::string> SplitCommand(const std::string& c) {
     }
     if (any) out.push_back(cur);
     return out;
+}
+// The release zip's Python: paths are built from the exe's own folder exactly as SDL_GetBasePath reports it (its case
+// kept, never folded), not from the working folder, so starting the launcher from elsewhere still finds them.
+// pythonw.exe first: a GUI-subsystem Python, so no console window flashes up beside the launcher (its output still
+// reaches the launcher through the pipe); python.exe if only that one is there.
+static std::vector<std::string> DefaultEngine(const std::string& dir) {
+#ifdef _WIN32   // the bundled package is a Windows Python: never picked by a Linux build that sits in an unpacked zip
+    SDL_PathInfo pi;
+    for (const char* exe : {"pythonw.exe", "python.exe"}) {
+        std::string py = dir + "python\\" + exe;
+        if (!dir.empty() && SDL_GetPathInfo(py.c_str(), &pi) && pi.type == SDL_PATHTYPE_FILE)
+            return {py, dir + "tools\\release\\catalog.py"};
+    }
+#else
+    (void)dir;
+#endif
+    return {"python3", "tools/release/catalog.py"};
 }
 static void EngineThread(std::vector<std::string> argv) {
     std::vector<const char*> a; for (auto& x : argv) a.push_back(x.c_str());
@@ -381,6 +400,10 @@ static void EngineOverride(const std::string& game, const std::string& slot, con
 static void EngineClearOverride(const std::string& game, const std::string& slot) {
     RunEngine("g|" + game + "|" + slot, {"clear-override", "--library", A.libPath, "--game", game, "--slot", slot});
 }
+// First start: no library.json yet. The engine scans once (RPCS3's usual folders, read-only; no folder of the player's
+// is known yet) and writes it; the library screen shows "Checking..." meanwhile and reloads when it is done.
+static const char* kFirstScan = "l|first_scan";
+static void EngineFirstScan() { RunEngine(kFirstScan, {"scan", "--library", A.libPath, "--find-rpcs3"}); }
 // mode: "" set, "--add", "--remove", "--reset" (value ignored)
 static void EngineLocation(const std::string& key, const std::string& value, const std::string& mode = "") {
     std::vector<std::string> a = {"set-location", "--library", A.libPath, key};
@@ -709,6 +732,7 @@ static void DrawCard(Game& g, int idx, ImVec2 size, bool& selectMe) {
     }
 }
 
+static void RowStatus(const std::string& key);
 static void LibraryScreen(float W) {
     (void)W;
     float pad = A.S(24.f);
@@ -729,8 +753,14 @@ static void LibraryScreen(float W) {
     ImGui::SetCursorPosX(pad);
     float availW = ImGui::GetContentRegionAvail().x - pad;
     if (!A.lib.error.empty()) {
+        if (EngineBusy() && A.busyKey == kFirstScan) {     // first start: the engine is writing library.json
+            Dim("First start: looking for your games and writing library.json next to the launcher.");
+            RowStatus(kFirstScan);
+            return;
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, HexV(cBad)); ImGui::PushFont(A.fHeadBold, A.S(24.f)); ImGui::TextWrapped("%s", A.lib.error.c_str()); ImGui::PopFont(); ImGui::PopStyleColor();
         Dim("Start the launcher with --library FILE, or put library.json next to it.");
+        RowStatus(kFirstScan);                              // the first-start scan's message when it failed
         return;
     }
     ImGui::BeginGroup();
@@ -1203,6 +1233,13 @@ static ImFont* LoadFont(const char* file) {
     return f;
 }
 
+// Arguments are UTF-8 on every platform. On Windows SDL_main.h renames this function to SDL_main and supplies the
+// program's entry point (WinMain for the -mwindows release build), which calls SDL_RunApp(0, NULL, ...): SDL then reads
+// the wide command line (GetCommandLineW) and converts each argument to UTF-8, so a --library or --engine path with
+// non-ASCII characters arrives intact (no ANSI code page argv; the same effect as -municode with wmain). Every path
+// is then opened through UTF-8 APIs (SDL_LoadFile, SDL_GetPathInfo, SDL_CreateProcess, Dear ImGui's file open), and
+// the environment is read with SDL_getenv (UTF-8) rather than getenv (ANSI on Windows).
+// test_launcher_src.py keeps SDL_main.h included, SDL_MAIN_HANDLED undefined and getenv unused.
 int main(int argc, char** argv) {
     std::string shot, screenName = "library", selectId, engine; int W = 1280, H = 720; float progress = -1.f;
     const char* base = SDL_GetBasePath();
@@ -1220,8 +1257,8 @@ int main(int argc, char** argv) {
         else if (a == "--scroll") A.shotScroll = (float)atof(next().c_str());   // screenshots: scroll the screen down by this many px (at 720 high)
         else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--screenshot OUT.png --screen library|details|add|settings|locations|files [--select ID] [--size WxH] [--progress F] [--scroll PX]]\n"); return 2; }
     }
-    if (engine.empty()) { const char* e = getenv("RC_LAUNCHER_ENGINE"); engine = e && *e ? e : "python3 tools/release/catalog.py"; }
-    A.engineCmd = SplitCommand(engine);
+    if (engine.empty()) { const char* e = SDL_getenv("RC_LAUNCHER_ENGINE"); if (e && *e) engine = e; }
+    A.engineCmd = engine.empty() ? DefaultEngine(base ? base : "") : SplitCommand(engine);
     A.shotMode = !shot.empty();
     if (A.fontDir.empty()) {
         std::string d = std::string(base ? base : "") + "fonts"; SDL_PathInfo pi;
@@ -1249,6 +1286,10 @@ int main(int argc, char** argv) {
     A.scale = 0.f;
 
     A.lib = loadLibrary(A.libPath);
+    {   // first start: no library.json at all (an unreadable or broken one is shown as it is, never overwritten)
+        SDL_PathInfo lpi;
+        if (!A.shotMode && !SDL_GetPathInfo(A.libPath.c_str(), &lpi)) EngineFirstScan();
+    }
     for (auto& g : A.lib.games) {
         bool lit = LitState(g);
         g.colourTarget = lit ? 1.f : 0.f; g.colour = g.colourTarget;

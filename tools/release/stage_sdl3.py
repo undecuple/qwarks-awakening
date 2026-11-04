@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage SDL3.dll and its licence next to the exe (default work/release/sdl3; tools/build-rc.sh stages into work/stage/<game>).
 
-Copied from the Killzone 3 port on 2026-10-20 (PM: SDL3 is the standard for pad input); the two helpers it used from
+Copied from the Killzone 3 port (same author, MIT) on 2026-10-20: SDL3 is the standard for pad input; the two helpers it used from
 KZ3's assemble_payload.py (SDL3_SRC, pe_x64_problem) are inlined below.
 
 SDL3 (zlib licence) is what the game loads from its exe folder for native pads: DualShock 4, DualSense, Switch Pro,

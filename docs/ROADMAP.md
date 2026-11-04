@@ -1,7 +1,7 @@
 # Roadmap
 
 What is planned, in rough order. Done, in progress, planned. No dates: the order is firm, the timing is not.
-The first release, v0.1.0, is a source-only pre-release, and the port is not playable yet.
+Releases are pre-releases: v0.1.0 was source only, v0.2.0 adds a launcher preview for Windows. The port is not playable yet.
 
 ## 1. Ratchet & Clank Future: Tools of Destruction (first target)
 
@@ -22,17 +22,17 @@ mouse with rebindable controls, gamepad prompts. Gameplay changes stay optional.
 
 One at a time, after the first game works. The working order, from a survey of each game's program and files: A Crack
 in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as
-each one is tried. The main-CPU (PPU) code of four of them is already lifted to C with the same tools, and A Crack in Time
-builds into its own program and starts.
+each one is tried. The main-CPU (PPU) code of all of them is already lifted to C with the same tools, and A Crack in Time
+and Into the Nexus build into their own programs and show their intros.
 
 | Game | PS3 release | State |
 |---|---|---|
-| Ratchet & Clank Future: Quest for Booty | 2008 | SPU code lifted; PPU code not yet |
-| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and starts (1.20 update); ends after a few seconds on a black screen |
+| Ratchet & Clank Future: Quest for Booty | 2008 | PPU and SPU code lifted; not built yet |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and shows its intro (1.20 update), about one frame per second; not playable |
 | Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
 | Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
-| Ratchet & Clank: Into the Nexus | 2013 | PPU code of the 1.01 update lifted; not built yet |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; surveyed, nothing lifted yet |
+| Ratchet & Clank: Into the Nexus | 2013 | builds and shows its intro (1.01 update), about one frame per second; not playable |
+| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; PPU code lifted, not built yet |
 
 ## Not planned
 

@@ -25,6 +25,8 @@
 #include <sys/stat.h>
 #include "rc_log.h"   /* the logger (port/common/log, KZ3's logger): file log, crash files, header/end block */
 #include "rc_log_ident.h"   /* generated: game id/title/title ID/version/commit for the log header */
+void rc_settings_init(const char* game_id);   /* rc_settings.cpp: the per-game settings folder */
+std::string rc_settings_path(const char* name);
 extern "C" void edat_set_cache_dir(const char* dir);   /* libs/filesystem/edat.c, patch 5002 */
 
 #ifdef _WIN32
@@ -182,13 +184,17 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location, uint32_t offs
 }
 
 /* Display modes (KZ3 patch 2095, carried; ENHANCEMENT): windowed / borderless / fullscreen (DXGI exclusive), Alt+Enter
- * toggles windowed and the last fullscreen-type mode. The choice is kept in display.ini beside keybinds.ini
- * ([display] mode/scaling/filter), read here before the window opens and written by the window's thread when the mode
+ * toggles windowed and the last fullscreen-type mode. The choice is kept in display.ini in the game's own settings
+ * folder (rc_settings.h; per game since 2026-11-03, before that beside one shared keybinds.ini) ([display] mode/scaling/filter), read here before the window opens and written by the window's thread when the mode
  * changes. KZ3_DISPLAY / KZ3_DISPLAY_SCALING / KZ3_DISPLAY_FILTER (names from the patch) override it for one run.
  * Same code as KZ3's port/kz3/main.cpp display block. */
 #include "rsx_display_mode.h"
 #ifdef _WIN32
-extern "C" int  pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);   /* cellPad.c (patch 2095) */
+static bool rc_display_ini(wchar_t* out, size_t n)   /* <per-game folder>\display.ini (rc_settings.cpp) */
+{
+    const std::string p = rc_settings_path("display.ini");
+    return MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, out, (int)n) > 0;
+}
 extern "C" void rsx_display_configure(int saved_mode, int saved_scaling, int saved_filter, int saved_vsync,
                                       void (*save)(int mode, int scaling, int filter, int vsync));   /* rsx_null_backend.c */
 
@@ -197,7 +203,7 @@ static void rc_display_save(int mode, int scaling, int filter, int vsync)   /* v
     wchar_t p[1100];
     char t[512];
     const int n = rsx_dm_ini_write(t, sizeof t, mode, scaling, filter, vsync);
-    if (!pad_kb_sibling_path(L"display.ini", p, 1100)) return;
+    if (!rc_display_ini(p, 1100)) return;
     FILE* f = _wfopen(p, L"wb");
     const bool ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
     if (f) fclose(f);
@@ -211,7 +217,7 @@ static void rc_display_load(void)
     wchar_t p[1100];
     char t[2048];
     int mode = -1, scaling = -1, filter = -1, vsync = -1;
-    if (pad_kb_sibling_path(L"display.ini", p, 1100)) {
+    if (rc_display_ini(p, 1100)) {
         FILE* f = _wfopen(p, L"rb");
         if (f) {
             const size_t n = fread(t, 1, sizeof t - 1, f);
@@ -272,17 +278,36 @@ static DWORD WINAPI rc_close_watchdog(LPVOID)
     TerminateProcess(GetCurrentProcess(), 3);
     return 0;
 }
+/* Quit request from the game's own UI (port/rc/tods/tods_pause_quit.inc, ENHANCEMENT, RC_PAUSE_QUIT=1): 1 = quit to desktop,
+ * 2 = restart (the title entry with RC_PAUSE_QUIT_TITLE=restart). The frame loop takes it like a window close. */
+extern "C" { volatile int g_rc_quit_request = 0; }
+
 static void rc_exit_on_window_close(void)
 {
     LARGE_INTEGER f, t0, t1;
     QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
-    RC_LOGI("exit", "window closed: shutting down (live draw %s)", s_rsx_live ? "on" : "off");
+    const int req = g_rc_quit_request;
+    RC_LOGI("exit", "%s: shutting down (live draw %s)", req == 1 ? "quit to desktop from the game's menu" : req == 2 ?
+            "restart from the game's menu" : "window closed", s_rsx_live ? "on" : "off");
     HANDLE wd = CreateThread(NULL, 0, rc_close_watchdog, NULL, 0, NULL);
     (void)wd;
     if (s_rsx_live) rsx_live_draw_shutdown();
     QueryPerformanceCounter(&t1);
     RC_LOGI("exit", "clean exit after %.0f ms (exit code 0)", (double)(t1.QuadPart - t0.QuadPart) * 1e3 / (double)f.QuadPart);
-    rc_log_exit(0, "window closed by the player, clean shutdown");
+#ifdef _WIN32
+    if (req == 2) {   /* the same exe and command line, started after this one's shutdown work (log still open for the line) */
+        STARTUPINFOW si; PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof si); si.cb = sizeof si; memset(&pi, 0, sizeof pi);
+        if (CreateProcessW(NULL, GetCommandLineW(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            RC_LOGI("exit", "restart: new process %lu started", (unsigned long)pi.dwProcessId);
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        } else {
+            RC_LOGE("exit", "restart: CreateProcess failed (error %lu); exiting only", (unsigned long)GetLastError());
+        }
+    }
+#endif
+    rc_log_exit(0, req == 1 ? "quit to desktop from the game's menu, clean shutdown" : req == 2 ? "restart from the game's menu"
+                            : "window closed by the player, clean shutdown");
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(), 0);
 }
@@ -414,7 +439,7 @@ static DWORD WINAPI frame_clock(LPVOID)
             }
             cellGcm_rsx_process_fifo();
 
-            if (rc_rsx_pump() != 0) {
+            if (rc_rsx_pump() != 0 || g_rc_quit_request) {
                 rc_exit_on_window_close();   /* does not return */
                 rsx_ok = 0;
                 continue;
@@ -636,6 +661,11 @@ int main(int argc, char** argv)
 #endif
 
     printf("=== the game (ps3recomp) ===\n");
+
+    /* Per-game settings folder <data folder>/<game id>/ (rc_settings.h): keybinds.ini (the game's default keys and the
+     * [mouse] section, R&C patch 6011), display.ini, settings.ini. Before the env defaults below: a settings.ini value
+     * is put into the environment when the variable is unset, so environment > file > built-in default. */
+    rc_settings_init(RC_LOG_GAME_ID);
 
     /* Runtime defaults (an explicit environment setting still wins), the general part of KZ3's list:
      *  PS3_CAMERA=0     no PlayStation Eye; the HLE reports one otherwise.

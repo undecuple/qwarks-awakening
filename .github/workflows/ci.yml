@@ -1,6 +1,8 @@
 # CI without the game: the program cannot be built here (the lifted code comes from the player's own EBOOT and is never
 # committed), so this checks what can be checked without game data: that every patch applies to the pinned ps3recomp,
-# and that no secret is in the history.
+# that the release tools pass their host tests and every toolchain download is pinned, and that no secret is in the
+# history, and that the launcher still cross-compiles for Windows with the pinned toolchain (the release itself is
+# built in release.yml, on tags and manual dry runs only).
 name: CI
 on:
   push:
@@ -19,9 +21,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
       - name: Patches apply to the pinned ps3recomp
         run: nix develop .#ci --command bash tools/ps3recomp-patched.sh
+
+  release-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Host tests of the release tools
+        # every test runs; the step fails at the end and names the failed ones
+        run: |
+          failed=""
+          for t in tools/release/test_*.py; do
+            python3 "$t" || failed="$failed $t"
+          done
+          if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
+      - name: Toolchain manifest (every download pinned)
+        run: python3 tools/release/fetch_toolchain.py --check --strict
+
+  # The launcher, cross-compiled for Windows on every push with the pinned toolchain (the release builds it on a
+  # Windows runner only at a tag): llvm-mingw's Linux build and SDL3's MinGW devel package from
+  # tools/release/toolchain.json (SHA-256 checked), CMake and Ninja from the flake's .#ci shell (flake.lock).
+  # Ubuntu's own packages have no SDL3 on ubuntu-latest (24.04), so there is no native build here.
+  launcher-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dear ImGui submodule (not ps3recomp)
+        run: git submodule update --init --depth 1 third_party/imgui
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
+      - name: Toolchain (llvm-mingw for Linux, SDL3 MinGW devel; SHA-256 checked)
+        run: python3 tools/release/fetch_toolchain.py --only llvm-mingw-linux,sdl3
+      - name: Launcher (cross-compiled for Windows x64)
+        run: |
+          nix develop .#ci --command env LLVM_MINGW="$PWD/work/release/toolchain-cache/trees/llvm-mingw-linux" \
+            tools/release/build_launcher.sh build/launcher-release
+      - name: Launcher imports (system DLLs and SDL3.dll only)
+        run: python3 tools/release/pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe
 
   secrets:
     runs-on: ubuntu-latest
@@ -29,6 +73,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Gitleaks (full history)
         run: |
           curl -sSfL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz

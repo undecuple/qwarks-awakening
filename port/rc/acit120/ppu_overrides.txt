@@ -1,0 +1,12 @@
+# port/rc/acit120/ppu_overrides.txt (ps3recomp ppu_lifter.py --overrides, patch 1018; setjmp/longjmp rows: patch 1116).
+# A Crack in Time 1.20 (BCUS98124). No host-replaced functions yet (a bare 8-digit address line would be one).
+#
+# Guest setjmp/longjmp host frames (KZ3 patch 1116, the general form of ToD's tods_lua_ljmp.inc), 2026-11-03,
+# the RE notes section 17. The lifted libc longjmp restored the guest registers and
+# RETURNED into Lua's luaD_throw @0x0050B0DC, which then ran its no-handler branch with r3 = 1 as L (null reads 0x11 =
+# G(L), 0x58 = G->panic), and exit(1) @0x0050B1F0 -> libc exit @0x008FFB68 (sys_prx_exitspawn_with_level(0) @0x000102D8,
+# then sys_process_exit(1)): the acit-boot3 exit. Every caught Lua error ended the process; on the console it is caught.
+# The only setjmp call site is @0x0050AF94 in luaD_rawrunprotected @0x0050AF5C (jmp_buf = &lj.b = r1+0x74, lj.status at
+# r1+0x294 = jmp_buf + 0x220); the only longjmp call site is @0x0050B130 in luaD_throw. KZ3_LJMP=0 = the old behaviour.
+setjmp 0090AF28 status=0x220   # libc setjmp (r1, r2, r13..r31, lr, cr, f14..f31, vrsave, v20..v31 at (r3+15)&~15; returns 0)
+longjmp 0090B04C               # libc longjmp (restores them, r3 = r4 ? r4 : 1)

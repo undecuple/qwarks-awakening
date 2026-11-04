@@ -31,7 +31,8 @@ playing are not measured; they will be listed here once the game is playable.
 
 ## Distribution
 
-The first release, v0.1.0, is a source-only pre-release on this repository's
-[GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page. You build the program on your machine
+Releases are pre-releases on this repository's
+[GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page; since v0.2.0 each one has a launcher
+preview for Windows that does not build or start a game yet. You build the program on your machine
 from your own copy of the game ([BUILDING.md](BUILDING.md)); no game code is shipped or downloaded. There is no
 installer yet.

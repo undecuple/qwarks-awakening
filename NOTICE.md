@@ -9,6 +9,8 @@
 | [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani) (Indian Type Foundry) | small text in `assets/`; the font itself is not included | SIL OFL 1.1 |
 | [Dear ImGui](https://github.com/ocornut/imgui) (Omar Cornut) | the launcher's interface (submodule `third_party/imgui`, v1.93.0) | MIT |
 | [SDL3](https://libsdl.org/) (Sam Lantinga and SDL contributors) | window, input, gamepads and PNG reading/writing in the launcher and the games | zlib |
+| [Python](https://www.python.org/) (Python Software Foundation) | the official Windows embeddable package 3.13.16, unmodified, in the launcher download's `python\` folder: it runs the launcher's setup engine (`tools/release/catalog.py`); its `LICENSE.txt` (also covering the libraries CPython bundles) is in the download's `licenses\` | PSF-2.0 |
+| [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), [CMake](https://cmake.org/), [Ninja](https://ninja-build.org/) | build the launcher download in the release workflow (`.github/workflows/release.yml`); not included in it | Apache-2.0 WITH LLVM-exception (and MinGW-w64's terms), BSD-3-Clause, Apache-2.0 |
 | [Rajdhani](https://github.com/google/fonts/tree/main/ofl/rajdhani), [Barlow](https://github.com/google/fonts/tree/main/ofl/barlow) (Jeremy Tribby) and [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) | the launcher's headings, text and wordmark; the TTF files ship in `launcher/fonts/` with their licence texts | SIL OFL 1.1 |
 | [IGDB](https://www.igdb.com/) | cover art, only when the player turns "Fetch cover art from the internet" on (not active yet) | their terms |
 
@@ -20,8 +22,9 @@ author's sister ports. Each patch header names its source.
 - **Project Helghast** ([undecuple/project-helghast](https://github.com/undecuple/project-helghast), the author's
   Killzone 3 port, MIT): patches `0xxx`-`5xxx`, `9633` and `9933`, carried from that port's patch series, unchanged
   or rebased; and the file logger (`kz3_log.c`, `kz3_log.h`, `kz3_log_redact.h`: levels and tags, crash reports, redaction
-  of the user's name), copied into `port/common/log/` with the Ratchet & Clank file names and header block added.
-  Most of the entries below reach this port through that series.
+  of the user's name), copied into `port/common/log/` with the Ratchet & Clank file names and header block added;
+  and its keybinds file and mouse settings, which R&C patch 6011 and `port/rc/rc_settings.*` extend to one settings
+  folder and one key table per game. Most of the entries below reach this port through that series.
 - **Project Pyrrhus** ([undecuple/project-pyrrhus](https://github.com/undecuple/project-pyrrhus), the author's
   Killzone 2 port, MIT), through the Killzone 3 series: patches 1059 (design of the per-waiter `sys_lwcond` FIFO),
   1139 (console `sys_fs_open` flag values), 1143 (kernel wake events under Wine), 2088 and 2089 (`WPOS` and the clear

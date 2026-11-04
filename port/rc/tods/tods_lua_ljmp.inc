@@ -100,7 +100,18 @@ static void log_caught(uint32_t L, int32_t status)
 void func_00671CA8(ppu_context* ctx)
 {
     using namespace tods_lua_ljmp;
-    if (!enabled() || s_n >= kMax) { func_00671CA8__lifted(ctx); return; }
+#ifdef TODS_PAUSE_QUIT_HOOK
+    TodsPauseQuitCall pq;                                                   /* tods_pause_quit.inc: the pause menu's two extra rows */
+    tods_pause_quit_before(ctx, &pq);
+    const uint32_t pq_L = (uint32_t)ctx->gpr[3];
+#endif
+    if (!enabled() || s_n >= kMax) {
+        func_00671CA8__lifted(ctx);
+#ifdef TODS_PAUSE_QUIT_HOOK
+        tods_pause_quit_after(ctx, &pq, pq_L);
+#endif
+        return;
+    }
     const uint64_t frame = ctx->gpr[1] - 0x2B0;                             /* stdu r1,-0x2B0(r1) @0x671CB0 */
     const uint32_t jb = (uint32_t)((frame + 0x74 + 0xF) & ~0xFull);         /* &lj.b @0x671CD0, aligned as in setjmp @0x826A10 */
     jmp_buf host;
@@ -111,6 +122,9 @@ void func_00671CA8(ppu_context* ctx)
     if (setjmp(host) == 0) {
         func_00671CA8__lifted(ctx);                                         /* status 0 path (or an error caught by a deeper frame) */
         s_n = me;
+#ifdef TODS_PAUSE_QUIT_HOOK
+        tods_pause_quit_after(ctx, &pq, pq_L);                              /* only on a normal return; a landing is an error */
+#endif
         return;
     }
     /* Landed from longjmp: the guest registers are the ones setjmp saved, r3 = longjmp's value (never 0). */

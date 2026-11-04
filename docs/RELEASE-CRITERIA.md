@@ -13,6 +13,12 @@ generated from the player's own copy of the game ([BUILDING.md](BUILDING.md)). I
 *Tools of Destruction* starts and can be played by hand from its first level, with the known bugs listed in the
 README, and has not been played through. The other games are not running.
 
+## What v0.2.0 adds
+
+A launcher preview for Windows, built by the release workflow from this repository and attached to the release with
+its SHA-256: it lists the games and the files it finds, with Python included for its scanner. It does not build or
+start a game yet. Still no installer and no game program.
+
 ## Gates for a v0.x tag (preview)
 
 1. **CI green** on the commit that is tagged: every patch in `port/patches/` applies to the pinned ps3recomp, and the
@@ -25,7 +31,8 @@ README, and has not been played through. The other games are not running.
    checked to agree before the tag.
 5. **Release notes from the changelog:** the tag's section of [CHANGELOG.md](../CHANGELOG.md); a release never goes
    out with generic text.
-6. **SHA256SUMS** published beside any uploaded asset.
+6. **SHA256SUMS** published beside any uploaded asset; the launcher download is built by the release workflow from the
+   tagged commit, never uploaded by hand, and started once on Windows or under Proton before the draft is published.
 7. **Tags are never moved**; a fix is a new tag (v0.1.1), a feature a new minor version (v0.2.0).
 8. **Published as a pre-release** while the version is 0.x.
 

@@ -10,7 +10,7 @@ if(NOT RC_EXE)
     set(RC_EXE "${RC_GAME}")
 endif()
 project(rc_${RC_GAME}
-    VERSION 0.1.0
+    VERSION 0.2.0
     LANGUAGES C CXX
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )
@@ -232,6 +232,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rc_log_ident.h.in" "${CMAKE_CURRENT_
 
 add_executable(${PROJECT_NAME}
     main.cpp
+    rc_settings.cpp                          # per-game settings folder (keybinds.ini, display.ini, settings.ini)
     ${RC_LOG_SOURCES}
     stubs.cpp
     ${RC_GAME}/hle_${RC_GAME}.cpp            # the game's HLE for imports the runtime leaves unresolved
@@ -276,6 +277,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${PS3RECOMP_DIR}/runtime/syscalls"
     "${PS3RECOMP_DIR}/runtime/platform"        # win32_compat.h and friends
     "${PS3RECOMP_DIR}/libs/video"
+    "${PS3RECOMP_DIR}/libs/input"              # pad_kb_profile.h (R&C patch 6011)
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
@@ -296,7 +298,7 @@ if(RC_LOG_REDIRECT)
     target_compile_definitions(ps3recomp_runtime PRIVATE KZ3_LOG_REDIRECT_STDIO)
     target_compile_options(ps3recomp_runtime PRIVATE -include "${RC_LOG_HEADER}")
     target_include_directories(ps3recomp_runtime PRIVATE "${RC_LOG_DIR_SRC}")
-    set(RC_REDIRECTED main.cpp stubs.cpp ${RC_GAME}/hle_${RC_GAME}.cpp ${GAME_OVERRIDES} ${PS3RECOMP_SCAFFOLD})
+    set(RC_REDIRECTED main.cpp rc_settings.cpp stubs.cpp ${RC_GAME}/hle_${RC_GAME}.cpp ${GAME_OVERRIDES} ${PS3RECOMP_SCAFFOLD})
     set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_DEFINITIONS KZ3_LOG_REDIRECT_STDIO)
     set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_OPTIONS -include "${RC_LOG_HEADER}")
 endif()

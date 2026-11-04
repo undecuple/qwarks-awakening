@@ -1,0 +1,11 @@
+# Keeps the workflows' action pins (full commit SHAs with a version comment) current: one grouped pull request a week
+# for GitHub Actions. Nothing else is updated automatically.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

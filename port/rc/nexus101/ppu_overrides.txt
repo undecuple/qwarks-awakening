@@ -1,0 +1,10 @@
+# port/rc/nexus101/ppu_overrides.txt (ps3recomp ppu_lifter.py --overrides, patch 1018; setjmp/longjmp rows: patch 1116).
+# Into the Nexus 1.01 (BCUS99245). No host-replaced functions yet (a bare 8-digit address line would be one).
+#
+# Guest setjmp/longjmp host frames, as A Crack in Time 1.20 (port/rc/acit120/ppu_overrides.txt): without them a caught
+# Lua 5.1 error returns from longjmp into luaD_throw and ends the process (exit(1)). 2026-11-03.
+# ASSUMPTION: the addresses are the ELF's only setjmp/longjmp pair, found by their first register save/restore
+# instruction (the function starts 8 bytes earlier); the call sites and the lj.status offset (0x220, as ACiT) are not
+# checked yet. The first boot's "[ljmp] caught" lines confirm them.
+setjmp 00A0A0FC status=0x220   # libc setjmp
+longjmp 00A0A220               # libc longjmp

@@ -6,8 +6,8 @@ Only one game, *Ratchet & Clank Future: Tools of Destruction*, is being ported s
 
 **Status: early work.** The game starts and can be played by hand from its first level, with known bugs; it has not
 been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux. The
-first release, v0.1.0, is source only and there is no installer: the only way to get a build is the developer build
-from source with [Nix](https://nixos.org/), described below.
+releases carry no game program and there is no installer (v0.2.0 adds a launcher preview that does not build games
+yet): the only way to get a build is the developer build from source with [Nix](https://nixos.org/), described below.
 
 ## What you need
 

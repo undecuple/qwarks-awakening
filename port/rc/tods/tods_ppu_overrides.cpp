@@ -96,4 +96,6 @@ void func_007E3FA0(ppu_context* ctx)
 #endif
 
 #include "tods_bink_dump.inc"   /* R&C pass 4: RC_BINK_DUMP diagnostic (default off) */
+#define TODS_PAUSE_QUIT_HOOK 1
+#include "tods_pause_quit.inc"  /* ENHANCEMENT: pause menu QUIT TO MAIN MENU / QUIT TO DESKTOP (RC_PAUSE_QUIT=1), hooked in the next file */
 #include "tods_lua_ljmp.inc"    /* R&C pass 5: guest setjmp/longjmp for Lua errors (TODS_LUA_LJMP=0 = off) */

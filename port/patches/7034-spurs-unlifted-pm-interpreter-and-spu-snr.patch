@@ -1,0 +1,240 @@
+cellSpurs: run a policy module that has no lift in the SPU interpreter, and give the instance's SPUs thread ids and SNRs.
+
+Game: A Crack in Time 1.20 (run acit-boot4): the second SPURS instance "ig" (nSpus 5) has one workload, wid 2 "igPm/igPmWorkload",
+policy module 0x00AD9080, 0x230 bytes, argument 0x00FBB240. It had no lift, so spurs_resolve_pm refused it ("PM NOT LIFTED --
+workload will not run"); its ready count stayed 5 ([spurs-inst] "ig" ready=..05.. enabled=20000000) and the main thread spun
+forever at 0x0055CA4C (func_0055C828, called from 0x004E8950) waiting for bit 0x100 of the halfword at [[r30-0x7FB4]] + 0x0C,
+which Insomniac's SPU job kernel sets; last flip 6.66 s.
+The policy module is a loader (ila x4 header, entry LS 0xA00): it reads SPU_RdSigNotify1 as its SPU index, GETs 48 bytes at the
+workload argument, GETs the job kernel (EA 0x00AD8B00, 0x510 bytes, entry word +0x18 = 8 -> LS 0x3F5A0) to LS 0x3F580 and bisl's
+to it. The kernel never returns: a getllar/putllc ring of 8 job slots at LS 0x3FE00 (lock-line-lost events, mask 0x400) that
+DMAs each job's header and code from main memory and calls it. The game writes SNR1 = i to SPU i of the instance with
+sys_spu_thread_write_snr (@0x0069546C) on the ids cellSpursGetInfo returned (info at r1+0xB0, spuThreads[] read at r1+0xD8 =
+info + 0x28); GetInfo wrote 0 there, so the write failed.
+
+Changes:
+ - spurs_resolve_pm: a policy module with no lift gets spurs_pm_interp_entry (spurs_policy.c: spu_interp_run from LS 0xA00),
+   image id -1 = pure interpretation (never rejoins another image's lifted functions). RC_SPURS_PM_INTERP=0 = the old refusal.
+ - cellSpursGetInfo: spuThreads[i] (+0x28) = 0x7E000000 | instance << 8 | i for i < nSpus (synthetic: the instance's SPUs are
+   kernel threads, not lv2 SPU threads; ASSUMPTION: no title compares them with ids from elsewhere).
+ - sys_spu_thread_write_snr: an id lv2 does not know goes to g_spurs_snr_hook (installed by spurs_initialize_common), which
+   writes the SNR of that (instance, SPU): spurs_pm_snr_write keeps one register per (instance, SPU) (overwrite, 1 deep); the
+   policy-module context running on that SPU gets it at once (and is woken), else it is pending and the next run on that SPU
+   takes it into its context; what a run did not read is given back when it ends.
+ToD: every policy module of ToD is lifted (no change), it never calls write_snr (no syscall 184 in its lifted code), and an id
+from GetInfo passed to any other SPU-thread syscall fails with ESRCH as 0 did.
+Host test: port/rc/tests/run_spurs_pm_interp_test.sh.
+
+diff -ruN a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+--- a/libs/spurs/cellSpurs.c	2026-11-03 21:01:47.662977053 -0600
++++ b/libs/spurs/cellSpurs.c	2026-11-03 21:03:07.740874419 -0600
+@@ -459,6 +459,20 @@
+     volatile long kernel_live; /* poll thread started */
+     int           nthreads;    /* kernel threads (KZ3_SPURS_THREADS, patch 1006) */
+ } s_inst[MAX_SPURS_INST];
++/* R&C patch 7034: synthetic SPU thread ids of an instance's SPUs (cellSpursGetInfo) and their SNR writes. */
++#define RC_SPURS_TID_TAG 0x7E000000u
++static u32 rc_spurs_spu_tid(int inst, int spu) { return RC_SPURS_TID_TAG | ((u32)inst << 8) | (u32)spu; }
++static int rc_spurs_snr_hook(uint32_t tid, uint32_t num, uint32_t val)
++{
++    if ((tid & 0xFFFF0000u) != RC_SPURS_TID_TAG) return -1;
++    const u32 j = (tid >> 8) & 0xFF, i = tid & 0xFF;
++    if (j >= MAX_SPURS_INST || !s_inst[j].ea || i >= s_inst[j].nspus) return -1;
++    extern int spurs_pm_snr_write(uint32_t spurs_ea, uint32_t spu, uint32_t num, uint32_t val, int or_mode);
++    const int rc = spurs_pm_snr_write(s_inst[j].ea, i, num, val, 0);
++    static volatile long s_n; if (__atomic_add_fetch(&s_n, 1, __ATOMIC_RELAXED) <= 16)
++        printf("[cellSpurs] write_snr \"%s\" spu %u snr%u <- 0x%08X%s\n", s_inst[j].prefix, i, num + 1, val, rc ? " (dropped)" : "");
++    return rc;
++}
+ static DWORD WINAPI spurs_watch_thread(LPVOID p);   /* KZ3 patch 1013 */
+ /* KZ3 patch 1011: the policy-module run in progress per instance (kernel thread 0). */
+ /* KZ3 patch 1047 (SPU pass 34, RE pass 70): run state per (instance, kernel thread), not per instance: with
+@@ -773,6 +787,8 @@
+           si->nspus = (u32)s_ns; } }
+     memset(si->prefix, 0, sizeof(si->prefix));
+     if (prefix) memcpy(si->prefix, prefix, 15);
++    { extern int (*g_spurs_snr_hook)(uint32_t, uint32_t, uint32_t);   /* R&C patch 7034, lv2_register.c */
++      g_spurs_snr_hook = rc_spurs_snr_hook; }
+ 
+     /* Real BE instance: zero it, then the few live fields. (The global
+      * workload table is NOT wiped here — the title may init several SPURS
+@@ -2083,6 +2099,14 @@
+ } WklPm;
+ static WklPm s_wkl_pm[CELL_SPURS_MAX_WORKLOAD];
+ 
++/* R&C patch 7034: an unlifted policy module runs in the interpreter (default on; RC_SPURS_PM_INTERP=0 restores the
++ * old refusal). */
++static int spurs_pm_interp_on(void)
++{
++    static int s = -1;
++    if (s < 0) { const char* e = getenv("RC_SPURS_PM_INTERP"); s = (e && *e == '0') ? 0 : 1; }
++    return s;
++}
+ static WklPm* spurs_resolve_pm(u32 wid)
+ {
+     WklPm* r = &s_wkl_pm[wid];
+@@ -2095,7 +2119,15 @@
+     if (r->fn)
+         printf("[cellSpurs] wid=%u PM resolved (fp=0x%016llX image=%d)\n",
+                wid, (unsigned long long)fp, r->image_id);
+-    else {
++    else if (spurs_pm_interp_on()) {
++        /* R&C patch 7034: no lift -> the SPU interpreter runs it from its load base (spurs_policy.c), image id -1
++         * (pure interpretation). The SPU runs any policy module it is given; "will not run" left the workload's
++         * ready count standing and whatever the PPU waits on from it never came (ACiT 1.20: igPm, wid 2 of "ig"). */
++        extern void SPU_ABI spurs_pm_interp_entry(spu_context*);
++        r->fn = spurs_pm_interp_entry; r->image_id = -1; r->resolved = 1;
++        printf("[cellSpurs] wid=%u PM not lifted (fp=0x%016llX size=%u): interpreted (RC_SPURS_PM_INTERP=0 = off)\n",
++               wid, (unsigned long long)fp, w->sizePm);
++    } else {
+         printf("[cellSpurs] wid=%u PM NOT LIFTED (fp=0x%016llX size=%u) -- workload will not run\n",
+                wid, (unsigned long long)fp, w->sizePm);
+         /* SPU_DUMP_MISS=<dir>: write the PM exactly as fingerprinted, like the
+@@ -4167,6 +4199,14 @@
+     if (info_ea) {
+         vm_write32((u32)info_ea, si ? si->nspus : 1);   /* nSpus */
+         for (int o = 4; o < 0x28; o += 4) vm_write32((u32)info_ea + o, 0);
++        /* R&C patch 7034: CellSpursInfo.spuThreads[8] (+0x28) = the instance's SPU thread ids, which the title
++         * may pass to sys_spu_thread_write_snr (ACiT 1.20 @0x006953BC..0x0069546C: info at r1+0xB0, ids read from
++         * r1+0xD8). The SPUs are kernel threads here, so the ids are synthetic, 0x7E000000 | instance << 8 | spu
++         * (ASSUMPTION: no title compares them with ids from another source); lv2's write_snr routes them to
++         * spurs_pm_snr_write. Unused rows stay 0. */
++        const int j = si ? (int)(si - s_inst) : -1;
++        for (int i = 0; i < 8; i++)
++            vm_write32((u32)info_ea + 0x28 + 4 * i, (si && i < (int)si->nspus) ? rc_spurs_spu_tid(j, i) : 0);
+     }
+     return CELL_OK;
+ }
+diff -ruN a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+--- a/runtime/spu/spurs_policy.c	2026-11-03 21:01:47.675977351 -0600
++++ b/runtime/spu/spurs_policy.c	2026-11-03 21:02:30.431829176 -0600
+@@ -58,6 +58,93 @@
+ {
+     return (wid < 16 && spu_num < 6) ? (void*)g_pm_ctx_tab[wid][spu_num] : NULL;
+ }
++
++/* R&C patch 7034: the signal notification registers of a SPURS instance's SPUs. On hardware every SPU of the
++ * instance is an SPU thread with its own SNR1/SNR2, and the PPU may write them with sys_spu_thread_write_snr on the
++ * thread ids cellSpursGetInfo returns (A Crack in Time writes SNR1 = i to SPU i, @0x0069546C, and its igPm policy
++ * module reads it with `rdch SPU_RdSigNotify1` as its SPU index). Here the SPUs are kernel threads that run policy
++ * modules in per-(workload, SPU) contexts, so the register lives in this table, per (instance, SPU): a write goes
++ * into the context running on that SPU (and wakes it), else it stays pending; a run takes the pending value into
++ * its context on entry and gives back what it did not read on exit. Overwrite mode unless or_mode (spu_cfg). */
++enum { SPURS_SNR_INST = 8, SPURS_SNR_SPU = 8 };
++static struct { uint32_t ea; uint32_t val[SPURS_SNR_SPU][2]; uint8_t pend[SPURS_SNR_SPU][2];
++                spu_context* cur[SPURS_SNR_SPU]; } s_snr[SPURS_SNR_INST];
++static volatile long s_snr_lock;
++#define SNR_LOCK()   while (__atomic_exchange_n(&s_snr_lock, 1, __ATOMIC_ACQUIRE)) {}
++#define SNR_UNLOCK() __atomic_store_n(&s_snr_lock, 0, __ATOMIC_RELEASE)
++static int spurs_snr_slot(uint32_t spurs_ea)   /* under the lock */
++{
++    for (int i = 0; i < SPURS_SNR_INST; i++) if (s_snr[i].ea == spurs_ea) return i;
++    for (int i = 0; i < SPURS_SNR_INST; i++) if (!s_snr[i].ea) { s_snr[i].ea = spurs_ea; return i; }
++    return -1;
++}
++static void spurs_snr_put(spu_channel* ch, uint32_t val, int or_mode)   /* a 1-deep register, not a queue */
++{
++    SPU_CH_LOCK(ch);
++    if (ch->count && or_mode) ch->value |= val; else ch->value = val;
++    ch->head = 0; ch->q[0] = ch->value; ch->count = 1;
++    SPU_CH_UNLOCK(ch);
++}
++int spurs_pm_snr_write(uint32_t spurs_ea, uint32_t spu, uint32_t num, uint32_t val, int or_mode)
++{
++    if (spu >= SPURS_SNR_SPU || num > 1) return -1;
++    SNR_LOCK();
++    const int s = spurs_snr_slot(spurs_ea);
++    if (s < 0) { SNR_UNLOCK(); return -1; }
++    spu_context* c = s_snr[s].cur[spu];
++    if (c) spurs_snr_put(&c->ch_sig_notify[num], val, or_mode);
++    else {
++        s_snr[s].val[spu][num] = (s_snr[s].pend[spu][num] && or_mode) ? (s_snr[s].val[spu][num] | val) : val;
++        s_snr[s].pend[spu][num] = 1;
++    }
++    SNR_UNLOCK();
++    if (c) { extern void spu_ch_wake(spu_context*); spu_ch_wake(c); }
++    return 0;
++}
++static void spurs_snr_enter(uint32_t spurs_ea, uint32_t spu, spu_context* ctx)
++{
++    if (spu >= SPURS_SNR_SPU) return;
++    SNR_LOCK();
++    const int s = spurs_snr_slot(spurs_ea);
++    if (s >= 0) {
++        s_snr[s].cur[spu] = ctx;
++        for (int n = 0; n < 2; n++) {
++            spu_channel* ch = &ctx->ch_sig_notify[n];
++            SPU_CH_LOCK(ch); ch->count = 0; ch->head = 0; SPU_CH_UNLOCK(ch);   /* the register belongs to the SPU */
++            if (s_snr[s].pend[spu][n]) { spurs_snr_put(ch, s_snr[s].val[spu][n], 0); s_snr[s].pend[spu][n] = 0; }
++        }
++    }
++    SNR_UNLOCK();
++}
++static void spurs_snr_leave(uint32_t spurs_ea, uint32_t spu, spu_context* ctx)
++{
++    if (spu >= SPURS_SNR_SPU) return;
++    SNR_LOCK();
++    const int s = spurs_snr_slot(spurs_ea);
++    if (s >= 0 && s_snr[s].cur[spu] == ctx) {
++        s_snr[s].cur[spu] = NULL;
++        for (int n = 0; n < 2; n++) {
++            spu_channel* ch = &ctx->ch_sig_notify[n];
++            SPU_CH_LOCK(ch);
++            if (ch->count) { s_snr[s].val[spu][n] = ch->value; s_snr[s].pend[spu][n] = 1; }
++            ch->count = 0; ch->head = 0;
++            SPU_CH_UNLOCK(ch);
++        }
++    }
++    SNR_UNLOCK();
++}
++#undef SNR_LOCK
++#undef SNR_UNLOCK
++
++/* R&C patch 7034: a policy module with no lift runs in the SPU interpreter from its load base, as the SPU would run
++ * it (cellSpurs.c spurs_resolve_pm gives it this entry and image id -1: pure interpretation, never a rejoin into
++ * another image's lifted functions). A Crack in Time's igPm workload (a 0x230-byte loader that DMAs Insomniac's job
++ * kernel to LS 0x3F580 and runs it) had no lift, so wid 2 of its "ig" instance never ran. */
++void SPU_ABI spurs_pm_interp_entry(spu_context* ctx)
++{
++    extern uint32_t spu_interp_run(spu_context*, uint32_t);
++    spu_interp_run(ctx, 0xA00);
++}
+ void spu_pm_ctx_describe(void* p, char* out, int n)
+ {
+     spu_context* c = (spu_context*)p;
+@@ -464,7 +551,9 @@
+     g_kz3_pm_run_t0 = kz3_pm_run_budget_ms() ? kz3_pm_now_ms() : 0;   /* patch 1048 */
+     kz3_pm_select_run_begin();                                        /* patch 1058 */
+     if (g_kz3_run_ctx_hook) g_kz3_run_ctx_hook(ctx, 1, 1, wid, spu_num);   /* KZ3 patch 1081 */
++    spurs_snr_enter(spurs_ea, spu_num, ctx);                          /* R&C patch 7034: this SPU's SNRs */
+     const int pm_halted = spu_run_with_halt(entry, ctx);
++    spurs_snr_leave(spurs_ea, spu_num, ctx);                          /* R&C patch 7034 */
+     if (g_kz3_run_ctx_hook) g_kz3_run_ctx_hook(ctx, 0, 1, wid, spu_num);   /* KZ3 patch 1081 */
+     g_kz3_pm_run_t0 = 0;
+     kz3_pm_select_run_end(ctx, wid);                                  /* patch 1058 */
+diff -ruN a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+--- a/runtime/syscalls/lv2_register.c	2026-11-03 21:01:47.669977214 -0600
++++ b/runtime/syscalls/lv2_register.c	2026-11-03 21:03:07.742585928 -0600
+@@ -2383,6 +2383,11 @@
+     return rc;
+ }
+ 
++/* R&C patch 7034: the SPUs of a SPURS instance are not lv2 SPU threads here (cellSpurs.c runs their policy modules
++ * on kernel threads); cellSpurs installs this to take a write to one of the ids its GetInfo hands out. Returns 0 when
++ * it took the write, nonzero for an id it does not know. */
++int (*g_spurs_snr_hook)(uint32_t tid, uint32_t num, uint32_t val) = 0;
++
+ /* sys_spu_thread_write_snr (sc-184): write an SPU Signal Notification Register.
+  * In OR mode (spu_cfg bit 0/1) the value is ORed into the pending register;
+  * in overwrite mode (default) it replaces it. The SPU reads via RdSigNotify1/2
+@@ -2397,6 +2402,10 @@
+         return -1;
+     }
+     spu_thread_t* t = spu_find_thread(tid);
++    if (!t && g_spurs_snr_hook && g_spurs_snr_hook(tid, num, val) == 0) {   /* R&C patch 7034: a SPURS instance's SPU */
++        ctx->gpr[3] = 0;
++        return 0;
++    }
+     if (!t) {
+         ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010005;
+         return -1;

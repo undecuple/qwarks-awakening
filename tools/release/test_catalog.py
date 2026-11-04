@@ -382,6 +382,26 @@ def run(tmp):
     with contextlib.redirect_stdout(buf):
         catalog.main(["scan", lib])
     check("tods" in buf.getvalue() and "ready_to_build" in buf.getvalue(), "CLI: table output")
+    # the launcher's first start: no library.json yet, no folder, --find-rpcs3 finding nothing -> a library of every
+    # game, none added (this machine's real RPCS3 folders are kept out by stubbing find_rpcs3)
+    first = os.path.join(tmp, "first", "library.json")
+    os.makedirs(os.path.dirname(first))
+    real_find = catalog.find_rpcs3
+    catalog.find_rpcs3 = lambda *a, **k: []
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = catalog.main(["scan", "--library", first, "--find-rpcs3"])
+    finally:
+        catalog.find_rpcs3 = real_find
+    fl = catalog.read_library(first) if os.path.isfile(first) else None
+    check(rc == 0 and fl and [x["id"] for x in fl["games"]] == [x["id"] for x in g]
+          and all(x["state"] == "not_added" for x in fl["games"]), "CLI: first start (scan --library F --find-rpcs3, nothing found) writes every game")
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc = catalog.main(["scan"])
+    except SystemExit as e:
+        rc = e.code
+    check(rc == 2, "CLI: scan with nothing to look at is still a usage error")
     run_rpcs3(tmp)
     run_locations(tmp)
 

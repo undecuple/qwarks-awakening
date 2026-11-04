@@ -1,0 +1,296 @@
+Patch 6011 (ENHANCEMENT): a port's keybinds profile, for a runtime that serves several games with different controls
+(keybinds per game; the Ratchet & Clank collection is one runtime with one exe and one settings folder
+per game, port/rc/rc_settings.{h,cpp}).
+Builds on Project Helghast's keybinds.ini (the Killzone 3 PC port, same author, MIT: patches 2037, 2061, 4011, 4013,
+4023, 4028 carried here as they are), and on its mouse settings (2069/2099/2101).
+libs/input/pad_kb_profile.h (new, pure types, C and C++): PadKbProfile = the file's title, a default key table
+(PadKbDefKey {input, key, key}), the uses the file's comments name (PadKbUse) and the defaults of a [mouse] section
+(PadKbMouse: look on/off, sensitivity, zoom_sensitivity, invert_y; -1 / <= 0 = not set).
+libs/input/pad_keybinds.h: pad_kb_profile (NULL = the built-in table and file, byte for byte as before: Project
+Helghast's host test test_pad_keybinds.c passes unchanged and the default file is identical); with a profile,
+pad_kb_defaults uses its table, the parser reads [mouse] (unknown keys and values logged, never fatal), the writer
+names the profile's title and uses and writes [mouse]. PadKeybinds gains `mouse` at its end (zero without a profile).
+libs/input/cellPad.c: cellPad_keybinds_profile(p) before the first read (later calls are logged and ignored);
+cellPad_keybinds_mouse(out) reads the file now if needed (written with the profile's defaults when missing) and
+returns its [mouse] section, so the port can feed the mouse switches (KZ3_MOUSE_*) before the window opens.
+The file's place is unchanged here: the port names it with KZ3_KEYBINDS (port/rc/rc_settings.cpp: the per-game folder).
+Host test: port/rc/tests/run_rc_settings_test.sh.
+
+diff -ruN a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -551,6 +551,27 @@
+     if (!s_kb_ready) { pad_kb_layout_update(); pad_kb_find_path(); pad_kb_load(1); s_kb_ready = 1; s_kb_checked_ms = GetTickCount64(); }
+ }
+ 
++/* R&C patch 6011 (pad_kb_profile.h): the port's keybinds profile, set before the bindings are first read (a later call
++ * changes nothing: the defaults and the file were already taken). */
++void cellPad_keybinds_profile(const PadKbProfile* p)
++{
++    AcquireSRWLockExclusive(&s_kb_lock);
++    if (!s_kb_ready) pad_kb_profile = p;
++    else printf("[keybinds] profile set after the first read: ignored\n");
++    ReleaseSRWLockExclusive(&s_kb_lock);
++}
++/* The [mouse] section of the file (read now when the bindings were not read yet; the file is written with the
++ * profile's defaults when missing). 0 without a profile. */
++int cellPad_keybinds_mouse(PadKbMouse* out)
++{
++    int ok;
++    AcquireSRWLockExclusive(&s_kb_lock);
++    ok = pad_kb_profile && out;
++    if (ok) { pad_kb_ensure_loaded(); *out = s_kb.mouse; }
++    ReleaseSRWLockExclusive(&s_kb_lock);
++    return ok;
++}
++
+ static int pad_remap_family_port0(void);   /* 4014, defined with the remap below */
+ 
+ /* KZ3 patch 4025: a port hook that answers the bridge commands of rows the pad library does not own (network pass 42:
+diff -ruN a/libs/input/pad_keybinds.h b/libs/input/pad_keybinds.h
+--- a/libs/input/pad_keybinds.h
++++ b/libs/input/pad_keybinds.h
+@@ -30,6 +30,8 @@
+ #include "pad_remap_ui.h"   /* 4014 */
+ #include "pad_action_custom.h"   /* 4023: Custom per action, [pad actions] */
+ #include "pad_dsu.h"   /* 4028: DSU motion port setting */
++#include "pad_kb_profile.h"   /* R&C 6011: a port's profile (default table, uses, [mouse]) */
++#include <stdlib.h>
+ #include <stddef.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -126,7 +128,22 @@
+ typedef struct { unsigned char key[PKB_N_INPUTS][PKB_SLOTS]; unsigned char prompts; unsigned char padmap;
+                  unsigned char padc[PRM_N]; PadActCustom pac; /* 4023 */
+                  unsigned short dsu;   /* 4028: DSU server port on 127.0.0.1, 0 = off ([motion] dsu_port) */
+-                 PadDsuMap dsumap;     /* 4028: server axis -> SIXAXIS word ([motion] word_x..word_g) */ } PadKeybinds;
++                 PadDsuMap dsumap;     /* 4028: server axis -> SIXAXIS word ([motion] word_x..word_g) */
++                 PadKbMouse mouse;     /* R&C 6011: [mouse] (read and written only with a profile) */ } PadKeybinds;
++
++/* R&C patch 6011: the port's profile (pad_kb_profile.h); NULL = the built-in table and file. */
++static const PadKbProfile* pad_kb_profile = NULL;
++
++/* The use the file's comment names for input i: the profile's text when it has one, else the built-in one. */
++static const char* pad_kb_use(int i)
++{
++    int k;
++    if (pad_kb_profile && pad_kb_profile->uses)
++        for (k = 0; k < pad_kb_profile->nuses; k++)
++            if (pad_kb_profile->uses[k].in && !strcmp(pad_kb_profile->uses[k].in, pad_kb_inputs[i].name))
++                return pad_kb_profile->uses[k].what;
++    return pad_kb_inputs[i].what;
++}
+ 
+ enum { PKB_PROMPTS_AUTO = 0, PKB_PROMPTS_PS3, PKB_PROMPTS_PS4, PKB_PROMPTS_XBOX, PKB_PROMPTS_KEYBOARD, PKB_N_PROMPTS };
+ static const char* const pkb_prompt_names[PKB_N_PROMPTS] = { "auto", "ps3", "ps4", "xbox", "keyboard" };
+@@ -346,12 +363,41 @@
+     pdsu_map_default(&kb->dsumap);   /* 4028 */
+     kb->padmap = PRM_DEFAULT_PRESET;
+     pac_defaults(&kb->pac);   /* 4023 */
++    if (pad_kb_profile) {   /* R&C 6011: the port's table replaces the built-in one */
++        int j;
++        for (j = 0; pad_kb_profile->keys && j < pad_kb_profile->nkeys; j++) {
++            const PadKbDefKey* e = &pad_kb_profile->keys[j];
++            int k = e->in ? pad_kb_input_by_name(e->in, strlen(e->in)) : -1;
++            if (k >= 0) { kb->key[k][0] = e->a; kb->key[k][1] = e->b; }
++        }
++        kb->mouse = pad_kb_profile->mouse;
++        return;
++    }
+     for (i = 0; i < sizeof d / sizeof d[0]; i++) {
+         int k = pad_kb_input_by_name(d[i].in, strlen(d[i].in));
+         if (k >= 0) { kb->key[k][0] = d[i].a; kb->key[k][1] = d[i].b; }
+     }
+ }
+ 
++/* R&C patch 6011: "on|off|1|0|yes|no|true|false" -> 1/0, -1 = unknown. */
++static int pad_kb_bool(const char* s, size_t n)
++{
++    if (pad_kb_ieq(s, n, "on") || pad_kb_ieq(s, n, "1") || pad_kb_ieq(s, n, "yes") || pad_kb_ieq(s, n, "true")) return 1;
++    if (pad_kb_ieq(s, n, "off") || pad_kb_ieq(s, n, "0") || pad_kb_ieq(s, n, "no") || pad_kb_ieq(s, n, "false")) return 0;
++    return -1;
++}
++/* A positive finite number below 1000 from s[0..n), else -1. */
++static float pad_kb_posf(const char* s, size_t n)
++{
++    char t[32];
++    char* e;
++    float v;
++    if (n == 0 || n >= sizeof t) return -1.0f;
++    memcpy(t, s, n); t[n] = 0;
++    v = strtof(t, &e);
++    return (e == t + n && v > 0.0f && v < 1000.0f) ? v : -1.0f;
++}
++
+ static void pad_kb_logf(PadKbLog log, void* ctx, int line, const char* what, const char* s, size_t n)
+ {
+     char m[200];
+@@ -368,7 +414,7 @@
+ static int pad_kb_parse(PadKeybinds* kb, const char* text, PadKbLog log, void* ctx)
+ {
+     const char* p = text;
+-    int line = 0, bad = 0, in_kb = 1, in_pr = 0, in_pd = 0, in_pa = 0, in_mo = 0, saw_pa = 0;
++    int line = 0, bad = 0, in_kb = 1, in_pr = 0, in_pd = 0, in_pa = 0, in_mo = 0, in_ms = 0, saw_pa = 0;
+     if (!text) return 0;
+     if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;
+     while (*p) {
+@@ -384,15 +430,16 @@
+         if (a < b) {
+             if (*a == '[') {
+                 const char* r = memchr(a, ']', (size_t)(b - a));
+-                if (!r) { pad_kb_logf(log, ctx, line, "broken section header", a, (size_t)(b - a)); bad++; in_kb = in_pr = in_pd = in_pa = in_mo = 0; }
++                if (!r) { pad_kb_logf(log, ctx, line, "broken section header", a, (size_t)(b - a)); bad++; in_kb = in_pr = in_pd = in_pa = in_mo = in_ms = 0; }
+                 else {
+                     in_kb = pad_kb_ieq(a + 1, (size_t)(r - a - 1), "keyboard");
+                     in_pr = pad_kb_ieq(a + 1, (size_t)(r - a - 1), "prompts");   /* 4011 */
+                     in_pd = pad_kb_ieq(a + 1, (size_t)(r - a - 1), "pad");        /* 4013 */
+                     in_pa = pad_kb_ieq(a + 1, (size_t)(r - a - 1), "pad actions");   /* 4023 */
+                     in_mo = pad_kb_ieq(a + 1, (size_t)(r - a - 1), "motion");     /* 4028 */
++                    in_ms = pad_kb_profile && pad_kb_ieq(a + 1, (size_t)(r - a - 1), "mouse");   /* R&C 6011 */
+                     if (in_pa) saw_pa = 1;
+-                    if (!in_kb && !in_pr && !in_pd && !in_pa && !in_mo) { pad_kb_logf(log, ctx, line, "section not read by this version", a, (size_t)(r - a + 1)); }
++                    if (!in_kb && !in_pr && !in_pd && !in_pa && !in_mo && !in_ms) { pad_kb_logf(log, ctx, line, "section not read by this version", a, (size_t)(r - a + 1)); }
+                 }
+             } else if (in_pa) {
+                 /* 4023: "<action group> = <pad button>|none|scheme" (pad_action_custom.h) */
+@@ -407,6 +454,26 @@
+                     if (rc == -1) { pad_kb_logf(log, ctx, line, "unknown pad action", a, (size_t)(ne - a)); bad++; }
+                     else if (rc == -2) { pad_kb_logf(log, ctx, line, "unknown or reserved pad button", v, (size_t)(b - v)); bad++; }
+                 }
++            } else if (in_ms) {
++                /* R&C 6011: "look = on|off", "sensitivity = <f>", "zoom_sensitivity = <f>", "invert_y = on|off" */
++                const char* q = memchr(a, '=', (size_t)(b - a));
++                const char *ne = q, *v = q ? q + 1 : NULL;
++                if (!q) { pad_kb_logf(log, ctx, line, "no '=' in", a, (size_t)(b - a)); bad++; }
++                else {
++                    int bv;
++                    float fv;
++                    while (ne > a && pad_kb_space(ne[-1])) ne--;
++                    while (v < b && pad_kb_space(*v)) v++;
++                    if (pad_kb_ieq(a, (size_t)(ne - a), "look") || pad_kb_ieq(a, (size_t)(ne - a), "invert_y")) {
++                        if ((bv = pad_kb_bool(v, (size_t)(b - v))) < 0) { pad_kb_logf(log, ctx, line, "not on/off", v, (size_t)(b - v)); bad++; }
++                        else if ((a[0] | 0x20) == 'l') kb->mouse.look = (signed char)bv;
++                        else kb->mouse.invert = (signed char)bv;
++                    } else if (pad_kb_ieq(a, (size_t)(ne - a), "sensitivity") || pad_kb_ieq(a, (size_t)(ne - a), "zoom_sensitivity")) {
++                        if ((fv = pad_kb_posf(v, (size_t)(b - v))) <= 0.0f) { pad_kb_logf(log, ctx, line, "not a positive number", v, (size_t)(b - v)); bad++; }
++                        else if ((a[0] | 0x20) == 's') kb->mouse.sens = fv;
++                        else kb->mouse.zoom = fv;
++                    } else { pad_kb_logf(log, ctx, line, "unknown mouse setting", a, (size_t)(ne - a)); bad++; }
++                }
+             } else if (in_mo) {
+                 /* 4028: "dsu_port = off|<port>" (pad_dsu.h; a port under 1024 or a word is logged and the value kept) */
+                 const char* q = memchr(a, '=', (size_t)(b - a));
+@@ -570,14 +637,16 @@
+     int i;
+ #define PKB_PUT(...) do { int w_ = snprintf(buf + (o < n ? o : n), o < n ? n - o : 0, __VA_ARGS__); \
+                           if (w_ > 0) o += (size_t)w_; } while (0)
+-    PKB_PUT("# " PS3RECOMP_PRODUCT_NAME " key bindings. Written with the defaults on the first start; edit and save, the game\n"
++    PKB_PUT("# %s key bindings. Written with the defaults on the first start; edit and save, the game\n"
+             "# reads it again within two seconds. Delete this file to get the defaults back.\n"
+-            "#\n"
++            "#\n", pad_kb_profile && pad_kb_profile->title ? pad_kb_profile->title : PS3RECOMP_PRODUCT_NAME);   /* R&C 6011 */
++    PKB_PUT(
+             "#   <pad input> = <primary key>, <secondary key>      (\"none\" or nothing = unbound)\n"
+             "#\n"
+             "# Key names are key POSITIONS, named after a US keyboard: W A S D mean the keys where a US board has\n"
+-            "# W A S D, on any layout (Z Q S D on French AZERTY). The game's Keyboard page shows your layout's labels.\n"
+-            "#\n"
++            "# W A S D, on any layout (Z Q S D on French AZERTY).%s\n"
++            "#\n", pad_kb_profile ? "" : " The game's Keyboard page shows your layout's labels.");
++    PKB_PUT(
+             "# Keys: A-Z 0-9 F1-F12 Space Enter Escape Tab Backspace CapsLock LeftShift RightShift LeftCtrl\n"
+             "#   RightCtrl LeftAlt RightAlt Up Down Left Right Insert Delete Home End PageUp PageDown Pause\n"
+             "#   Numpad0-Numpad9 NumpadAdd NumpadSubtract NumpadMultiply NumpadDivide NumpadDecimal Semicolon\n"
+@@ -585,8 +654,9 @@
+             "#   extra key left of Z on 102/105-key boards)\n"
+             "#   Mouse1 (left) Mouse2 (right) Mouse3 (middle) Mouse4 Mouse5\n"
+             "# Sticks: hold two keys of one stick for a diagonal. A pad plugged in works at the same time.\n"
+-            "# The uses listed are those of the Standard controller preset (Options > Controls).\n"
+-            "\n[keyboard]\n"
++            "# %s\n", pad_kb_profile ? "The uses listed are the game's default controls."
++                                      : "The uses listed are those of the Standard controller preset (Options > Controls).");
++    PKB_PUT("\n[keyboard]\n"
+             "keys     = positions             # this file names key positions (patch 2061); keep this line\n");
+     for (i = 0; i < PKB_N_INPUTS; i++) {
+         char v[64];
+@@ -594,7 +664,7 @@
+         else if (!kb->key[i][1]) snprintf(v, sizeof v, "%s", pad_kb_key_name(kb->key[i][0]));
+         else if (!kb->key[i][0]) snprintf(v, sizeof v, "none, %s", pad_kb_key_name(kb->key[i][1]));
+         else snprintf(v, sizeof v, "%s, %s", pad_kb_key_name(kb->key[i][0]), pad_kb_key_name(kb->key[i][1]));
+-        PKB_PUT("%-9s= %-22s# %s\n", pad_kb_inputs[i].name, v, pad_kb_inputs[i].what);
++        PKB_PUT("%-9s= %-22s# %s\n", pad_kb_inputs[i].name, v, pad_kb_use(i));
+     }
+     PKB_PUT("\n[prompts]\n"
+             "# Button pictures in the game (Options > Controls > Button prompts): auto = the device you used last,\n"
+@@ -628,6 +698,17 @@
+                 "# Not yet checked against a real DSU server: if aiming drifts or inverts, change these.\n"
+                 "word_x = %s\nword_y = %s\nword_z = %s\nword_g = %s\n", pv, wx, wy, wz, wg);
+     }
++    if (pad_kb_profile) {   /* R&C 6011 */
++        const PadKbMouse* m = &kb->mouse;
++        PKB_PUT("\n[mouse]\n"
++                "# Mouse look (the mouse turns the camera; the right stick keys still work): on or off. sensitivity is a\n"
++                "# factor on 0.022 degrees per mouse count (2.5 = 0.055); zoom_sensitivity an extra factor while zoomed.\n"
++                "# Read at the start; the environment (RC_MOUSE_LOOK, RC_MOUSE_SENS, ...) wins for one run.\n");
++        if (m->look >= 0) PKB_PUT("look             = %s\n", m->look ? "on" : "off");
++        if (m->sens > 0.0f) PKB_PUT("sensitivity      = %g\n", (double)m->sens);
++        if (m->zoom > 0.0f) PKB_PUT("zoom_sensitivity = %g\n", (double)m->zoom);
++        if (m->invert >= 0) PKB_PUT("invert_y         = %s\n", m->invert ? "on" : "off");
++    }
+ #undef PKB_PUT
+     return (int)o;
+ }
+diff -ruN a/libs/input/pad_kb_profile.h b/libs/input/pad_kb_profile.h
+--- /dev/null
++++ b/libs/input/pad_kb_profile.h
+@@ -0,0 +1,50 @@
++/*
++ * R&C patch 6011: a port's keybinds profile (pure types, C and C++).
++ *
++ * A port that runs several games on one runtime (the Ratchet & Clank collection: one exe per game, one settings
++ * folder per game) gives cellPad its game's profile before the first pad poll (cellPad_keybinds_profile): its default
++ * key table, the uses the file's comments name, the file's title, and a [mouse] section (mouse look on/off,
++ * sensitivity, zoom factor, invert) that the parser reads and the writer keeps. No profile (Project Helghast, every
++ * port that never calls it) = the built-in table and file exactly as before.
++ */
++#ifndef PAD_KB_PROFILE_H
++#define PAD_KB_PROFILE_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* One default binding: input name (pad_kb_inputs[], e.g. "cross", "ls_up"), primary and secondary key codes
++ * (Windows virtual keys of US key positions, as pad_kb_keys[]; 0 = none). Inputs a table leaves out are unbound. */
++typedef struct { const char* in; unsigned char a, b; } PadKbDefKey;
++
++/* The [mouse] section. look/invert: -1 = not set, 0 off, 1 on; sens/zoom: <= 0 = not set. */
++typedef struct {
++    signed char look;
++    signed char invert;
++    float sens;    /* the user factor on 0.022 deg/count (pad_mouse.h; KZ3_MOUSE_SENS) */
++    float zoom;    /* extra factor while zoomed (KZ3_MOUSE_ZOOM_SENS) */
++} PadKbMouse;
++
++/* Input uses for the file's comments, by input name; inputs not listed keep the built-in text. */
++typedef struct { const char* in; const char* what; } PadKbUse;
++
++typedef struct {
++    const char*        title;   /* the file's first line names it ("... key bindings"); NULL = PS3RECOMP_PRODUCT_NAME */
++    const PadKbDefKey* keys;
++    int                nkeys;
++    const PadKbUse*    uses;
++    int                nuses;
++    PadKbMouse         mouse;   /* the defaults of the [mouse] section */
++} PadKbProfile;
++
++/* cellPad.c (Windows): set before the first pad poll (the bindings are read once at the first poll; later calls
++ * are ignored after that). cellPad_keybinds_mouse: loads the file if not loaded yet (written with the profile's
++ * defaults when missing) and copies its [mouse] section; returns 0 without a profile or off Windows. */
++void cellPad_keybinds_profile(const PadKbProfile* p);
++int  cellPad_keybinds_mouse(PadKbMouse* out);
++
++#ifdef __cplusplus
++}
++#endif
++#endif

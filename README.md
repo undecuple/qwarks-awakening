@@ -14,8 +14,8 @@ A native Windows port of the PS3 Ratchet & Clank games, made by static recompila
 [ps3recomp](https://github.com/sp00nznet/ps3recomp); the first game, *Ratchet & Clank Future: Tools of Destruction*,
 needs your own copy of its **US disc, BCUS98127** (disc version, no update).
 
-**Status: early work, not playable yet.** Version <!-- version -->0.1.0<!-- /version -->, a source-only
-pre-release of 2026-11-03. *Tools of Destruction* starts and can be played by hand from its first
+**Status: early work, not playable yet.** Version <!-- version -->0.2.0<!-- /version -->, a
+pre-release of 2026-11-03: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from its first
 level, with known bugs, and has not been played through. What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
 **[Getting started](#getting-started)** · **[Compatibility](#compatibility)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
@@ -31,8 +31,8 @@ What is true and checked today:
   setups are in the table below). It has not been run on Windows itself yet.
 - **One runtime for the series.** All the games share one runtime and one set of tools, with one program per game. The
   PPU code of *A Crack in Time*, *All 4 One*, *Full Frontal Assault* and *Into the Nexus* is already lifted to C with the
-  same tools. *A Crack in Time* also builds into its own program and starts, but ends after a few seconds on a black
-  screen; the others are not built yet.
+  same tools. *A Crack in Time* and *Into the Nexus* also build into their own programs and show their intros, at about
+  one frame per second; the others are not built yet.
 - **Fixes sent upstream.** General fixes found while porting go back to ps3recomp as pull requests:
   [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#408](https://github.com/sp00nznet/ps3recomp/pull/408),
   [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429) and
@@ -63,19 +63,20 @@ What the runs on Proton showed, all on *Tools of Destruction*:
 | Game | PS3 release | State |
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
-| Ratchet & Clank Future: Quest for Booty | 2008 | SPU code lifted; PPU code not yet |
-| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and starts (1.20 update); ends after a few seconds on a black screen |
+| Ratchet & Clank Future: Quest for Booty | 2008 | PPU and SPU code lifted; not built yet |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and shows its intro (1.20 update), about one frame per second; not playable |
 | Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
 | Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
-| Ratchet & Clank: Into the Nexus | 2013 | PPU code of the 1.01 update lifted; not built yet |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; surveyed, nothing lifted yet |
+| Ratchet & Clank: Into the Nexus | 2013 | builds and shows its intro (1.01 update), about one frame per second; not playable |
+| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; PPU code lifted, not built yet |
 
 ## Getting started
 
-**Download.** The first release is **v0.1.0**, a pre-release, on this repository's
-[GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page. It is source code only: there is no
-installer and no ready-made game program, because the program is generated from your own copy of the game. Every
-release stays a pre-release until v1.0.0. No game code, assets or keys are ever shipped or downloaded here.
+**Download.** Releases are pre-releases on this repository's
+[GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page. Since v0.2.0 each one has a launcher
+preview for Windows (`Qwarks-Awakening-<version>-launcher-windows-x64.zip`, with Python included): it lists the games
+and the files it finds, and does not build or start a game yet. There is no installer and no ready-made game program,
+because the program is generated from your own copy of the game. Every release stays a pre-release until v1.0.0. No game code, assets or keys are ever shipped or downloaded here.
 
 **Requirements** ([docs/requirements.md](docs/requirements.md)): the US disc of *Ratchet & Clank Future: Tools of
 Destruction* (BCUS98127) as a decrypted folder dump of your own copy (the folder that holds `PS3_GAME/`), and its
