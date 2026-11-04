@@ -3,7 +3,7 @@
 # Windows (MinGW cross):   nix develop .#win --command bash -c 'cmake -S launcher -B build/launcher-win -G Ninja \
 #                              -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/launcher-win'
 cmake_minimum_required(VERSION 3.20)
-project(qwark_launcher VERSION 0.2.0 LANGUAGES CXX)
+project(qwark_launcher VERSION 0.2.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)

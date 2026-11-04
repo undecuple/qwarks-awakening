@@ -1,0 +1,67 @@
+cellSysutil: cellWebBrowserInitialize / Shutdown / Config2 / ConfigSetFunction2 / Estimate2 (system callback only, no browser).
+
+Quest for Booty (BCES00301) initialises the web browser utility for its front end and, after NEW GAME, calls
+cellWebBrowserShutdown and polls cellSysutilCheckCallback until its system callback gets cb_type 4 (SHUTDOWN_FINISHED).
+All five imports were unresolved, so the game stopped flipping right after its first save. Initialize queues
+INITIALIZING_FINISHED (1), Shutdown SHUTDOWN_FINISHED (4), through the sysutil completion queue (cb_type, usrdata 0);
+Estimate2 reports 1 MB (ASSUMPTION, RPCS3's placeholder). Create2/Destroy2 not added (no caller yet). R&C port patch 7041.
+
+--- a/libs/system/cellSysutil.c
++++ b/libs/system/cellSysutil.c
+@@ -813,3 +813,56 @@
+     fflush(NULL);
+     exit(0);
+ }
++
++/* ---- R&C patch 7041: cellWebBrowser system callback (Initialize / Shutdown) ----
++ * Quest for Booty (BCES00301) initialises the web browser utility for its front end and, after NEW GAME, calls
++ * cellWebBrowserShutdown and then polls cellSysutilCheckCallback until its system callback (0x002818A8) gets
++ * cb_type 4 (CELL_SYSUTIL_WEBBROWSER_SHUTDOWN_FINISHED: it clears the "initialised" byte the loop at 0x00281CA0
++ * waits on; cb_type 7, UNLOADING_FINISHED, clears the "open" byte). The five imports were unresolved, so the
++ * callback never came and the game stopped flipping right after its first save. No browser is shown: Initialize
++ * answers INITIALIZING_FINISHED (1) and Shutdown SHUTDOWN_FINISHED (4) through the system callback on the next
++ * sysutil poll, as RPCS3's cellSysutil web browser module does (read, not copied); the callback gets
++ * (cb_type, usrdata = 0). Config2 / ConfigSetFunction2 accept the config. Estimate2 reports 1 MB
++ * (ASSUMPTION: RPCS3's placeholder; the console's figure is not known; QfB sizes a memory container from it).
++ * Create2 / Destroy2 are not here: no title has called them yet. */
++static u32 s_webbrowser_cb = 0;
++
++s32 cellWebBrowserInitialize(u32 system_cb, u32 container)
++{
++    printf("[cellWebBrowser] Initialize(system_cb=0x%08X container=0x%X): no browser; INITIALIZING_FINISHED queued\n",
++           system_cb, container);
++    s_webbrowser_cb = system_cb;
++    if (system_cb) {
++        const u64 args[8] = {1 /* CELL_SYSUTIL_WEBBROWSER_INITIALIZING_FINISHED */, 0, 0, 0, 0, 0, 0, 0};
++        cellSysutilQueueGuestCallbackArgs(system_cb, args);
++    }
++    return CELL_OK;
++}
++
++void cellWebBrowserShutdown(void)
++{
++    printf("[cellWebBrowser] Shutdown: SHUTDOWN_FINISHED queued (system_cb=0x%08X)\n", s_webbrowser_cb);
++    if (s_webbrowser_cb) {
++        const u64 args[8] = {4 /* CELL_SYSUTIL_WEBBROWSER_SHUTDOWN_FINISHED */, 0, 0, 0, 0, 0, 0, 0};
++        cellSysutilQueueGuestCallbackArgs(s_webbrowser_cb, args);
++    }
++}
++
++s32 cellWebBrowserConfig2(u32 config, u32 version)
++{
++    printf("[cellWebBrowser] Config2(config=0x%08X version=0x%X)\n", config, version);
++    return CELL_OK;
++}
++
++s32 cellWebBrowserConfigSetFunction2(u32 config, u32 funcset)
++{
++    printf("[cellWebBrowser] ConfigSetFunction2(config=0x%08X funcset=0x%X)\n", config, funcset);
++    return CELL_OK;
++}
++
++s32 cellWebBrowserEstimate2(u32 config, u32 memSize)
++{
++    if (memSize) vm_write32(memSize, 1u * 1024u * 1024u);
++    printf("[cellWebBrowser] Estimate2(config=0x%08X) -> 1 MB\n", config);
++    return CELL_OK;
++}

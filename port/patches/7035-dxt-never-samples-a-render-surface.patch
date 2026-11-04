@@ -1,0 +1,141 @@
+A block-compressed (DXT1/23/45) texture never samples a render surface; plus a diagnostic alpha dump (LD_DUMP_ALPHA).
+Live draw's bind loop matched a texture to a colour surface by address alone (and to its own target through the
+feedback copy), whatever the texture's format. No RSX colour surface format is block-compressed, so on the console a
+DXT texture at a surface's address reads the bytes there as blocks. ToD binds a 16x16 DXT1 at VRAM offset 0 (the
+display buffer 0:0x0, 1280x720/704 surfaces) as its "no texture" unit: unit 2 of 562 scene draws of PSO 2e66e764
+(Fastoon spaceport, tods-gfx-cap3 frame 10016), unit 3 of the bloom chain and composite, unit 7 elsewhere. PSO
+2e66e764's program writes the colour output's alpha from that unit's blue, and the bloom bright pass (PSO 3c988e50)
+weights its taps by pow(alpha * c2.x, c3.y): with the whole display surface bound, the scene alpha was the last
+frame's blue, so the purple floor, sky and walls bloomed (composite 78ede0c4: dst += bloom * 0.8). Materials that map
+the unit across their faces showed the last frame itself, HUD included, rotated 180 degrees: the "Enter Ship" prompt on
+the spaceport wall (tods-gfx-scn: it appears between scene draws 280 and 320 into 0x870000). On the console the 128
+bytes at offset 0 are row 0 of the display buffer, which the frame's first draw (constant 0,0,0,0 quad, PSO 0f46b12b)
+zeroes: DXT1 black, alpha 1. The guest bytes there are 0 in the port too (tods-gfx-post draw-inputs u03.bin).
+Now such a texture skips the colour-surface match, the zeta alias and the self-read copy and is decoded from the guest
+bytes. LD_DXT_SURF_ALIAS=1 = old behaviour (A/B); "[dxt-alias]" lines log the first 8 refused aliases. Upstream
+ps3recomp PR #508 (merged 2026-10-26) makes the same rule for rsx_draw_engine.c; live draw had not got it.
+Diagnostic: LD_DUMP_ALPHA=1 writes <dump>.a.pgm next to every 8-bit surface dump (LD_SURF_DUMP, LD_DRAW_DUMP).
+Host test: R&C port/rc/tests/run_dxt_alias_test.sh.
+
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3755,6 +3755,7 @@
+ #define LD_WS_PAGES 4096u
+ #include "rsx_tex_writer.h"   /* patch 2083: one packed stamp per page (frame, mark sequence, source) */
+ #include "rsx_tex_samef.h"   /* patch 2137 */
++#include "rsx_dxt_alias.h"   /* R&C patch 7035 */
+ static volatile u64 g_ld_ws[LD_WS_PAGES];
+ static volatile LONG g_ld_ws_seq;
+ /* Patch 2137: RSX_TEX_SAMEF=1 re-hashes a texture bound again in the frame of its hash when a tracked writer stamped
+@@ -14957,6 +14958,25 @@
+          * descriptor actually declares; failing that, the most recently drawn
+          * one, which is the only other defensible answer. */
+         int sampled = -1;
++        /* R&C patch 7035: a DXT texture never samples a render surface (rsx_dxt_alias.h); it reads the guest bytes at
++         * its address. LD_DXT_SURF_ALIAS=1 = old behaviour (A/B). */
++        int dxt_own = 0;
++        { static int old = -1;
++          if (old < 0) { old = getenv("LD_DXT_SURF_ALIAS") ? 1 : 0;
++                         fprintf(stderr, "[dxt-alias] DXT textures %s render surfaces (LD_DXT_SURF_ALIAS)\n",
++                                 old ? "may alias" : "never alias"); }
++          dxt_own = !old && !ld_tex_may_alias_surface(t.format);
++          if (dxt_own) {
++              static u32 nlog;
++              for (u32 i = 0; i < g.n_surfaces && nlog < 8; i++)
++                  if (g.surfaces[i].location == t.location && g.surfaces[i].offset == t.offset) {
++                      nlog++;
++                      fprintf(stderr, "[dxt-alias] f=%u unit %u tex %u:0x%08X fmt=0x%02X %ux%u at surface[%u] %ux%u: "
++                              "guest bytes, not the surface\n", g_ld_frames, u, t.location, t.offset, t.format,
++                              t.width, t.height, i, g.surfaces[i].w, g.surfaces[i].h);
++                      break;
++                  }
++          } }
+         /* Patch 2022: Killzone 3's 0x2980000 is both the shadow map's colour
+          * target (colour writes masked) and a zeta (shadow map, then the
+          * half-res depth). Its X16 / DEPTH16 reads took the colour surface
+@@ -14966,7 +14986,7 @@
+         int zeta_pref = 0;
+         { static int off = -1;
+           if (off < 0) off = getenv("LD_NO_ZETA_PREFER") ? 1 : 0;
+-          const int zk = off ? ZALIAS_NONE : tex_zalias_kind(&t);
++          const int zk = (off || dxt_own) ? ZALIAS_NONE : tex_zalias_kind(&t);
+           zeta_pref = zk == ZALIAS_VALUE || zk == ZALIAS_SHADOW;
+           /* Patch 2044: an A8R8G8B8 read of a Z24S8 zeta (the depth rebuild of
+            * patch 2011) also takes the zeta when its depth was written after
+@@ -15004,7 +15024,7 @@
+         { static int off = -1;
+           if (off < 0) off = getenv("LD_NO_SELF_EXACT") ? 1 : 0;
+           const surface_t* tg = target < g.n_surfaces ? &g.surfaces[target] : NULL;
+-          self_exact = !off && !zeta_pref && tg && tg->location == t.location && tg->offset == t.offset &&
++          self_exact = !off && !zeta_pref && !dxt_own && tg && tg->location == t.location && tg->offset == t.offset &&
+                        tg->w == t.width && tg->h == t.height;
+           if (self_exact) {
+               static u32 nlog; static u64 nredir;
+@@ -15022,7 +15042,7 @@
+                   }
+               }
+           } }
+-        if (!zeta_pref && !self_exact) { u32 best_gen = 0;
++        if (!zeta_pref && !self_exact && !dxt_own) { u32 best_gen = 0;
+           for (u32 i = 0; i < g.n_surfaces; i++) {
+               const surface_t* sf_i = &g.surfaces[i];
+               if (sf_i->location != t.location || sf_i->offset != t.offset ||
+@@ -15163,7 +15183,7 @@
+             const int cw = ld_colour_window(&t, target);
+             if (cw >= 0) { slots[u] = (u32)cw; g_ld_bind_surf++; continue; }
+         }
+-        if (sampled < 0 && !zeta_pref && g.surfaces[target].location == t.location &&
++        if (sampled < 0 && !zeta_pref && !dxt_own && g.surfaces[target].location == t.location &&
+             g.surfaces[target].offset == t.offset) {
+             /* Reads its own render target: sample a copy of it. */
+             slots[u] = surface_feedback_srv(target);
+@@ -17638,6 +17658,21 @@
+                     fwrite(rgb, 1, 3, f);  /* RGBA->RGB */
+                 }
+             }
++            /* R&C patch 7035 (diagnostic): LD_DUMP_ALPHA=1 also writes the alpha channel of an 8-bit surface as
++             * <path>.a.pgm (the P6 above drops it; ToD keeps its glow mask in the scene's alpha). */
++            { static int da = -1; if (da < 0) da = getenv("LD_DUMP_ALPHA") ? 1 : 0;
++              if (da && !fp16 && f != g_ld_record_to) {
++                  char ap[MAX_PATH * 2 + 8]; snprintf(ap, sizeof ap, "%s.a.pgm", path);
++                  FILE* fa = fopen(ap, "wb");
++                  if (fa) {
++                      fprintf(fa, "P5\n%u %u\n255\n", width, height);
++                      for (u32 y = 0; y < height; y++) {
++                          const u8* row = px + (SIZE_T)y * pitch;
++                          for (u32 x = 0; x < width; x++) fputc(row[x * texel + 3], fa);
++                      }
++                      fclose(fa);
++                  }
++              } }
+             if (f != g_ld_record_to) {
+                 fclose(f);
+                 fprintf(stderr, "[live-draw] wrote %s\n", path);
+--- /dev/null
++++ b/libs/video/rsx_dxt_alias.h
+@@ -0,0 +1,25 @@
++/* R&C patch 7035: a block-compressed texture is never a render target's output.
++ *
++ * No RSX colour surface format is block-compressed (SURFACE_FORMAT colour formats are X1R5G5B5 .. A8B8G8R8, B8, G8B8,
++ * the float formats), so a DXT1/DXT23/DXT45 texture at a surface's address reads the guest bytes there as blocks; it
++ * never shows the surface's picture. Live draw's bind loop matched textures to colour surfaces by address alone and
++ * bound the whole surface. Tools of Destruction binds a 16x16 DXT1 at VRAM offset 0 (the display buffer 0:0x0, a
++ * 1280x704 surface) as the "no texture" unit of many scene materials (ToD Fastoon, tods-gfx-cap3 frame 10016:
++ * unit 2 of 562 draws of PSO 2e66e764, whose program writes the colour output's alpha from that unit's blue): the
++ * scene's alpha became the last frame's blue, the bloom bright pass (alpha-weighted) lit most of the frame, and wall
++ * panels that map the unit over their faces showed the last frame, HUD prompt included, upside down.
++ * Upstream ps3recomp PR #508 makes the same rule for rsx_draw_engine.c; this is live draw's bind loop.
++ * Pure function so a host test can check it (port/rc/tests/run_dxt_alias_test.sh). */
++#ifndef RSX_DXT_ALIAS_H
++#define RSX_DXT_ALIAS_H
++#include <stdint.h>
++
++/* 1 when a texture of this SET_TEXTURE_FORMAT format byte (LN/UN modifier bits allowed) may sample a render surface
++ * at its address; 0 for the compressed formats DXT1 (0x86), DXT23 (0x87), DXT45 (0x88). */
++static inline int ld_tex_may_alias_surface(uint32_t format)
++{
++    const uint32_t base = format & 0x9Fu;   /* RSX_TEX_FMT_BASE_MASK: the LN (0x20) and UN (0x40) bits off */
++    return !(base == 0x86u || base == 0x87u || base == 0x88u);
++}
++
++#endif

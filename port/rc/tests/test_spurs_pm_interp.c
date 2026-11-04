@@ -2,7 +2,8 @@
  * reaches the SNR of that (instance, SPU): pending when no policy-module run is on that SPU, delivered into the run's
  * context on entry, written straight into a running context, overwrite (1 deep), unread value given back on exit;
  * (3) spurs_resolve_pm gives an unlifted policy module the interpreter entry (image id -1), which interprets from LS 0xA00;
- * with RC_SPURS_PM_INTERP=0 (argv[1] = "off") it refuses as before. Unity build of the patched cellSpurs.c and spurs_policy.c
+ * with RC_SPURS_PM_INTERP=0 (argv[1] = "off") it refuses as before; (4, patch 7037) the interpreted entry turns on blocking
+ * channel reads (g_spu_force_ch_block) before the first instruction, unless RC_SPURS_PM_NOBLOCK is set (argv[1] = "noblock"). Unity build of the patched cellSpurs.c and spurs_policy.c
  * over a calloc'd guest window. Run with run_spurs_pm_interp_test.sh. */
 #include "libs/spurs/cellSpurs.c"
 #include "runtime/spu/spurs_policy.c"
@@ -10,8 +11,10 @@
 int (*g_kz3_spurs_kpoll)(uint32_t, uint32_t, uint32_t, uint32_t*);   /* spu_channels.c in the runtime */
 
 /* stand-ins for the runtime pieces these two files call on the tested paths */
+int g_spu_force_ch_block;   /* spu_channels.c in the runtime */
+static int g_block_at_interp = -1;
 static uint32_t g_interp_start = 0xFFFFFFFFu; static int g_interp_calls;
-uint32_t spu_interp_run(spu_context* c, uint32_t lsa) { (void)c; g_interp_start = lsa; g_interp_calls++; return 0; }
+uint32_t spu_interp_run(spu_context* c, uint32_t lsa) { (void)c; g_interp_start = lsa; g_interp_calls++; g_block_at_interp = g_spu_force_ch_block; return 0; }
 uint64_t spu_workload_fingerprint(const void* d, size_t n) { (void)d; return 0x1234500000000000ull | n; }
 spu_lifted_entry_fn spu_workload_find_img(uint64_t fp, int* img) { (void)fp; if (img) *img = 0; return NULL; }
 static int g_wakes; void spu_ch_wake(spu_context* c) { (void)c; g_wakes++; }
@@ -24,6 +27,7 @@ int main(int argc, char** argv)
 {
     vm_base = calloc(1, 0x200000); assert(vm_base);
     const int off = argc > 1 && !strcmp(argv[1], "off");
+    const int noblock = argc > 1 && !strcmp(argv[1], "noblock");
 
     /* an instance "ig" of 5 SPUs in slot 1, an empty slot 0 (as ACiT: "" first, then "ig") */
     s_inst[0].ea = 0x00FDF980; s_inst[0].nspus = 1; strcpy(s_inst[0].prefix, "");
@@ -88,9 +92,12 @@ int main(int argc, char** argv)
         assert(r && r->fn == spurs_pm_interp_entry && r->image_id == -1 && r->resolved == 1);
         assert(spurs_resolve_pm(2) == r);                             /* cached */
         spu_context* c = calloc(1, sizeof(spu_context)); assert(c);
+        assert(g_spu_force_ch_block == 0);
         r->fn(c);
         assert(g_interp_calls == 1 && g_interp_start == 0xA00);
         printf("PASS unlifted policy module -> interpreter from LS 0xA00, image -1\n");
+        if (noblock) { assert(g_block_at_interp == 0); printf("PASS noblock: channel reads left non-blocking\n"); }
+        else { assert(g_block_at_interp == 1); printf("PASS 7037: blocking channel reads on before the first instruction\n"); }
     }
     return 0;
 }

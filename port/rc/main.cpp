@@ -10,6 +10,8 @@
  * passthrough to <windows.h>; off Windows the toolkit's shim supplies the same
  * names over pthreads and mmap, so the call sites below are written once. */
 #include "win32_compat.h"
+#include "pad_mouse.h"                   /* Project Helghast's mouse (libs/input): the stage 3 cursor rule */
+#include "rc_mouse.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +28,7 @@
 #include "rc_log.h"   /* the logger (port/common/log, KZ3's logger): file log, crash files, header/end block */
 #include "rc_log_ident.h"   /* generated: game id/title/title ID/version/commit for the log header */
 void rc_settings_init(const char* game_id);   /* rc_settings.cpp: the per-game settings folder */
+void rc_trace_read_start(void);              /* rc_trace_read.cpp: RC_TRACE_READ=<ea>,<len> access tracer (diagnostic) */
 std::string rc_settings_path(const char* name);
 extern "C" void edat_set_cache_dir(const char* dir);   /* libs/filesystem/edat.c, patch 5002 */
 
@@ -381,6 +384,23 @@ static DWORD WINAPI rc_test_fault(LPVOID p)
     return 0;
 }
 
+/* Stage 3 cursor rule (ENHANCEMENT, only with mouse look on; adapted from Killzone 2 PC patch 6046's in-play rule): a game's
+ * camera hook (ToD: port/rc/tods/tods_mouse_look.inc) stamps g_rc_mouse_take_ms (QueryPerformanceCounter ms) at each camera
+ * update; while one ran within RC_MOUSE_PLAY_MS the pointer is hidden and held in the window (pad_cursor_decide with menu = 0),
+ * otherwise (menus, pause, movies, loading, a game without a hook) it is shown and free (menu = 1). With mouse look off nothing
+ * is called and the cursor keeps Project Helghast's default (hidden over the client area, never clipped). */
+extern "C" { volatile unsigned long long g_rc_mouse_take_ms = 0; }
+static void rc_mouse_cursor_tick(void)
+{
+    static int on = -1;
+    if (on < 0) on = pad_mouse_enabled();
+    if (!on) return;
+    LARGE_INTEGER qf, qc;
+    QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qc);
+    const unsigned long long now_ms = (unsigned long long)((double)qc.QuadPart * 1000.0 / (double)qf.QuadPart);
+    pad_mouse_menu_set(!rc_mouse_in_play(now_ms, g_rc_mouse_take_ms));
+}
+
 static void present_guest_frame(void)
 {
     rc_rsx_present();
@@ -405,6 +425,7 @@ static DWORD WINAPI frame_clock(LPVOID)
     for (;;) {
         Sleep(4);
         ULONGLONG now = GetTickCount64();
+        rc_mouse_cursor_tick();
 
         int fired = 0;
         while ((long long)(now - next_tick) >= 0 && fired < 240) {
@@ -618,6 +639,7 @@ static void start_diagnostics(void)
     if (tf && *tf) CreateThread(NULL, 0, rc_test_fault, (LPVOID)0, 0, NULL);
     const char* tx = getenv("RC_TEST_CRASH");
     if (tx && *tx) CreateThread(NULL, 0, rc_test_fault, (LPVOID)1, 0, NULL);
+    rc_trace_read_start();   /* no-op unless RC_TRACE_READ is set */
 #ifdef _WIN32
 #endif
 #ifdef _WIN32

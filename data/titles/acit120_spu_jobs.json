@@ -1,0 +1,68 @@
+{
+ "title": "A Crack in Time (update 1.20)",
+ "note": "Offsets located by tools/survey/spu_locate.py in the update's decrypted EBOOT.elf (2026-11-03); the structure (two ELF32-wrapped WWS job modules, header words, policy module size) is that of acit_spu_jobs.json, see its note for the basis of the sizes. ASSUMPTION: the registered sizes are the PT_LOAD file sizes as there; the workload creator and its callers were not re-resolved for this executable.",
+ "images": [
+  {
+   "index": 0,
+   "elf_file_offset": "0xbecf80",
+   "file_offset_of_header": "0xbed000",
+   "header_words": [
+    "0x80",
+    "0xdc50",
+    "0x70",
+    "0x1890"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0xdc50",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x5"
+   },
+   "elf_ptload_filesz": "0xdc30",
+   "size_argument_at_registration": null,
+   "lift_size": 56368,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue); PM entry rule as in ToD"
+  },
+  {
+   "index": 1,
+   "elf_file_offset": "0xbfb680",
+   "file_offset_of_header": "0xbfb700",
+   "header_words": [
+    "0x80",
+    "0xb5f0",
+    "0x30",
+    "0x2c0"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0xb5f0",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x5"
+   },
+   "elf_ptload_filesz": "0xb5d0",
+   "size_argument_at_registration": null,
+   "lift_size": 46544,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue); PM entry rule as in ToD"
+  }
+ ],
+ "workload_creation_wrapper": {
+  "function": "not re-resolved for this executable",
+  "note": "see acit_spu_jobs.json for the creator found in the disc executable; not re-resolved here",
+  "policy_module": {
+   "ea": "0xc17680",
+   "size": "0x2cf8",
+   "file_offset": "0xc07680",
+   "segment": "first LOAD (va 0x10000, file offset 0)",
+   "slot_table": "u32 pair (ea, size) at file offset 0xd20704 (found by searching the EA word; size word 0x2cf8 as in acit)"
+  }
+ },
+ "entry_rule": {
+  "formula": "entry_ls = LS[0x1320] + u32(header+0x10); the PM does lqa r?,0x1320 / lqd r?,0x10(r?) / a / bisl at LS 0x31f4..0x3254 (code buffer slot 0x1320 = the runtime default; ToD's is 0x1330)"
+ }
+}

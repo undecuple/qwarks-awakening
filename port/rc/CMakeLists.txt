@@ -10,7 +10,7 @@ if(NOT RC_EXE)
     set(RC_EXE "${RC_GAME}")
 endif()
 project(rc_${RC_GAME}
-    VERSION 0.2.0
+    VERSION 0.2.1
     LANGUAGES C CXX
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )
@@ -163,7 +163,7 @@ if(PORT_ENABLE_SPU)
              "${PS3RECOMP_DIR}/runtime/spu/spu_dispatch_mt.c")
         # Generated beside the lift; each is present only once its generator
         # has been run, so each is included only if it is actually here.
-        foreach(gen IN ITEMS spu_workloads.c jobmods_register.c taskset_policy_bytes.c rawspu_register.c)
+        foreach(gen IN ITEMS spu_workloads.c jobmods_register.c taskset_policy_bytes.c rawspu_register.c igjobs_register.c)
             if(EXISTS "${SPU_DIR}/${gen}")
                 list(APPEND SPU_SOURCES "${SPU_DIR}/${gen}")
             else()
@@ -233,6 +233,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rc_log_ident.h.in" "${CMAKE_CURRENT_
 add_executable(${PROJECT_NAME}
     main.cpp
     rc_settings.cpp                          # per-game settings folder (keybinds.ini, display.ini, settings.ini)
+    rc_trace_read.cpp                        # RC_TRACE_READ access tracer (diagnostic, default off)
     ${RC_LOG_SOURCES}
     stubs.cpp
     ${RC_GAME}/hle_${RC_GAME}.cpp            # the game's HLE for imports the runtime leaves unresolved
@@ -298,7 +299,7 @@ if(RC_LOG_REDIRECT)
     target_compile_definitions(ps3recomp_runtime PRIVATE KZ3_LOG_REDIRECT_STDIO)
     target_compile_options(ps3recomp_runtime PRIVATE -include "${RC_LOG_HEADER}")
     target_include_directories(ps3recomp_runtime PRIVATE "${RC_LOG_DIR_SRC}")
-    set(RC_REDIRECTED main.cpp rc_settings.cpp stubs.cpp ${RC_GAME}/hle_${RC_GAME}.cpp ${GAME_OVERRIDES} ${PS3RECOMP_SCAFFOLD})
+    set(RC_REDIRECTED main.cpp rc_settings.cpp rc_trace_read.cpp stubs.cpp ${RC_GAME}/hle_${RC_GAME}.cpp ${GAME_OVERRIDES} ${PS3RECOMP_SCAFFOLD})
     set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_DEFINITIONS KZ3_LOG_REDIRECT_STDIO)
     set_property(SOURCE ${RC_REDIRECTED} APPEND PROPERTY COMPILE_OPTIONS -include "${RC_LOG_HEADER}")
 endif()

@@ -1,0 +1,9 @@
+module	entry	mode	code_end	data_ranges	extra_seeds	drop_seed_base_plus_0x30	unsupported_before	evidence
+06220b29770c	0x5cd8	island		0x56b0-0x5800		0	14	0x56b0-0x5800: {'M': 21}, prologues inside 0 (kept code 5), branches into range 0, data refs into range 8; last terminator before the run at 0x56a8 (bi)
+382119295702	0x4080	tail	0x11de8	0x11de8-0x14180	0x812c	0	833	0x11de8-0x14180: {'F': 41, 'A': 448, 'M': 36, 'T': 18, 'Z': 8, 'S': 15, 'P': 4}, prologues inside 0 (kept code 39), branches into range 0, data refs into range 398; last terminator before the run at 0x11de4 (br)
+4128b8eb7daa	0x4080	tail	0x12948	0x12948-0x156c0	0x812c	0	618	0x12948-0x156c0: {'T': 234, 'Z': 10, 'F': 115, 'A': 244, 'M': 99, 'S': 15, 'P': 11}, prologues inside 0 (kept code 38), branches into range 0, data refs into range 352; last terminator before the run at 0x12944 (bi)
+576998e24a1d	0xba70	island		0xbf00-0xbfc0		0	3	0xbf00-0xbfc0: {'M': 10, 'F': 1, 'T': 1}, prologues inside 0 (kept code 23), branches into range 0, data refs into range 4
+5a107a70517f	0xe5e0	tail	0xf8a8	0xf8a8-0x128d0		0	107	0xf8a8-0x128d0: {'A': 128, 'F': 116, 'M': 34, 'Z': 235, 'P': 132, 'T': 126}, prologues inside 0 (kept code 29), branches into range 0, data refs into range 106; last terminator before the run at 0xf8a4 (br)
+68bf3dfc374d	0x71e0	island		0x8310-0x84c0		0	1	0x8310-0x84c0: {'A': 1, 'M': 20, 'Z': 5, 'T': 1}, prologues inside 0 (kept code 15), branches into range 0, data refs into range 11
+73a4cc83a74e	0x17728	tail	0x17e14	0x17e14-0x1f130		0	338	0x17e14-0x1f130: {'A': 74, 'F': 26, 'P': 1060, 'Z': 15, 'M': 236, 'S': 270, 'T': 161}, prologues inside 0 (kept code 78), branches into range 0, data refs into range 199; last terminator before the run at 0x17e10 (br)
+88d0c07ed7ba	0x5728	head		0x4030-0x40a0		1	7	0x4030-0x40a0: {'M': 4, 'S': 1, 'A': 2}, prologues inside 0 (kept code 6), branches into range 0, data refs into range 7

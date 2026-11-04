@@ -1,0 +1,40 @@
+{
+ "title": "Ratchet & Clank Future: Quest for Booty",
+ "note": "The two raw SPU programs of QfB (Insomniac collision, the same two as ToD but different builds: image bytes differ, igCollBroadSpu has the same size and header words). Found 2026-11-03 from the decrypted EBOOT: name strings 'temp\\PS3_SPU_Release\\igCollBroadSpu.elf' (0x7bcff0) and '...igcollspu.elf' (0x7bd0e0); images located by the header signature (+0x28 two 0xDEADDEAD, +0x30 crt0 word 0x040001d0) and tied to the names by the descriptor triples (image EA, size, name EA) at 0x8510f8 and 0x8511b0; syscall-160 wrapper 0x00492A98 (the only 'li r11,0xA0; sc' in the lift); the two callers load the triples through the loader TOC 0x84DA0C. extra_funcs: the .ctors entry (word pair 0xFFFFFFFF, entry at LS 0x6D00 and 0x13180). code_end: one past the last code word (igCollBroadSpu: last return bi $lr at 0x6CB4; igcollspu: crt exit stub wrch/stop 0x102/bi/nop ends at 0x12E58). ASSUMPTION: the layout equals ToD's (0x60 base, entry 0x100, parameter block of igCollBroadSpu at LS 0x6DB0, 0x50 bytes, none for igcollspu): header words equal, not run. Image ids 40/41 as in ToD.",
+ "loader": {
+  "create": "0x00492A98 sys_raw_spu_create wrapper (syscall 160, li r11,0xA0; sc), same shape as ToD's 0x005AB320",
+  "note": "ASSUMPTION: the rest of the loader (instance setup, parameter block, GETs, start) is the same library as ToD's (0x005AB198/AEA0/B460/AE08) at other addresses; not located."
+ },
+ "programs": [
+  {
+   "name": "igcollspu",
+   "elf_name_ea": "0x7bd0e0",
+   "ea": "0x966200",
+   "size": "0x13150",
+   "image_id": 40,
+   "caller": "0x0038EA70 (create call 0x0038EAB4; loader TOC 0x84DA0C: +0x37A4 image, +0x37A8 size, +0x37AC name)",
+   "data_ranges": [
+    "0x60-0x90"
+   ],
+   "extra_funcs": [
+    "0x12c80"
+   ],
+   "code_end": "0x12e58"
+  },
+  {
+   "name": "igcollbroadspu",
+   "elf_name_ea": "0x7bcff0",
+   "ea": "0x95f400",
+   "size": "0x6da0",
+   "image_id": 41,
+   "caller": "0x00384680 (create call 0x00384888; loader TOC 0x84DA0C: +0x36EC image, +0x36F0 size, +0x36F4 name)",
+   "data_ranges": [
+    "0x60-0x90"
+   ],
+   "extra_funcs": [
+    "0x5a70"
+   ],
+   "code_end": "0x6cb8"
+  }
+ ]
+}

@@ -14,11 +14,11 @@ A native Windows port of the PS3 Ratchet & Clank games, made by static recompila
 [ps3recomp](https://github.com/sp00nznet/ps3recomp); the first game, *Ratchet & Clank Future: Tools of Destruction*,
 needs your own copy of its **US disc, BCUS98127** (disc version, no update).
 
-**Status: early work, not playable yet.** Version <!-- version -->0.2.0<!-- /version -->, a
-pre-release of 2026-11-03: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from its first
+**Status: early work, not playable yet.** Version <!-- version -->0.2.1<!-- /version -->, a
+pre-release of 2026-11-04: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from its first
 level, with known bugs, and has not been played through. What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
-**[Getting started](#getting-started)** · **[Compatibility](#compatibility)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
+**[Getting started](#getting-started)** · **[Compatibility](#compatibility)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
 
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
@@ -30,9 +30,9 @@ What is true and checked today:
 - **Tested under Proton on Linux.** Every test run so far has been the Windows program under Proton on Linux (the
   setups are in the table below). It has not been run on Windows itself yet.
 - **One runtime for the series.** All the games share one runtime and one set of tools, with one program per game. The
-  PPU code of *A Crack in Time*, *All 4 One*, *Full Frontal Assault* and *Into the Nexus* is already lifted to C with the
-  same tools. *A Crack in Time* and *Into the Nexus* also build into their own programs and show their intros, at about
-  one frame per second; the others are not built yet.
+  PPU code of every game is already lifted to C with the same tools. *Quest for Booty*, *A Crack in Time*, *All 4 One*,
+  *Full Frontal Assault* and *Into the Nexus* also build into their own programs; in scripted runs they get as far as
+  the table below says. *Deadlocked HD* and the *Collection* are not built yet.
 - **Fixes sent upstream.** General fixes found while porting go back to ps3recomp as pull requests:
   [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#408](https://github.com/sp00nznet/ps3recomp/pull/408),
   [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429) and
@@ -63,12 +63,15 @@ What the runs on Proton showed, all on *Tools of Destruction*:
 | Game | PS3 release | State |
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
-| Ratchet & Clank Future: Quest for Booty | 2008 | PPU and SPU code lifted; not built yet |
-| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and shows its intro (1.20 update), about one frame per second; not playable |
-| Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
-| Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
-| Ratchet & Clank: Into the Nexus | 2013 | builds and shows its intro (1.01 update), about one frame per second; not playable |
+| Ratchet & Clank Future: Quest for Booty | 2008 | builds; installs its data and plays the opening cutscene of a new game; not playable |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable |
+| Ratchet & Clank: All 4 One | 2011 | builds and shows its title screen (1.03 update); not playable |
+| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); an earlier build showed its intro, the current one stays black; not playable |
 | Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; PPU code lifted, not built yet |
+
+How much of each game's console version works, feature by feature, with an estimate per game:
+[docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md).
 
 ## Getting started
 

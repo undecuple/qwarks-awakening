@@ -1,0 +1,16 @@
+# port/rc/qfb/ppu_overrides.txt (ps3recomp ppu_lifter.py --overrides, patch 1018; setjmp/longjmp rows: patch 1116).
+# Quest for Booty (disc BCES00301, no update). No host-replaced functions yet (a bare 8-digit address line would be one).
+#
+# Guest setjmp/longjmp host frames (KZ3 patch 1116, the general form of ToD's tods_lua_ljmp.inc), 2026-11-04,
+# the RE notes section 21. Lua 5.0.2 as in ToD ("$Lua: Lua 5.0.2" @0x0077F708): luaD_rawrunprotected
+# @0x005601A8 (frame 0x2C0, lj at r1+0x70, jmp_buf = &lj.b = r1+0x74, lj.status at r1+0x294 = jmp_buf + 0x220) is the only
+# setjmp caller; luaD_throw @0x00560238 and the two inlined LUA_ERRERR throws (@0x005614E4, @0x00561BD8) are the only
+# longjmp callers. Unlike ToD (`b` stubs) and ACiT (direct `bl`), every call goes through a TOC-switching stub that reaches
+# libc with `lis r11 / addi r11 / mtctr / bctr` (an indirect call): setjmp stub 0x00725328 -> libc setjmp 0x006FF740,
+# longjmp stub 0x00725344 -> libc longjmp 0x006FF864. So the setjmp row marks the STUB (the `bl` target @0x005601E0; the
+# stub leaves r1, r3 and lr as they were, so libc setjmp saves the caller's r1 and lr 0x005601E4, as a direct call would),
+# and the longjmp row marks libc longjmp itself (the indirect call dispatches to its wrapper by address).
+# 0x006FF740 / 0x006FF864 are the only `std r1,0(r3)` / `ld r1,0(r3)` words in the ELF; only those two stubs load their
+# addresses. KZ3_LJMP=0 = the old behaviour. Host test port/rc/tests/run_qfb_lua_ljmp_test.sh.
+setjmp 00725328 status=0x220   # TOC stub to libc setjmp 0x006FF740 (r1, r2, r13..r31, lr, cr, f14..f31, vrsave, v20..v31 at (r3+15)&~15)
+longjmp 006FF864               # libc longjmp (reached through stub 0x00725344; restores them, r3 = r4 ? r4 : 1)

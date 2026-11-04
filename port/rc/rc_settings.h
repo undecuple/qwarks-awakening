@@ -1,6 +1,6 @@
 /* Per-game settings folder and the settings load order (pure helpers; Windows glue in rc_settings.cpp).
  *
- * Every R&C game exe keeps its own settings in <data folder>/<game id>/ (games have different controls,
+ * Every R&C game exe keeps its own settings in <data folder>/<game id>/ (2026-11-03: games have different controls,
  * display and gameplay choices, but share one product folder):
  *   <data folder> = the install folder when kz3-install.ini (the runtime's portable marker, next to the exe or one
  *                   level up) says [install] portable = 1 (same rule as cellPad.c pad_kb_find_path), else

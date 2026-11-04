@@ -1,0 +1,9 @@
+{
+ "title": "Ratchet & Clank: All 4 One",
+ "note": "Per-title inputs of tools/spu/spu_lift.py: the nexus config with this executable's own symbol prefix; lift table a4o_spu_lift_table.tsv from tools/survey/lift_table.py (a4o job modules differ from Nexus: 151 unsupported words in the first lift).",
+ "symbol_prefix": "a4o",
+ "lift_table": "a4o_spu_lift_table.tsv",
+ "edge_image_id": 30,
+ "pm_image_id": 2,
+ "pm_seed": "0xa2c"
+}

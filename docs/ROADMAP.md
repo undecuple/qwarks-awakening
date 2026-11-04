@@ -22,17 +22,20 @@ mouse with rebindable controls, gamepad prompts. Gameplay changes stay optional.
 
 One at a time, after the first game works. The working order, from a survey of each game's program and files: A Crack
 in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as
-each one is tried. The main-CPU (PPU) code of all of them is already lifted to C with the same tools, and A Crack in Time
-and Into the Nexus build into their own programs and show their intros.
+each one is tried. The main-CPU (PPU) code of all of them is already lifted to C with the same tools, and every game
+except Deadlocked HD and the Collection builds into its own program (how far each gets: the table below and
+[FEATURE-PARITY.md](FEATURE-PARITY.md)).
 
 | Game | PS3 release | State |
 |---|---|---|
-| Ratchet & Clank Future: Quest for Booty | 2008 | PPU and SPU code lifted; not built yet |
-| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds and shows its intro (1.20 update), about one frame per second; not playable |
-| Ratchet & Clank: All 4 One | 2011 | PPU code of the 1.03 update lifted; not built yet |
-| Ratchet & Clank: Full Frontal Assault | 2012 | PPU code of the 1.05 update lifted; not built yet |
-| Ratchet & Clank: Into the Nexus | 2013 | builds and shows its intro (1.01 update), about one frame per second; not playable |
+| Ratchet & Clank Future: Quest for Booty | 2008 | builds; installs its data and plays the opening cutscene of a new game; not playable |
+| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable |
+| Ratchet & Clank: All 4 One | 2011 | builds and shows its title screen (1.03 update); not playable |
+| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); an earlier build showed its intro, the current one stays black; not playable |
 | Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; PPU code lifted, not built yet |
+
+What works in each game, feature by feature: [FEATURE-PARITY.md](FEATURE-PARITY.md).
 
 ## Not planned
 

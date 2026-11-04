@@ -33,7 +33,8 @@ author's sister ports. Each patch header names its source.
   timed waits stay out of ntdll's futex queue under Wine), 1150 (SPURS task ids passed as arguments), 2142 (a texture
   level too large for the upload ring submits the list first instead of being skipped), 2143 (fragment-program DDX/DDY
   derivatives decompiled instead of dropped) and 2144 (a draw that samples its own render target reads it when other
-  surfaces share the address).
+  surfaces share the address); and, directly, the in-play rule of its patch 6046 (the pointer held in the window while a
+  look update took mouse counts in the last 300 ms, free otherwise), used by the R&C cursor rule in `port/rc/main.cpp`.
 - **J-Stars Victory VS+ port** (MIT): its patch 0004, carried as patch 1145: the HLE fast path stores the caller's
   TOC in the ABI slot as the full path does.
 - **Toro Lets Party port** (same author): [PR #387](https://github.com/sp00nznet/ps3recomp/pull/387), the PPU

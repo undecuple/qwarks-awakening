@@ -7,7 +7,7 @@ author, MIT). The release tools take their names from here; public/README.md car
 # port/rc/CMakeLists.txt project VERSION (the exe; tools/build-rc.sh checks RC_RELEASE_TAG against it) and
 # CITATION.cff version. tools/release/bump_version.py edits them together; --agree checks. A release tag must be
 # "v" + VERSION (the release workflow refuses any other).
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 # The game the setup accepts (tools/lift.sh lifts this EBOOT): Tools of Destruction, US disc, PARAM.SFO VERSION
 # 02.00, no update. The recomp card (.recomp.json) original.serial / revision repeat these.
 SERIAL = "BCUS98127"

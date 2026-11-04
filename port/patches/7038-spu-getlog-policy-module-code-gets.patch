@@ -1,0 +1,57 @@
+SPU: RC_SPU_GETLOG=<min bytes> logs each distinct (source EA, LS address) code-sized GET of a policy-module context once.
+
+Diagnostic, default off. Insomniac's igPm job kernel (ACiT, Nexus, A4O, FFA; the RE notes sections 30-31) streams every job's
+code from the job header's code EA to the header's LS destination in 16 KB GETs. Which of the ~191 SPU blobs in the EBOOT a
+title runs, and where they land, decides what to lift; most blob headers give their size and entry relative to a load address
+the PPU chooses at run time. One run with RC_SPU_GETLOG=1024 prints the list:
+  [spu-getlog] img=-1 wid=2 pc=0x3F89C ea=0x00ADB280 lsa=0x00100 size=0x4000 first16=...
+(img = the context's image, -1 = interpreted; wid = kernel context wklCurrentId at LS 0x1DC, read after the copy, so a GET
+landing over 0x1DC shows its own bytes there; pc = the GET's issuing pc). RC_SPU_GETLOG_IMG=<image id> keeps one image (-1:
+the interpreted igPm). The WWS job managers' data GETs filled the table first in acit-getlog; a wid filter then dropped every
+job GET in acit-getlog2, since the job blobs land over LS 0x1DC.
+At most 2048 distinct pairs; one spin lock around the table, taken only when the switch is on.
+
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2644,10 +2644,41 @@
+     }
+ }
+ 
++/* R&C patch 7038: RC_SPU_GETLOG=<min bytes> (diagnostic, default off): every distinct (source EA, LS address) GET of at
++ * least that many bytes issued by a policy-module context (SPURS kernel run), once, as
++ * `[spu-getlog] img wid pc ea lsa size first16`. Insomniac's igPm job kernel streams each job's code with such GETs
++ * (16 KB pieces from the job header's code EA to its LS destination), so one run lists the job blobs a title uses and
++ * where they land; the lift tables are made from that list (the RE notes section 31). */
++static void rc_spu_getlog(const spu_context* ctx, uint32_t ea, uint32_t lsa, const uint8_t* ls, uint32_t size)
++{
++    static long s_min = -1;
++    if (s_min < 0) { const char* e = getenv("RC_SPU_GETLOG"); s_min = (e && *e) ? strtol(e, 0, 0) : 0; if (s_min < 0) s_min = 0; }
++    static long s_img = 0; static int s_img_on = -1;
++    if (s_img_on < 0) { const char* e = getenv("RC_SPU_GETLOG_IMG"); s_img_on = e && *e; s_img = s_img_on ? strtol(e, 0, 0) : 0; }
++    if (!s_min || size < (uint32_t)s_min || !ctx->policy_mode) return;
++    const uint32_t wid = (uint32_t)ctx->ls[0x1DC] << 24 | (uint32_t)ctx->ls[0x1DD] << 16 | (uint32_t)ctx->ls[0x1DE] << 8 | ctx->ls[0x1DF];
++    if (s_img_on && ctx->image_id != (int)s_img) return;
++    enum { N = 2048 };
++    static uint64_t s_seen[N]; static volatile int s_lock; static unsigned s_n;
++    const uint64_t key = ((uint64_t)ea << 32) | lsa;
++    while (__atomic_exchange_n(&s_lock, 1, __ATOMIC_ACQUIRE)) {}
++    unsigned i;
++    for (i = 0; i < s_n && s_seen[i] != key; i++) {}
++    const int fresh = i == s_n && s_n < N;
++    if (fresh) s_seen[s_n++] = key;
++    __atomic_store_n(&s_lock, 0, __ATOMIC_RELEASE);
++    if (!fresh) return;
++    char hex[33];
++    for (int k = 0; k < 16; k++) snprintf(hex + 2 * k, 3, "%02x", size > (uint32_t)k ? ls[k] : 0);
++    fprintf(stderr, "[spu-getlog] img=%d wid=%u pc=0x%05X ea=0x%08X lsa=0x%05X size=0x%X first16=%s\n", ctx->image_id,
++            wid, ctx->pc & SPU_LS_MASK, ea, lsa, size, hex);
++}
++
+ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint32_t size)
+ {
+     uint32_t lsa = (uint32_t)(ls - ctx->ls);
+     spu_ovl_dump(ctx, ea, lsa, ls, size);
++    rc_spu_getlog(ctx, ea, lsa, ls, size);
+     for (unsigned slot = 0; slot < 4; ++slot) {
+         if (!ctx->resident_code[slot].image_id) continue;
+         uint32_t base = ctx->resident_code[slot].lsa;

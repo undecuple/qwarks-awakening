@@ -1,0 +1,45 @@
+{
+ "title": "Ratchet & Clank: All 4 One 1.03",
+ "note": "Input of tools/spu/lift_igjobs.py (the RE notes sections 31-33). Kernel: the igPm job kernel shared by Nexus 1.01, A4O 1.03 and FFA 1.05 (fnv1a64 of 0x580 bytes 599e8c31345059aa), GET by the interpreted igPm loader to LS 0x3F580, entry 0x3F5A0 (blob header entry 0x20), code ends 0x3F9A8 (last `br 0x3F67C`), job header buffer at 0x3FA00 outside the span, job call `bisl $r0,$r13` @0x3F8F0. Jobs: every format-A blob of the EBOOT (four `ila $r2`, header quad at +0x10) that loads at LS 0x100, from a static scan; the getlog run lists which ones the game GETs. Image ids 51 (kernel) and 60+ (jobs) are unused by the title's other lifts (2, 30).",
+ "kernel": {
+  "ea": "0x00C82F80",
+  "lsa": "0x3F580",
+  "get_size": "0x480",
+  "entry": "0x3F5A0",
+  "code_end": "0x3F9A8",
+  "span": "0x480",
+  "image_id": 51,
+  "data_ranges": [
+   "0x3F580-0x3F5A0"
+  ]
+ },
+ "jobs": [
+  {"ea": "0x00C8B400", "image_id": 60},
+  {"ea": "0x00C8DD80", "image_id": 61},
+  {"ea": "0x00C8EA00", "image_id": 62},
+  {"ea": "0x00CAC780", "image_id": 63},
+  {"ea": "0x00CB0100", "image_id": 64},
+  {"ea": "0x00CB5F80", "image_id": 65},
+  {"ea": "0x00CC9080", "image_id": 66},
+  {"ea": "0x00CE2E00", "image_id": 67},
+  {"ea": "0x00CF8000", "image_id": 68},
+  {"ea": "0x00D05200", "image_id": 69},
+  {"ea": "0x00D08700", "image_id": 70},
+  {"ea": "0x00D09100", "image_id": 71},
+  {"ea": "0x00D0A980", "image_id": 72},
+  {"ea": "0x00D0C800", "image_id": 73},
+  {"ea": "0x00D0E180", "image_id": 74},
+  {"ea": "0x00D0EC80", "image_id": 75},
+  {"ea": "0x00D28D80", "image_id": 76},
+  {"ea": "0x00D2A700", "image_id": 77},
+  {"ea": "0x00D2B800", "image_id": 78},
+  {"ea": "0x00D3C580", "image_id": 79},
+  {"ea": "0x00D48880", "image_id": 80},
+  {"ea": "0x00D49380", "image_id": 81},
+  {"ea": "0x00D4A100", "image_id": 82},
+  {"ea": "0x00D4CF00", "image_id": 83},
+  {"ea": "0x00D51C80", "image_id": 84},
+  {"ea": "0x00D7FE00", "image_id": 85},
+  {"ea": "0x00D87E80", "image_id": 86}
+ ]
+}

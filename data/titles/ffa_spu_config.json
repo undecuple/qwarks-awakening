@@ -1,0 +1,9 @@
+{
+ "title": "Ratchet & Clank: Full Frontal Assault",
+ "note": "Per-title inputs of tools/spu/spu_lift.py: the nexus config with this executable's own symbol prefix; the lift table is shared with nexus (the job modules are byte-identical, checked by the module hash in the table).",
+ "symbol_prefix": "ffa",
+ "lift_table": "nexus_spu_lift_table.tsv",
+ "edge_image_id": 30,
+ "pm_image_id": 2,
+ "pm_seed": "0xa2c"
+}

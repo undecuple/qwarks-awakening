@@ -99,3 +99,4 @@ void func_007E3FA0(ppu_context* ctx)
 #define TODS_PAUSE_QUIT_HOOK 1
 #include "tods_pause_quit.inc"  /* ENHANCEMENT: pause menu QUIT TO MAIN MENU / QUIT TO DESKTOP (RC_PAUSE_QUIT=1), hooked in the next file */
 #include "tods_lua_ljmp.inc"    /* R&C pass 5: guest setjmp/longjmp for Lua errors (TODS_LUA_LJMP=0 = off) */
+#include "tods_mouse_look.inc"   /* ENHANCEMENT: native mouse look, follow camera yaw (default off: keybinds.ini [mouse] look) */

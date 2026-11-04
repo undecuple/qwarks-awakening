@@ -5,7 +5,9 @@
 #    jobmods_register.c (it recreates the lift dir, so it runs first); tables: data/titles/<game>_spu_{config,jobs,code}.json
 #    and the optional lift table named in the config;
 # 2. tools/spu/lift_raw_spu.py: the raw SPU programs of tools/spu/<game>_raw_spu.json (ToD: igcollspu, igCollBroadSpu) and rawspu_register.c;
-#    a table with no programs (ACiT, Nexus) writes only a manifest.
+#    a table with no programs (ACiT, Nexus) writes only a manifest;
+# 3. tools/spu/lift_igjobs.py, when data/titles/<game>_igjobs.json exists (acit120, nexus101, a4o, ffa): Insomniac's igPm job kernel and job
+#    blobs as verified streamed regions (patch 7039) and igjobs_register.c.
 # Needs work/bin/<game>/EBOOT.elf and work/ps3recomp-patched (tools/ps3recomp-patched.sh). Writes only under work/.
 # RC_SPU_OUT (default work/spu/<game>) redirects the output, e.g. to a scratch dir for a byte-identity check against an earlier lift.
 set -euo pipefail
@@ -28,5 +30,9 @@ mkdir -p "$OUT"
 nice -n 19 python3 -I "$ROOT/tools/spu/spu_lift.py" "$GAME" "$ELF" "$PS3" "$OUT" >"$OUT.lift.log"
 nice -n 19 python3 -I "$ROOT/tools/spu/lift_raw_spu.py" "$ELF" "$PS3" "$OUT/lift" "$ROOT/tools/spu/${GAME}_raw_spu.json" \
   >"$OUT/lift/rawspu.log"
+if [[ -f "$ROOT/data/titles/${GAME}_igjobs.json" ]]; then
+  nice -n 19 python3 -I "$ROOT/tools/spu/lift_igjobs.py" "$ELF" "$PS3" "$OUT/lift" "$ROOT/data/titles/${GAME}_igjobs.json" \
+    >"$OUT/lift/igjobs.log"
+fi
 nice -n 19 python3 -I "$ROOT/tools/spu/lift_summary.py" "$OUT/lift" "$OUT/lift_summary.json" >"$OUT/lift_summary.log"
 echo "lift_spu.sh: $(ls "$OUT"/lift/*/spu_recomp.c | wc -l) lifted images in $OUT/lift; registration TUs: $(cd "$OUT/lift" && ls *.c | tr '\n' ' ')"

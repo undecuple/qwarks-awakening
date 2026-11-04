@@ -1,0 +1,68 @@
+A swizzled cube map's faces start on 128-byte boundaries (texture_source_span, every cube decoder).
+Live draw stepped from one cube face to the next by the unaligned size of a face's mip chain (span / 6). On the RSX the
+faces of a swizzled (non-LN) cube each start on a 128-byte boundary; a pitch-linear cube is not padded
+[src:rpcs3-texutils]. Any swizzled cube whose chain is not a multiple of 128 bytes read faces 1..5 shifted by 44*f
+(ToD) bytes, which in a morton layout scrambles each face. ToD's environment cube (Fastoon spaceport, unit 7 of the
+scene shaders PSO 6b5b1ee1 / 5dab8195; tods-gfx-post draw inputs frame 10290: 1:0x266DC80, fmt 0x85, 32x32, 6 mips,
+chain 5460 bytes, stride 5504) decodes to six coherent sky/light faces at 5504 and to speckle at 5460. The shaders scale
+the cube colour by exp2(alpha * c3.x + c3.y), so the scrambled alpha spread the light texels' large exponents across
+the faces: the "crazy reflections". texture_source_span now returns 6 * the aligned face stride (rsx_cube_face.h), so
+the decoders' span / 6, the texture hash and the guest-write watch all see the faces where the RSX reads them.
+LD_CUBE_FACE_UNALIGNED=1 = old stride (A/B); one "[cube-face]" line says which is in use.
+Host test: R&C port/rc/tests/run_cube_face_test.sh.
+
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3588,6 +3588,7 @@
+     return create_texture_mipped(DXGI_FORMAT_R8G8B8A8_UNORM, &lv, 1);
+ }
+ 
++#include "rsx_cube_face.h"   /* R&C patch 7036 */
+ static u32 texture_source_span(const rsx_dsp_texture* t)
+ {
+     const u32 base_fmt = t->format & TEX_FMT_BASE_MASK & ~(u32)TEX_FMT_UNNORM;
+@@ -3657,7 +3658,16 @@
+         mw = mw > 1 ? mw >> 1 : 1;
+         mh = mh > 1 ? mh >> 1 : 1;
+     }
+-    return t->cubemap ? span * 6 : span;
++    if (!t->cubemap) return span;
++    /* R&C patch 7036: a swizzled cube's faces start on 128-byte boundaries (rsx_cube_face.h); every decoder
++     * steps faces by span / 6. LD_CUBE_FACE_UNALIGNED=1 = the old unaligned stride (A/B). */
++    static int unaligned = -1;
++    if (unaligned < 0) {
++        unaligned = getenv("LD_CUBE_FACE_UNALIGNED") ? 1 : 0;
++        fprintf(stderr, "[cube-face] swizzled cube faces %s (LD_CUBE_FACE_UNALIGNED)\n",
++                unaligned ? "packed (old)" : "128-byte aligned");
++    }
++    return (unaligned ? span : ld_cube_face_stride(span, linear)) * 6;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+--- /dev/null
++++ b/libs/video/rsx_cube_face.h
+@@ -0,0 +1,24 @@
++/* R&C patch 7036: the distance between two cube map faces in guest memory.
++ *
++ * A swizzled (non-LN) cube map stores its six faces one after the other, each face holding its whole mip chain,
++ * and every face starts on a 128-byte boundary [src:rpcs3-texutils: get_subresources_layout_impl aligns the
++ * source offset to 128 after each layer of a swizzled texture, "Cubemap images are 128 bytes aligned"]. A
++ * pitch-linear (LN) cube has no such padding. Live draw stepped faces by the unaligned sum of the chain, so any
++ * cube whose chain is not a multiple of 128 bytes read faces 1..5 shifted into the previous face's padding.
++ *
++ * ToD (Fastoon spaceport, tods-gfx-post draw inputs, frame 10290): the scene's environment cube is unit 7,
++ * 1:0x266DC80 A8R8G8B8 swizzled 32x32, 6 mips: chain 5460 bytes, face stride 5504. Decoded at 5460 faces 1..5
++ * are morton-scrambled speckle (the 44*f byte shift reorders the swizzle), at 5504 all six faces are coherent
++ * sky/light panoramas. The shaders (PSO 6b5b1ee1, 5dab8195) scale the cube colour by exp2(alpha * c3.x + c3.y):
++ * scrambled alpha spread the bright light texels over the faces (tods-gfx-fix1: white sheen on the spaceport floor
++ * and pillars, RPCS3 shows them matte). */
++#ifndef RSX_CUBE_FACE_H
++#define RSX_CUBE_FACE_H
++#include <stdint.h>
++
++static inline uint32_t ld_cube_face_stride(uint32_t face_bytes, int linear)
++{
++    return linear ? face_bytes : (face_bytes + 127u) & ~127u;
++}
++
++#endif

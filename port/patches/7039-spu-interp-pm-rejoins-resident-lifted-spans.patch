@@ -1,0 +1,101 @@
+SPU: an interpreted policy module (patch 7034) hands over to lifted code in verified resident spans, and back.
+
+Games: A Crack in Time 1.20 (and Nexus, A4O, FFA): the igPm loader (0x230 bytes, runs once per SPU) stays interpreted (image -1),
+but Insomniac's job kernel and its job blobs are streamed into local store from fixed EBOOT addresses (the RE notes section 31),
+so they can be lifted at their load addresses and registered as verified streamed regions (tools/spu/lift_igjobs.py;
+spu_overlay_register_verified_region: a GET from the registered EA to the registered LS address makes the span resident, the
+first dispatch compares the lifted code bytes). Four hooks, all inert until such a region is registered and resident:
+- spu_interp.c: an image -1 context rejoins lifted code only inside a bounded resident span (never a primary image: it has
+  none, and the job blobs overwrite the loader's LS anyway), and stops at its caller's stop address like an image >= 0 one;
+- spurs_policy.c: spurs_pm_interp_entry, when the interpreter returns still running (it reached such code), queues
+  spu_indirect_branch so spu_run_with_halt's drain dispatches it;
+- spu_channels.c: the dispatcher's KZ3 1069 interpreter fallback also covers image -1 policy contexts at any LS address, so a
+  job the lift does not have (or whose bytes fail verification) runs interpreted, and it stops at the innermost open call
+  bracket's return address (hop_ret_pc): the lifted kernel calls a job mid-function, and its host frame owns the
+  continuation (without the stop the interpreter ran on through the kernel and the bracket's drain never returned);
+- spu_drain.c: the drain's 1069 fallback (a lifted function returning into unlifted code) likewise covers image -1 policy
+  contexts below LS 0x4000 (igPm's jobs load at 0x100).
+Host test: port/rc/tests/run_igjob_rejoin_test.sh (a synthetic kernel and job lifted by lift_igjobs.py, linked with the
+runtime: lifted kernel and job, an unlifted job, a job whose bytes fail verification, no resident kernel).
+
+diff -ru a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -3976,12 +3976,18 @@
+      * the PM's job bracket (the job stayed claimed forever: the quit-to-menu hang). Run it in the full interpreter
+      * instead; it stops at the first lifted address (the resident overlay first, patch 1028) and the dispatch goes
+      * on from there. KZ3_SPU_WWS_INTERP=0 restores the microstep path. */
+-    if (ctx->policy_mode && kz3_wws_interp_on() && (ctx->pc & SPU_LS_MASK) >= 0x4000 && (ctx->pc & SPU_LS_MASK) < 0x3FE80) {
++    /* R&C patch 7039: and anywhere for an image -1 policy context (an unlifted policy module, patch 7034, whose lifted
++     * job kernel or job called code that has no lift: the job then runs interpreted until it returns into lifted code). */
++    if (ctx->policy_mode && kz3_wws_interp_on() &&
++        (((ctx->pc & SPU_LS_MASK) >= 0x4000 && (ctx->pc & SPU_LS_MASK) < 0x3FE80) || ctx->image_id < 0)) {
+         const uint32_t p = ctx->pc & SPU_LS_MASK & ~3u;
+         if (ctx->ls[p] | ctx->ls[p + 1] | ctx->ls[p + 2] | ctx->ls[p + 3]) {
+             extern uint32_t spu_interp_run_until(spu_context*, uint32_t, uint32_t);
+             spu_recent_mark(ctx, 10, p);
+-            spu_interp_run_until(ctx, p, 0);
++            /* R&C patch 7039: an image -1 context stops at the innermost open call bracket's return address too (hop_ret_pc,
++             * set by spu_drain_call_full: an interpreted job returning into the lifted kernel mid-function, whose host
++             * frame owns that continuation; drain_ret_pc can already be 0 here). */
++            spu_interp_run_until(ctx, p, ctx->image_id < 0 ? ctx->hop_ret_pc : 0);
+             spu_recent_mark(ctx, 11, ctx->pc);
+             if (ctx->status == SPU_STATUS_RUNNING) {
+                 g_spu_trampoline_fn = spu_indirect_branch;   /* dispatch the lifted code it stopped at */
+diff -ru a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -847,7 +847,8 @@
+         {
+             extern int kz3_wws_interp_on(void);
+             const uint32_t p = ctx->pc & SPU_LS_MASK & ~3u;
+-            if (ctx->policy_mode && kz3_wws_interp_on() && p >= 0x4000 && p < 0x3FE80 &&
++            /* R&C patch 7039: and anywhere for an image -1 policy context (igPm's jobs load below 0x4000). */
++            if (ctx->policy_mode && kz3_wws_interp_on() && ((p >= 0x4000 && p < 0x3FE80) || ctx->image_id < 0) &&
+                 (ctx->ls[p] | ctx->ls[p + 1] | ctx->ls[p + 2] | ctx->ls[p + 3])) {
+                 extern uint32_t spu_interp_run_until(spu_context*, uint32_t, uint32_t);
+                 spu_recent_mark(ctx, 10, p);
+diff -ru a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -553,6 +553,16 @@
+     return spu_lifted_lookup(ctx, pc);
+ }
+ 
++/* R&C patch 7039: lifted code inside one of the context's bounded resident code spans, for an image -1 context. Only
++ * a resident span answers: such a context has no primary image whose functions could stand for the live bytes. */
++static inline int rc_interp_resident_rejoin(const spu_context* ctx, uint32_t pc) {
++    for (unsigned slot = 0; slot < 4; ++slot)
++        if (ctx->resident_code[slot].image_id && pc >= ctx->resident_code[slot].lsa &&
++            pc - ctx->resident_code[slot].lsa < ctx->resident_code[slot].size)
++            return spu_lifted_lookup(ctx, pc) != NULL;
++    return 0;
++}
++
+ static uint32_t spu_interp_run_until_body(spu_context* ctx, uint32_t start_lsa, uint32_t stop_lsa, uint64_t* nsteps, uint32_t* plo, uint32_t* phi) {
+     ctx->pc = start_lsa & 0x3FFFC;
+     ctx->status = SPU_STATUS_RUNNING;
+@@ -592,6 +602,10 @@
+         /* ponytail: pc-only match; a recursive call through the same site would stop early -- compare r1 too if one shows up. */
+         if (plo) { if (ctx->pc < *plo) *plo = ctx->pc; if (ctx->pc > *phi) *phi = ctx->pc; if (nsteps) *nsteps = steps; }
+         if (ctx->image_id >= 0 && ((stop_lsa && ctx->pc == stop_lsa) || spu_interp_rejoin_lookup(ctx, ctx->pc))) { g_spu_interp_steps = steps; g_spu_interp_last_pc = ctx->pc; return ctx->pc; }  /* rejoin fast path */
++        /* R&C patch 7039: an image -1 context (an unlifted policy module, patch 7034) rejoins only lifted code that
++         * owns a bounded resident span (a verified streamed region: the igPm job kernel and its job blobs), or stops at
++         * the caller's stop point (the return address of the lifted call it runs under: mid-function, no entry). */
++        if (ctx->image_id < 0 && ((stop_lsa && ctx->pc == stop_lsa) || rc_interp_resident_rejoin(ctx, ctx->pc))) { g_spu_interp_steps = steps; g_spu_interp_last_pc = ctx->pc; return ctx->pc; }
+         g_spu_interp_last_pc = ctx->pc;
+         if (g_spu_interp_pc_hist) {   /* KZ3 patch 1070 */
+             const uint32_t o = (ctx->pc - g_spu_interp_pc_hist_lo) >> 2;
+diff -ru a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -152,6 +152,9 @@
+     extern int g_spu_force_ch_block;
+     if (!getenv("RC_SPURS_PM_NOBLOCK")) g_spu_force_ch_block = 1;
+     spu_interp_run(ctx, 0xA00);
++    /* R&C patch 7039: the interpreter returns while running when it reached lifted code in a verified resident span
++     * (the job kernel or a job blob streamed from its registered EA): the drain of spu_run_with_halt dispatches it. */
++    if (ctx->status == SPU_STATUS_RUNNING) g_spu_trampoline_fn = spu_indirect_branch;
+ }
+ void spu_pm_ctx_describe(void* p, char* out, int n)
+ {

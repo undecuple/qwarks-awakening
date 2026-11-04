@@ -1,0 +1,3 @@
+module	entry	mode	code_end	data_ranges	extra_seeds	drop_seed_base_plus_0x30	unsupported_before	evidence
+6d0cbaa3f065	0x4080	island		0xf220-0xf380	0x812c	0	64	0xf220-0xf380: {'Z': 6, 'S': 16}, prologues inside 0 (kept code 25), branches into range 0, data refs into range 1
+803e7758bf6b	0x4080	tail	0xffa4	0xffa4-0x11c30	0x812c	0	87	0xffa4-0x11c30: {'F': 74, 'T': 241, 'P': 16, 'M': 102, 'Z': 8, 'S': 15, 'A': 1}, prologues inside 0 (kept code 28), branches into range 0, data refs into range 131; last terminator before the run at 0xffa0 (bi)

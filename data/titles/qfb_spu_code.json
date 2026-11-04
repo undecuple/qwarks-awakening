@@ -1,0 +1,35 @@
+{
+ "spu_elfs": [
+  {
+   "file_offset": "0x7c3980",
+   "size": 40504,
+   "entry": "0x30f0",
+   "sections": 12,
+   "wraps_job_module": false
+  }
+ ],
+ "edge_zlib_inflate_elf": {
+  "count": 1,
+  "size": 40504,
+  "entry": "0x30f0",
+  "file_offset": "0x7c3980"
+ },
+ "raw_job_binaries_in_ebooot": {
+  "count": 21,
+  "extent_min_max": [
+   2992,
+   235168
+  ],
+  "load_addr": [
+   [
+    "0x4000",
+    21
+   ]
+  ],
+  "offsets_first_last": [
+   9245504,
+   9997568
+  ],
+  "rejected_marker_hits": 0
+ }
+}

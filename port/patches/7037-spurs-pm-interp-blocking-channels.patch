@@ -1,0 +1,38 @@
+cellSpurs: an interpreted policy module (patch 7034) runs with blocking channel reads, as on the SPU.
+
+Games: A Crack in Time 1.20, Into the Nexus 1.01, All 4 One 1.03, Full Frontal Assault 1.05 (runs acit-boot5, nexus101-boot1,
+a4o-boot1, ffa-boot1: 0.4-1.4 flips/s, FFA black). All four create no raw SPUs ([SPU] initialize nrawspu=0), so nothing set
+g_spu_force_ch_block (only spu_raw.c and the raw-thread fallback do; ToD always has it through its two raw SPUs). With it
+clear, `rdch` on an empty channel returns at once. Insomniac's igPm loader reads its SPU index with `rdch SPU_RdSigNotify1`
+(LS 0xA5C) and its job kernel parks in `rdch SPU_RdEventStat` (LS 0x3F760, mask 0x400 = lock line lost) between jobs:
+- SNR1: a PM run that starts before the game's sys_spu_thread_write_snr reaches its SPU reads the stale register value 0
+  (the write lands later in a channel nobody reads), so that SPU would take SPU 0's per-SPU queue lines (index << 7/9/10/14).
+  ASSUMPTION: not seen in a measured run; the write order against the first dispatch differs per run and title (acit-boot5:
+  SPUs 2-4 written after the first dispatch, a4o-boot1 1-4, ffa-boot1 0-4; acit-7037 all before).
+- EventStat: the kernel's wait loop (0x3F6C8..0x3F768) never parked; all five "ig" kernel threads spun at 100 % CPU
+  (perf-thr 5 x 1010 ms) and no watchdog sample ever caught a lane at the rdch.
+Fix: spurs_pm_interp_entry sets g_spu_force_ch_block before interpreting (RC_SPURS_PM_NOBLOCK=1 = the old mode, for A/B).
+The PPU's stores to a reserved lock line already raise LR and wake the waiter (spu_coh_notify_write -> spu_ch_wake), with
+the 10 ms snapshot poll behind it. Host test: port/rc/tests/run_spurs_pm_interp_test.sh. Measured (same ACiT exe, 300 s):
+RC_SPURS_PM_NOBLOCK=1 2030 frames, 1.0 flips/s, 7.5 host cores; default 4450 frames, 2.7 flips/s, 4.2 cores.
+
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -140,9 +140,17 @@
+  * it (cellSpurs.c spurs_resolve_pm gives it this entry and image id -1: pure interpretation, never a rejoin into
+  * another image's lifted functions). A Crack in Time's igPm workload (a 0x230-byte loader that DMAs Insomniac's job
+  * kernel to LS 0x3F580 and runs it) had no lift, so wid 2 of its "ig" instance never ran. */
++/* R&C patch 7037: and with blocking channel reads, as on the SPU. igPm reads its SPU index with `rdch SPU_RdSigNotify1`
++ * and Insomniac's job kernel parks in `rdch SPU_RdEventStat` (lock-line-lost) between jobs; both block on hardware
++ * until written. The runtime blocks only once g_spu_force_ch_block is set, which only raw SPU threads (spu_raw.c) and
++ * the raw-thread fallback did, so a title without raw SPUs (ACiT, Nexus, A4O, FFA: nrawspu=0) read an empty SNR1 as
++ * the stale 0 (an SPU whose write_snr came after its run started took SPU 0's queues) and spun the kernel's
++ * EventStat loop on five host threads. ToD sets the same switch through its raw SPUs, so this is the mode it runs in. */
+ void SPU_ABI spurs_pm_interp_entry(spu_context* ctx)
+ {
+     extern uint32_t spu_interp_run(spu_context*, uint32_t);
++    extern int g_spu_force_ch_block;
++    if (!getenv("RC_SPURS_PM_NOBLOCK")) g_spu_force_ch_block = 1;
+     spu_interp_run(ctx, 0xA00);
+ }
+ void spu_pm_ctx_describe(void* p, char* out, int n)

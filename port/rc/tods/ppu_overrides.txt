@@ -13,3 +13,5 @@
 00671CA8  # luaD_rawrunprotected (Lua 5.0.2), the only setjmp call site (@0x671CE0): host frame for the guest jmp_buf
 00826B34  # libc longjmp: lifted body, then a host longjmp to the frame recorded for that jmp_buf
 006670C8  # R&C pass 6: the game's execute loader (compile a string as chunk "execute", pcall it): wrapped to print the chunk text with a caught error (RC_LUA_SRC=1 logs all)
+0006D4D8  # ENHANCEMENT (tods_mouse_look.inc, default off): follow camera yaw rate from the right stick's x (called only by the camera update func_00070D28 @0x70E84); the lifted body, then the mouse's yaw added as a rate
+0006D548  # ENHANCEMENT (tods_mouse_look.inc, default off): follow camera pitch target from the right stick's y (called only by func_00070D28 @0x70E9C); the lifted body, then the port's own mouse pitch offset added, clamped to the game's limit table [r2-0x5324]

@@ -1,0 +1,72 @@
+cellGame: cellGameDataCheckCreate2 reports isNewData from the host directory and uses CellGameDataStatGet's real layout.
+
+isNewData was always 0 ("the data exists"), so a title on a fresh hdd0 believed its game data was installed. Quest for
+Booty (BCES00301) then shows "Game data has become corrupted. Please quit the game and delete the game data." on its
+front end. Now 1 when /dev_hdd0/game/<dir> (content_root(), the directory ppu_fs maps it to) does not exist, and on
+CBRESULT_OK with new data the directory and its USRDIR are created (PARAM.SFO from setParam is not written).
+CellGameDataStatGet is 0x1404 bytes: sizeKB @0x13FC and sysSizeKB @0x1400 (were written at 0xB9C/0xBA0, inside
+getParam), and StatSet moves past it (it sat at get+0xC00, inside getParam's titleLang). R&C port patch 7040.
+
+--- a/libs/system/cellGame.c
++++ b/libs/system/cellGame.c
+@@ -506,18 +506,23 @@
+         return CELL_GAMEDATA_CBRESULT_OK;
+ 
+     /* Guest scratch for the 3 callback structs: CBResult(0x18)/StatGet(0xBE8)/StatSet(0x0C). */
++    /* R&C patch 7040: CellGameDataStatGet is 0x1404 bytes (hddFreeSizeKB, isNewData, contentInfoPath[1055] @0x8,
++     * gameDataPath[1055] @0x427, reserved0[2], three times @0x848, getParam @0x860 (0xB9C bytes), sizeKB @0x13FC,
++     * sysSizeKB @0x1400): StatSet used to sit at get+0xC00, inside getParam's titleLang, and sizeKB/sysSizeKB were
++     * written at 0xB9C/0xBA0 (getParam's size taken as get's offset). Quest for Booty's funcStat reads sysSizeKB
++     * at get+0x1400 on its new-data path. */
+     uint32_t cb  = GAMEDATA_CB_BASE;
+     uint32_t get = cb + 0x20;
+-    uint32_t set = get + 0xC00;
++    uint32_t set = get + 0x1420;
+     memset(vm_base + cb, 0, (set + 0x20) - cb);
+ 
+     /* CellGameDataStatGet (offsets per SDK, RPCS3-verified). */
+     vm_write32(get + 0x000, (u32)content_free_kb());
+-    vm_write32(get + 0x004, is_new_data);                            /* isNewData = 0 (data exists) */
++    vm_write32(get + 0x004, is_new_data);                            /* isNewData: 0 = the directory exists */
+     snprintf((char*)(vm_base + get + 0x008), 96, "/dev_hdd0/game/%s", dir);          /* contentInfoPath */
+     snprintf((char*)(vm_base + get + 0x427), 96, "/dev_hdd0/game/%s/USRDIR", dir);   /* gameDataPath */
+-    vm_write32(get + 0xB9C, 0xFFFFFFFFu);                  /* sizeKB = NOTCALC (-1) */
+-    vm_write32(get + 0xBA0, 0);                            /* sysSizeKB */
++    vm_write32(get + 0x13FC, 0xFFFFFFFFu);                 /* sizeKB = NOTCALC (-1) (7040: was 0xB9C) */
++    vm_write32(get + 0x1400, 0);                           /* sysSizeKB (7040: was 0xBA0) */
+     /* getParam (CellGameDataSystemFileParam @0x860): title / titleId / dataVersion / attribute. */
+     uint32_t gp = get + 0x860;
+     snprintf((char*)(vm_base + gp + 0x000), 128, "%s", s_title);
+@@ -544,13 +549,28 @@
+     if (version != 0 || !dir_ea || !func_opd)
+         return CELL_GAME_ERROR_PARAM;
+ 
+-    /* We report existing data (isNewData=0) + ample space; DeS's callback
+-     * returns CELL_GAMEDATA_CBRESULT_OK_CANCEL (check-only) -> CELL_OK. */
++    /* R&C patch 7040: isNewData comes from the host directory /dev_hdd0/game/<dir> maps to (content_root(), the
++     * same one ppu_fs resolves), as on the console: 1 (CELL_GAMEDATA_ISNEWDATA_YES) when it does not exist. It was
++     * always 0, so a title on a fresh hdd0 believed its game data was installed, looked for it under
++     * /dev_hdd0/game/<dir>/USRDIR and reported it corrupted (Quest for Booty BCES00301: "Game data has become
++     * corrupted. Please quit the game and delete the game data."). With CBRESULT_OK on new data the firmware
++     * creates the directory (RPCS3 cellGame.cpp behaviour, read not copied): here <dir>/USRDIR; PARAM.SFO from
++     * setParam is not written (ASSUMPTION: no title read so far reads it back). OK_CANCEL creates nothing. */
++    char host_dir[CELL_GAME_PATH_MAX];
++    const char* dname = (const char*)(vm_base + dir_ea);
++    snprintf(host_dir, sizeof host_dir, "%s/%s", content_root(), dname);
++    uint32_t is_new = dir_exists(host_dir) ? 0u : 1u;
++    printf("[cellGame] DataCheckCreate2: %s -> isNewData=%u\n", host_dir, is_new);
+     s32 result = gamedata_stat_callback("DataCheckCreate2", version, dir_ea,
+-                                        func_opd, 0);
++                                        func_opd, is_new);
+     if (result < 0)
+         return CELL_GAME_ERROR_PARAM;   /* callback reported an error */
+-    /* OK / OK_CANCEL: succeed (our HLE doesn't create/modify the on-disk data). */
++    if (result == CELL_GAMEDATA_CBRESULT_OK && is_new) {
++        char usr[CELL_GAME_PATH_MAX + 16];
++        snprintf(usr, sizeof usr, "%s/USRDIR/", host_dir);
++        ensure_dirs(usr);
++        printf("[cellGame] DataCheckCreate2: created %s\n", usr);
++    }
+     return CELL_OK;
+ }
+ 

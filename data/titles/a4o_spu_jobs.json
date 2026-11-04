@@ -1,0 +1,68 @@
+{
+ "title": "All 4 One (update 1.03)",
+ "note": "Offsets located by tools/survey/spu_locate.py in the update's decrypted EBOOT.elf (2026-11-03); the structure (two ELF32-wrapped WWS job modules, header words, policy module size) is that of nexus_spu_jobs.json, see its note for the basis of the sizes. ASSUMPTION: the registered sizes are the PT_LOAD file sizes as there; the workload creator and its callers were not re-resolved for this executable.",
+ "images": [
+  {
+   "index": 0,
+   "elf_file_offset": "0xd84280",
+   "file_offset_of_header": "0xd84300",
+   "header_words": [
+    "0x80",
+    "0xdc50",
+    "0x70",
+    "0x1890"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0xdc50",
+    "+0x24_count": 4,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x5"
+   },
+   "elf_ptload_filesz": "0xdc30",
+   "size_argument_at_registration": null,
+   "lift_size": 56368,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue)"
+  },
+  {
+   "index": 1,
+   "elf_file_offset": "0xd92980",
+   "file_offset_of_header": "0xd92a00",
+   "header_words": [
+    "0x80",
+    "0xb570",
+    "0x30",
+    "0x2c0"
+   ],
+   "header_fields": {
+    "+0x10_entry_offset": "0x80",
+    "+0x14_footprint": "0xb570",
+    "+0x24_count": 0,
+    "+0x28_base": "0x4000",
+    "+0x2c_flags": "0x5"
+   },
+   "elf_ptload_filesz": "0xb550",
+   "size_argument_at_registration": null,
+   "lift_size": 46416,
+   "entry_offset": "0x80",
+   "entry_ls": "0x4080",
+   "entry_status": "entry lands on four stqd (a function prologue)"
+  }
+ ],
+ "workload_creation_wrapper": {
+  "function": "not re-resolved for this executable",
+  "note": "see nexus_spu_jobs.json for the creator found in the disc executable; not re-resolved here",
+  "policy_module": {
+   "ea": "0xdae900",
+   "size": "0x30f8",
+   "file_offset": "0xd9e900",
+   "segment": "first LOAD (va 0x10000, file offset 0)",
+   "slot_table": "u32 pair (ea, size) at file offset 0xde5d60 (found by searching the EA word; size word 0x30f8 as in nexus)"
+  }
+ },
+ "entry_rule": {
+  "formula": "entry_ls = LS[0x1320] + u32(header+0x10); the PM does lqa/lqd 0x10/a/bisl at LS 0x3574..0x35ec (code buffer slot 0x1320 = the runtime default)"
+ }
+}

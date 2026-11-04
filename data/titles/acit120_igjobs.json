@@ -1,0 +1,21 @@
+{
+ "title": "Ratchet & Clank: A Crack in Time 1.20",
+ "note": "Input of tools/spu/lift_igjobs.py: Insomniac's igPm job kernel and the job blobs the ig instance runs (the RE notes sections 31-33). The kernel is GET by the interpreted igPm loader (pc 0xB14, 0x510 bytes to LS 0x3F580, entry 0x3F5A0); its code ends at 0x3F9F8 (the job header buffer is at 0x3FA00, outside the span). Jobs: every code EA the kernel GETs to LS 0x100 in acit-igj (RC_SPU_GETLOG, kernel pc 0x3F868); all are format A (header quad at +0x10 gives LS dest, size and entry; an entry stub `ila $r11,0; stqd $r3,0x20($r11)` sits at each decoded entry). Overlays: job 0x00B8A500 GETs two code blobs with a relative header (four `ila $r2`, word +0x10 = 0x10) to fixed LS addresses and calls LS + word + 0x20 (its code 0x0FF30..0x0FF48), so lsa/size/entry are given. Image ids 51 (kernel) and 60+ (jobs, overlays) are unused by ACiT's other lifts (2, 30, 200, 201).",
+ "kernel": {"ea": "0x00AD8B00", "lsa": "0x3F580", "get_size": "0x510", "entry": "0x3F5A0", "code_end": "0x3F9F8",
+            "span": "0x480", "image_id": 51, "data_ranges": ["0x3F580-0x3F5A0"]},
+ "jobs": [
+  {"ea": "0x00ADB280", "image_id": 60},
+  {"ea": "0x00B5D480", "image_id": 61},
+  {"ea": "0x00B5F800", "image_id": 62},
+  {"ea": "0x00B63200", "image_id": 63},
+  {"ea": "0x00B87880", "image_id": 64},
+  {"ea": "0x00B89380", "image_id": 65},
+  {"ea": "0x00B8A500", "image_id": 66},
+  {"ea": "0x00B9B100", "image_id": 67},
+  {"ea": "0x00BA8380", "image_id": 68},
+  {"ea": "0x00BA9280", "image_id": 69},
+  {"ea": "0x00BAE080", "image_id": 70},
+  {"ea": "0x00DBAB00", "image_id": 71, "lsa": "0x10D00", "size": "0x1200", "entry": "0x10D30", "data_ranges": ["0x10D00-0x10D30"]},
+  {"ea": "0x00DBBD00", "image_id": 72, "lsa": "0x11F00", "size": "0x1F10", "entry": "0x11F30", "data_ranges": ["0x11F00-0x11F30"]}
+ ]
+}

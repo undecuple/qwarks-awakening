@@ -3,6 +3,34 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
+## [0.2.1] - 2026-11-04 (pre-release)
+
+### Added
+- [docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md): for each game, the console version's features and whether each
+  works in the port, with an estimate per game.
+- *Tools of Destruction*: mouse look, off by default (`[mouse] look = on` in the game's `keybinds.ini`). Moving the
+  mouse turns the camera left and right and tilts it up and down within the game's own limits; the pointer is hidden in
+  play and shown in menus. Checked in scripted runs only; not tried by hand yet.
+
+### Changed
+- *Tools of Destruction*: too-strong glow and reflections are fixed. A texture no longer reads from the picture being
+  drawn (this also removes the HUD prompt mirrored into the scene at Fastoon's spaceport), and reflection maps are
+  read with the right layout (the white sheen on floors and pillars is gone). Checked in scripted runs; not tried by
+  hand yet.
+- The later games run their SPU job code translated instead of interpreted, and an SPU task scheduler that is not
+  translated yet no longer keeps processor cores busy while it waits. Scripted runs, 2026-11-04, frames per second
+  over the same part of each run: *A Crack in Time* about 3 to 17, now past its intro to a loading screen; *Into the
+  Nexus* about 2 to 28, but its screen is black; *All 4 One* about 3 to 13, title screen.
+- *Quest for Booty* is built for the first time. On a first start it installs its game data; a new game writes its
+  save and plays the prologue's opening cutscene (scripted run). The game-data check now tells a game whether its data
+  is new, and the web-browser functions it calls at start answer as on the console.
+- *All 4 One* and *Full Frontal Assault* are built for the first time: *All 4 One* shows its title screen; *Full
+  Frontal Assault* installs its data, but its screen stays black.
+- *Tools of Destruction* was checked with these changes on 2026-11-04, five minutes each under GE-Proton11-7 on an
+  NVIDIA GeForce RTX 4060 (driver 595.112.07), scripted: a first start on an empty drive installs the game data and
+  shows "Setup complete"; a new game reaches Metropolis and goes on to Cobalia; a saved game loads into Fastoon. None
+  of the runs crashed.
+
 ## [0.2.0] - 2026-11-03 (pre-release)
 
 ### Added
