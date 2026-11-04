@@ -209,7 +209,12 @@ def test_version_step(lj):
                 f.write(f"version: {v}\n")
             env = dict(os.environ, GITHUB_OUTPUT=os.path.join(d, "out.txt"), GITHUB_EVENT_NAME="push",
                        GITHUB_REF_TYPE="tag", GITHUB_REF_NAME=tag(v))
-            r = subprocess.run([bash, "-e", "-c", script], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+            # the script goes in a file, as the runner does: run as a -c argument, the Windows runner's check failed
+            # (0x2x0 matched); ASSUMPTION: the MSYS runtime re-parses the argument and turns the sed replacement's \\ into \
+            sp = os.path.join(d, "step.sh")
+            with open(sp, "w", newline="\n") as f:
+                f.write(script)
+            r = subprocess.run([bash, "-e", "step.sh"], cwd=d, env=env, capture_output=True, text=True, timeout=60)
             return r.returncode, r.stdout + r.stderr
 
     rc, out = run(lambda v: v, lambda v: "v" + v)
