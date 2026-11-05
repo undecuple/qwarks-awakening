@@ -1,0 +1,61 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Ratchet & Clank: Full Frontal Assault",
+  "system": "PS3",
+  "type": "recomp",
+  "original": {
+    "region": "US",
+    "serial": "BCUS98380",
+    "revision": "disc with title update 01.05"
+  },
+  "project": "Qwark's Awakening",
+  "status": "in-progress",
+  "targets": [
+    "PC (Windows)"
+  ],
+  "toolchain": [
+    "ps3recomp"
+  ],
+  "approach": "Static recompilation of the PPU code to C with ps3recomp and of the SPU programs, HLE system libraries, Direct3D 12 RSX backend",
+  "maintainers": [
+    {
+      "name": "undecuple",
+      "link": "https://github.com/undecuple"
+    }
+  ],
+  "links": [
+    {
+      "label": "Repository",
+      "url": "https://github.com/undecuple/qwarks-awakening"
+    },
+    {
+      "label": "Building",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md"
+    },
+    {
+      "label": "Requirements",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md"
+    },
+    {
+      "label": "Roadmap",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md"
+    },
+    {
+      "label": "Feature parity",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md"
+    },
+    {
+      "label": "Releases",
+      "url": "https://github.com/undecuple/qwarks-awakening/releases"
+    }
+  ],
+  "help": [
+    "Testing on real Windows with NVIDIA GPUs"
+  ],
+  "tags": [
+    "cell",
+    "spurs",
+    "d3d12"
+  ],
+  "notes": "Early work, not playable: the game builds as its own Windows program on the shared runtime. In scripted runs it installs its game data, but the screen stays black. Needs your own copy of the game and the decrypted EBOOT made from it; the build happens on your PC."
+}
