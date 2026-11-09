@@ -5,101 +5,107 @@
 
 # Qwark's Awakening
 
-**Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation)**
+**Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): the PS3 games recompiled into native Windows programs from your own copy.**
 
-[![CI](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&label=release)](https://github.com/undecuple/qwarks-awakening/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/undecuple/qwarks-awakening/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
+[![Pre-release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&style=flat-square&label=pre-release&labelColor=0a1942&color=b24500)](https://github.com/undecuple/qwarks-awakening/releases)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-1e70b9?style=flat-square&labelColor=0a1942)](LICENSE)
+[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-1e70b9?style=flat-square&labelColor=0a1942)](https://deepwiki.com/undecuple/qwarks-awakening)
 
-A native Windows port of the PS3 Ratchet & Clank games, made by static recompilation on
-[ps3recomp](https://github.com/sp00nznet/ps3recomp); the first game, *Ratchet & Clank Future: Tools of Destruction*,
-needs your own copy of its **US disc, BCUS98127** (disc version, no update).
+> **Bring your own game.** This repository holds only the port: source code, patches to the recompiler, tools and
+> documentation. It contains no game code, game data, assets, keys or firmware, and it never will. To build a game you
+> need your own copy of it and the decrypted `EBOOT.elf` made from that copy ([requirements](docs/requirements.md)).
 
-**Status: early work, not playable yet.** Version <!-- version -->0.2.1<!-- /version -->, a
-pre-release of 2026-11-04: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from its first
-level, with known bugs, and has not been played through. What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
+**8** games in the catalogue · **6** build into their own programs · **1** shared runtime ·
+**5** fixes merged upstream into ps3recomp · **0** game files in this repository
 
-**[Getting started](#getting-started)** · **[Compatibility](#compatibility)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
+**Status: early work, not playable yet.** Version <!-- version -->0.2.1<!-- /version -->, a pre-release of
+2026-11-04: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from
+its first level, with known bugs, and has not been played through.
+
+**[Try the launcher](#try-the-launcher-preview-in-3-minutes)** · **[Status](#status)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
 
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
-What is true and checked today:
+## Try the launcher preview in 3 minutes
 
-- **The US disc.** The first game is ported from the US disc of *Tools of Destruction*, BCUS98127. Other regions are
-  untested.
-- **Tested under Proton on Linux.** Every test run so far has been the Windows program under Proton on Linux (the
-  setups are in the table below). It has not been run on Windows itself yet.
-- **One runtime for the series.** All the games share one runtime and one set of tools, with one program per game. The
-  PPU code of every game is already lifted to C with the same tools. *Quest for Booty*, *A Crack in Time*, *All 4 One*,
-  *Full Frontal Assault* and *Into the Nexus* also build into their own programs; in scripted runs they get as far as
-  the table below says. *Deadlocked HD* and the *Collection* are not built yet.
-- **Fixes sent upstream.** General fixes found while porting go back to ps3recomp as pull requests:
-  [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#408](https://github.com/sp00nznet/ps3recomp/pull/408),
-  [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429) and
-  the documentation change [#405](https://github.com/sp00nznet/ps3recomp/pull/405), all merged.
+The launcher preview lists the eight games and finds your files. It does not build or start a game yet: that part is
+**coming soon**. Download `Qwarks-Awakening-<version>-launcher-windows-x64.zip` from
+[Releases](https://github.com/undecuple/qwarks-awakening/releases); Python is included, nothing else to install.
 
-**You need your own copy of the game.** This repository contains only the port: source code, patches to the
-recompiler, tools and documentation. It contains no game code, data, assets, keys or firmware, and it never will.
+- **Windows 10/11:** unzip, start `Qwarks-Awakening-launcher.exe`. *Caveat: not tried on Windows yet.*
+- **Linux:** unzip, start `Qwarks-Awakening-launcher.exe` under Proton. *Caveat: tested only by starting it with
+  GE-Proton11-7 directly; through Steam and on the Steam Deck it is untested.*
 
-## Compatibility
+To build a game today, follow [docs/BUILDING.md](docs/BUILDING.md) (Linux with Nix).
+
+## What makes it different
+
+| Claim | Proof |
+|---|---|
+| Native code, not an emulator: the game's main-CPU (PPU) code and its SPU programs are recompiled to C ahead of time | [How it works](#how-it-works), [BUILDING.md](docs/BUILDING.md) |
+| One runtime and one set of tools for the whole PS3 series, one program per game | [Status](#status), [FEATURE-PARITY.md](docs/FEATURE-PARITY.md) |
+| Insomniac's SPU job code runs recompiled: *A Crack in Time* went from about 3 to 17 frames per second (scripted runs) | [CHANGELOG 0.2.1](CHANGELOG.md) |
+| Built from your own copy; no game code or data is shipped or downloaded (the launcher's cover-art switch, opt-in and not wired yet, will fetch cover images from IGDB.com) | [NOTICE.md](NOTICE.md), [requirements.md](docs/requirements.md) |
+| Run results in this README and in the feature-parity page give their date and how they were run; scripted and hand-play figures are kept apart | [Status](#status), [FEATURE-PARITY.md](docs/FEATURE-PARITY.md) |
+| General fixes go back to ps3recomp | [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#405](https://github.com/sp00nznet/ps3recomp/pull/405), [#408](https://github.com/sp00nznet/ps3recomp/pull/408), [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429), all merged |
+
+## Status
 
 | Platform | How it runs | Renderer | State | Tested on |
 |---|---|---|---|---|
 | Windows 10/11 | native exe | Direct3D 12 | builds; not run on Windows | - |
-| Linux | the Windows exe under Proton (GE-Proton11-7) | Direct3D 12 through vkd3d-proton | verified | NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-03 |
+| Linux | the Windows exe under Proton (GE-Proton11-7) | Direct3D 12 through vkd3d-proton | verified | NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-04 |
 
-What the runs on Proton showed, all on *Tools of Destruction*:
-
-- **This source (ps3recomp v0.18.0), 2026-11-03:** a new game starts and reaches its first level, Metropolis, and a
-  saved game loads into Fastoon; neither five-minute run crashed (the setup in the Proton row above).
-- **An earlier build (ps3recomp v0.17.0), 2026-10-22, same GPU, driver 595.104.2:** started from a saved game, the
-  ship flies on to later planets such as Cobalia. A DualShock 4 pad, Alt+Enter fullscreen and in-game saving work.
-- **Frame rate, hand play:** about 37 frames per second on average over one 147-second session in Fastoon, fights
-  included, on that earlier build.
-- **Frame rate, scripted runs:** not measured on that build.
-- Not reached yet: a ten-minute run without errors, a chapter played to its end, the port's own save loaded again
-  after a quit.
+What the runs under Proton showed for *Tools of Destruction* (this source, ps3recomp v0.18.0, 2026-11-04, five
+minutes each, scripted): a first start on an empty drive installs the game data; a new game reaches Metropolis and goes
+on to Cobalia; a saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. None of the runs
+crashed. An earlier build (2026-10-22) was played by hand at about 37 frames per second in Fastoon, with a DualShock 4,
+Alt+Enter fullscreen and in-game saving working. Not reached yet: a ten-minute run without errors, a chapter played to
+its end, the port's own save loaded again after a quit.
 
 | Game | PS3 release | State |
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; installs its data and plays the opening cutscene of a new game; not playable |
-| Ratchet & Clank Future: A Crack in Time | 2009 | next: builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable |
+| Ratchet & Clank Future: A Crack in Time | 2009 | builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable |
 | Ratchet & Clank: All 4 One | 2011 | builds and shows its title screen (1.03 update); not playable |
 | Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
-| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); an earlier build showed its intro, the current one stays black; not playable |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | last: a different engine; PPU code lifted, not built yet |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); the screen stays black; not playable |
+| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | coming soon: a different engine; PPU code lifted, not built yet |
 
-How much of each game's console version works, feature by feature, with an estimate per game:
-[docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md).
+Each game's console features and whether they work in the port, with an estimate per game:
+[docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md). What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
-## Getting started
+**Coming soon,** in this order, no dates ([ROADMAP](docs/ROADMAP.md)): *Tools of Destruction* playable through; an
+installer that builds a game from your own copy; a settings menu and PC display and control options; the other games
+one at a time, the PS2 remasters last. Gameplay changes stay optional.
 
-**Download.** Releases are pre-releases on this repository's
-[GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page. Since v0.2.0 each one has a launcher
-preview for Windows (`Qwarks-Awakening-<version>-launcher-windows-x64.zip`, with Python included): it lists the games
-and the files it finds, and does not build or start a game yet. There is no installer and no ready-made game program,
-because the program is generated from your own copy of the game. Every release stays a pre-release until v1.0.0. No game code, assets or keys are ever shipped or downloaded here.
+## Settings and known issues
 
-**Requirements** ([docs/requirements.md](docs/requirements.md)): the US disc of *Ratchet & Clank Future: Tools of
-Destruction* (BCUS98127) as a decrypted folder dump of your own copy (the folder that holds `PS3_GAME/`), and its
-decrypted executable, `EBOOT.elf`, made from that copy. This project provides no decryption tools or instructions;
-[RPCS3](https://rpcs3.net) and its documentation are the place to start for dumping questions. To build: Linux with
-Nix and 16 GB of memory or more. To run: a Direct3D 12 GPU. Hardware figures for playing are not measured yet.
+There is no settings menu yet. Each game keeps its own `keybinds.ini`, `display.ini` and `settings.ini`. Alt+Enter
+toggles fullscreen; pads are read through SDL3; *Tools of Destruction* has keyboard controls, and mouse look that is
+off unless `[mouse] look = on` is set in its `keybinds.ini`.
 
-**Steps:** build the program from source with your own copy ([docs/BUILDING.md](docs/BUILDING.md)), then start
-`tods.exe` with the path of your decrypted `EBOOT.elf`.
+Known issues in *Tools of Destruction*:
 
-**Where your data goes.** Nothing is installed yet. The developer build reads your own game folder and keeps its saves
-and caches in folders you point it at (the test scripts use `work/`). Each game writes its log, and a crash report if it
-crashes, to `logs/<game>/` beside the program; your user name and home folder are removed from them, so a log can be
-attached to an issue as it is. Proper locations for saves, settings and caches: not yet. A launcher preview is in
-`launcher/`: it lists the games and their state and has screens for choosing where your files are (not tried on Windows
-yet); it does not build or start a game yet.
+- The picture flickers inside one cave on Fastoon.
+- Level loads stall while graphics pipelines are built; the game's own graphics-stall notice can show during them.
+- The quit entries of the pause menu (off unless `RC_PAUSE_QUIT=1`) are drawn below the menu's box, and QUIT TO MAIN
+  MENU loads the last save again.
+- The game has not been played through, so later levels are untested.
 
-**What goes online.** The port has no update check, no crash reporting and no telemetry. Online play of the original
-game is not supported and untested. Whether the shared runtime opens network connections for the game's own network
-calls has not been checked for this title yet.
+**Where your data goes.** There is no installer yet. The developer build reads your own game folder and keeps its saves
+and caches in folders you point it at. Each game writes its log, and a crash report if it crashes, to `logs/<game>/`
+beside the program; your user name and home folder are removed from them, so a log can be attached to an issue as it
+is.
+
+**What goes online.** The port has no update check, no crash upload and no telemetry; crash reports stay on your PC.
+The launcher has a cover-art switch, off by default and not wired yet in this version: once it works, turning it on
+downloads cover images from IGDB.com; until then the launcher makes no network connections.
+The network and PlayStation Network functions the games call answer as a console with no connection does (tested on
+the host, not yet in a game run), unless the developer switch `PS3_NET_ONLINE` is set. Online play is not supported yet.
 
 **Where releases come from.** Qwark's Awakening is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple),
 Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** (on the ps3recomp
@@ -107,43 +113,18 @@ server). Releases come only from this repository's [GitHub Releases](https://git
 and we never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or
 donations in this project's name is not us.
 
-## Settings and known issues
+## How it works
 
-There is no settings menu yet. Alt+Enter toggles fullscreen; pads are read through SDL3.
-
-Known issues in *Tools of Destruction* (on the build in the table above):
-
-- At Fastoon's spaceport, reflections are far too strong and a HUD prompt shows mirrored in the scene.
-- The picture flickers inside one cave on Fastoon.
-- Level loads stall while graphics pipelines are built; the game's own graphics-stall notice can show during them.
-- The game has not been played through, so later levels are untested.
-
-**Roadmap.** First get *Tools of Destruction* playable (the known graphics bugs, then a full run through the game);
-then an installer that builds from your own copy, then PC display and control options; the other games in the table
-above follow one at a time, the PS2 remasters last. Gameplay changes stay optional. No dates. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
-
-## Building
-
-A developer build of the first game from source exists but is not playable yet; the steps, and what has and has not
-been run on Linux, macOS and Windows, are in [docs/BUILDING.md](docs/BUILDING.md). The toolchain is a Nix flake
-(`nix develop`, `nix develop .#win` for the MinGW-w64 cross compiler); the recompiler is the `third_party/ps3recomp`
-submodule (`git submodule update --init`), with this port's changes in `port/patches/`, applied by
-`tools/ps3recomp-patched.sh`.
-
-<details>
-<summary>How it works, briefly</summary>
-
-- **PPU (main CPU code):** lifted to C ahead of time by ps3recomp and compiled into the Windows program, so no CPU
-  emulator runs for the main game code at play time.
-- **SPU (Cell co-processor code):** the game's SPU programs (its job modules and two collision programs) are found in
-  your EBOOT.elf and lifted to C the same way, by the build steps; the runtime runs them as compiled code.
+- **PPU (main CPU code):** lifted to C ahead of time by [ps3recomp](https://github.com/sp00nznet/ps3recomp) and
+  compiled into the Windows program, so no CPU emulator runs for the main game code at play time.
+- **SPU (Cell co-processor code):** the game's SPU programs are found in your `EBOOT.elf` and lifted to C the same way
+  by the build steps; the runtime runs them as compiled code. A program not lifted yet runs in an interpreter.
 - **Graphics:** the game's RSX command stream is translated to Direct3D 12 as it runs, by the ps3recomp runtime.
 - **System software:** the PS3 libraries the game calls are reimplemented on PC APIs by the same runtime.
 
-The shared runtime is ps3recomp's; this repository holds the port's own patches and tools.
-
-</details>
+The toolchain is a Nix flake (`nix develop`, `nix develop .#win` for the MinGW-w64 cross compiler); the recompiler is
+the `third_party/ps3recomp` submodule, with this port's changes in `port/patches/`. Steps:
+[docs/BUILDING.md](docs/BUILDING.md).
 
 ## Credits, licence, related projects
 
@@ -159,8 +140,7 @@ repository. Details: [NOTICE.md](NOTICE.md#reuse-and-attribution-including-ai-an
 ### How AI was used
 
 This port is developed by one maintainer with AI coding agents. The agents write code, tests and documentation under
-the maintainer's direction; the maintainer decides what is done, reviews the changes and merges them. Every claim in
-the docs is dated and says how it was measured; guesses are marked `ASSUMPTION:`. The PS3 emulator RPCS3 is used as a
+the maintainer's direction; the maintainer decides what is done, reviews the changes and merges them. Run results in the docs give their date and how they were measured; guesses are marked `ASSUMPTION:`. The PS3 emulator RPCS3 is used as a
 reference to read, never as code to copy.
 
 ### Reporting bugs and contributing
@@ -179,3 +159,5 @@ come from Project Helghast's patch series. Their READMEs have their current stat
 
 **[ratchet-tod-recomp](https://github.com/Re-TeRo17/ratchet-tod-recomp)** by Re-TeRo17 (MIT): a native Windows port
 of *Tools of Destruction* by static recompilation on the ps3recomp toolkit, for the European disc (BCES00052).
+
+**[RACiT](https://github.com/HighDrexler/RACiT)** by HighDrexler (MIT): a port of *A Crack in Time* on ps3recomp.

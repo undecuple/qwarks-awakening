@@ -91,7 +91,7 @@
    "title": "Ratchet & Clank Future: A Crack in Time",
    "year": 2009,
    "order": 3,
-   "readme_state": "next: builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable",
+   "readme_state": "builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable",
    "supported": true,
    "title_ids": {
     "disc": {
@@ -314,7 +314,7 @@
    "title": "Ratchet & Clank: Into the Nexus",
    "year": 2013,
    "order": 6,
-   "readme_state": "builds (1.01 update); an earlier build showed its intro, the current one stays black; not playable",
+   "readme_state": "builds (1.01 update); the screen stays black; not playable",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -388,7 +388,7 @@
    "title": "Ratchet & Clank Collection",
    "year": 2012,
    "order": 7,
-   "readme_state": "last: a different engine; PPU code lifted, not built yet",
+   "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -431,7 +431,7 @@
      "title": "Ratchet & Clank 1 (Collection)",
      "year": 2012,
      "order": 1,
-     "readme_state": "last: a different engine; PPU code lifted, not built yet",
+     "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -475,7 +475,7 @@
      "title": "Ratchet & Clank 2 (Collection)",
      "year": 2012,
      "order": 2,
-     "readme_state": "last: a different engine; PPU code lifted, not built yet",
+     "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -516,7 +516,7 @@
      "title": "Ratchet & Clank 3 (Collection)",
      "year": 2012,
      "order": 3,
-     "readme_state": "last: a different engine; PPU code lifted, not built yet",
+     "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -561,7 +561,7 @@
    "title": "Ratchet: Deadlocked HD",
    "year": 2013,
    "order": 8,
-   "readme_state": "last: a different engine; PPU code lifted, not built yet",
+   "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
    "supported": false,
    "title_ids": {
     "disc": {},
