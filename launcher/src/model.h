@@ -34,6 +34,7 @@ struct Game {
     State state = State::NotAdded;
     std::string disc, update, eboot, saves; // files (empty = none recorded)
     std::map<std::string, std::string> overrides, sources, suggested;   // per slot (disc|update|eboot|saves), from the engine
+    std::string ebootLevel, ebootTag, ebootMsg;   // the engine's EBOOT check (eboot_check: ok|warn|fail, tag, plain message)
     std::string artIcon, artBackground;     // paths (empty = none)
     long long igdbGame = 0; std::string igdbCover, igdbArtwork;   // parsed and kept; nothing is fetched yet
     bool hasBuild = false;
@@ -73,6 +74,7 @@ inline Game parseGame(const Json& j) {
         if (!j["sources"][slot].isNull()) g.sources[slot] = j["sources"][slot].str();
         if (!j["suggested"][slot].isNull()) g.suggested[slot] = j["suggested"][slot].str();
     }
+    g.ebootLevel = j["eboot_check"]["level"].str(); g.ebootTag = j["eboot_check"]["tag"].str(); g.ebootMsg = j["eboot_check"]["message"].str();
     g.artIcon = j["art"]["icon"].str(); g.artBackground = j["art"]["background"].str();
     g.igdbGame = (long long)j["igdb"]["game"].dbl(0); g.igdbCover = j["igdb"]["cover"].str(); g.igdbArtwork = j["igdb"]["artwork"].str();
     if (!j["build"].isNull()) {

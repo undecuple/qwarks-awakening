@@ -14,6 +14,13 @@ With --library the file is read for build records (built games) and rewritten at
     catalog.py clear-override --library FILE --game ID --slot SLOT
     catalog.py set-location --library FILE KEY [VALUE] [--add|--remove|--reset]
     catalog.py set-pref --library FILE KEY [VALUE|--reset]
+    catalog.py check-eboot --game ID [--title-id ID] [--json] FILE
+
+EBOOT check (check_eboot, run by every scan on the EBOOT a game would build from, and on an EBOOT override): an
+encrypted SELF, not a PS3 program, another game's file or the wrong version is a failure (needs_attention with a plain
+message); a known build is ok; an unknown hash with no known code segments is "Unknown build, may still work" (a
+warning: the whole-file hash can depend on the program that made the file). Library entries gain `eboot_check`
+{level, tag, message, sha256, size, match}. Known builds: catalog.json `eboots`.
 
 Launcher preferences live in library.json's top-level `prefs` block, kept across rescans like `locations`;
 `set-pref` changes one and rewrites the file without a rescan. Keys and values: PREFS below (theme: system, light or
@@ -321,6 +328,175 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def _self_ok(path):
+    """True for an encrypted PS3 executable (SELF: magic 'SCE\\0')."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"SCE\0"
+    except OSError:
+        return False
+
+
+def segment_sha256(path):
+    """SHA-256 over every PT_LOAD of a 64-bit big-endian ELF, in program-header order: p_vaddr, p_filesz, p_memsz (8
+    bytes each, big-endian) then the p_filesz bytes at p_offset; a PT_LOAD with p_filesz and p_memsz both 0 is skipped. Nothing else is hashed, so another decrypter's file
+    layout gives the same value (the format shared with the other PS3 ports; catalog.json `eboots_format`). ELF64
+    program header: p_type +0, p_offset +8, p_vaddr +16, p_filesz +32, p_memsz +40. None when unreadable."""
+    try:
+        with open(path, "rb") as f:
+            hd = f.read(64)
+            if len(hd) < 64 or hd[:4] != b"\x7fELF" or hd[4] != 2 or hd[5] != 2:
+                return None
+            phoff = struct.unpack_from(">Q", hd, 0x20)[0]
+            phentsize, phnum = struct.unpack_from(">HH", hd, 0x36)
+            if phentsize < 56:
+                return None
+            h = hashlib.sha256()
+            for i in range(phnum):
+                f.seek(phoff + i * phentsize)
+                ph = f.read(56)
+                if len(ph) < 56:
+                    return None
+                if struct.unpack_from(">I", ph, 0)[0] != 1:
+                    continue
+                off, vaddr = struct.unpack_from(">QQ", ph, 8)
+                filesz, memsz = struct.unpack_from(">QQ", ph, 32)
+                if not filesz and not memsz:
+                    continue   # an empty PT_LOAD is not hashed (the format shared with the other PS3 ports)
+                h.update(struct.pack(">QQQ", vaddr, filesz, memsz))
+                f.seek(off)
+                left = filesz
+                while left:
+                    blk = f.read(min(left, 1 << 20))
+                    if not blk:
+                        return None
+                    h.update(blk)
+                    left -= len(blk)
+            return h.hexdigest()
+    except (OSError, struct.error):
+        return None
+
+
+# ------------------------------------------------------------------------------------------------ EBOOT check
+# Which build is the player's EBOOT? Run on every scan for the EBOOT a game would build from (and on an override
+# before it is accepted), so the answer is there before the first build. Known builds: catalog.json `eboots` (hashes
+# and sizes of the maintainer's own copies). A decrypted file's whole-file hash may depend on the program that made
+# it (only one was used for the table), so a miss is never called "modified": with the segment hash also missing it
+# is "Unknown build, may still work" (wording agreed with the other ports). Player text: no paths, no how-to.
+EBOOT_LEVELS = ("ok", "warn", "fail")
+DOCS_HINT = "RPCS3's documentation is a good place to start."
+
+
+def eboot_index(cat):
+    """[(catalogue entry, eboots record)] over every entry and child of the catalogue."""
+    out = []
+    for e in cat["games"]:
+        for g in [e] + list(e.get("children", [])):
+            out += [(g, r) for r in g.get("eboots", []) if isinstance(r, dict)]
+    return out
+
+
+def _lc(rec, key):
+    return str(rec.get(key) or "").strip().lower()
+
+
+def _where(rec):
+    """'disc BCUS98127, version 02.00' / 'update 01.20 (BCUS98124)' / 'PSN game NPUA80646' for a record."""
+    tid, media = rec.get("title_id") or "?", rec.get("media")
+    if media == "update":
+        return f"update {rec.get('app_ver') or '?'} ({tid})"
+    if media == "digital":
+        return f"PSN game {tid}"
+    v = rec.get("disc_version")
+    return f"disc {tid}" + (f", version {v}" if v else "")
+
+
+def check_eboot(entry, path, known=(), title_id=None, sha=None):
+    """The player's EBOOT for `entry` -> {level ok|warn|fail, tag, message, sha256, size, match?} or None (no file).
+    `known`: eboot_index() of the catalogue (default: the entry's own records); `title_id`: the title ID of the
+    player's game files (disc, ISO, PSN game), for the region note; `sha`: the file's SHA-256 when already known."""
+    if not path:
+        return None
+    known = list(known) or [(entry, r) for r in entry.get("eboots", [])]
+    title = entry["title"]
+
+    def res(level, tag, msg, **kw):
+        d = {"level": level, "tag": tag, "message": msg}
+        d.update(kw)
+        return d
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            head = f.read(20)
+        sha = sha or _sha256(path)
+    except OSError:
+        return res("fail", "Not readable", "This file cannot be read. Check that it is still there and choose it again.")
+    if head[:4] == b"SCE\0":
+        hit = [(g, r) for g, r in known if _lc(r, "self_sha256") == sha]
+        mine = [(g, r) for g, r in hit if g["id"] == entry["id"]]
+        if mine:
+            r = mine[0][1]
+            return res("fail", "Encrypted", f"This is the encrypted {r.get('file') or 'EBOOT.BIN'} from {title} "
+                       f"({_where(r)}). The port needs the decrypted EBOOT.elf made from it; {DOCS_HINT}",
+                       sha256=sha, size=size, match={"game": entry["id"], **_brief(r)})
+        if hit:
+            g, r = hit[0]
+            return res("fail", "Other game", f"This is the encrypted {r.get('file') or 'EBOOT.BIN'} from {g['title']} "
+                       f"({_where(r)}), not from {title}. Choose the decrypted EBOOT.elf made from your own copy of "
+                       f"{title}.", sha256=sha, size=size, match={"game": g["id"], **_brief(r)})
+        return res("fail", "Encrypted", "This file is still encrypted. The port needs the decrypted EBOOT.elf made "
+                   f"from your own copy of {title}; {DOCS_HINT}", sha256=sha, size=size)
+    if not (len(head) == 20 and head[:4] == b"\x7fELF" and head[4] == 2 and head[5] == 2
+            and struct.unpack_from(">H", head, 18)[0] == 21):
+        return res("fail", "Not a game program", "This file is not a PS3 game program. Choose the decrypted "
+                   f"EBOOT.elf made from your own copy of {title}.", sha256=sha, size=size)
+    how = "sha256"
+    hit = [(g, r) for g, r in known if _lc(r, "sha256") == sha]
+    seg = None
+    if not hit:
+        seg = segment_sha256(path)
+        hit = [(g, r) for g, r in known if seg and _lc(r, "segment_sha256") == seg]
+        how = "segments"
+    kw = {"sha256": sha, "size": size}
+    if seg:
+        kw["segment_sha256"] = seg
+    if not hit:
+        ids = set(_flat_ids(entry))
+        mine = f" Your game files are {title_id}." if title_id and title_id in ids else ""
+        return res("warn", "Unknown build", "Unknown build, may still work. This EBOOT.elf matches none of the builds "
+                   f"the port knows.{mine} If the build or the game fails, make EBOOT.elf again from your own copy.",
+                   **kw)
+    mine = [(g, r) for g, r in hit if g["id"] == entry["id"]]
+    if not mine:
+        g, r = hit[0]
+        want = next((x.get("file") for x in entry.get("eboots", []) if x.get("file")), "EBOOT.BIN")
+        return res("fail", "Other game", f"This EBOOT.elf is from {g['title']} ({_where(r)}). {title} needs the one "
+                   f"made from its own {want}.", match={"game": g["id"], **_brief(r)}, **kw)
+    # several records can share a file only in theory; prefer the player's title ID, then the newest version
+    mine.sort(key=lambda gr: (gr[1].get("title_id") == title_id, _vkey(gr[1].get("app_ver") or "")), reverse=True)
+    r = mine[0][1]
+    kw["match"] = {"game": entry["id"], "via": how, **_brief(r)}
+    need = (entry.get("update") or {}).get("version")
+    if need and (r.get("media") != "update" or _vkey(r.get("app_ver") or "") < _vkey(need)):
+        frm = "the disc" if r.get("media") == "disc" else _where(r) if r.get("media") == "update" else "the PSN game"
+        return res("fail", "Wrong version", f"This EBOOT.elf comes from {frm}; {title} needs the one from update "
+                   f"{need}. Choose the EBOOT.elf made from that update's EBOOT.BIN.", **kw)
+    if title_id and r.get("title_id") and r["title_id"] != title_id:
+        return res("warn", "Other region", f"This EBOOT.elf is the {r.get('region') or '?'} build ({r['title_id']}) "
+                   f"and your game files are {title_id}. It may still work; if it does not, use the EBOOT.elf made "
+                   "from the same copy as your game files.", **kw)
+    msg = f"Known build: {title}, {_where(r)}."
+    if how == "segments":
+        msg += " Its code matches; only the file layout differs."
+    if r.get("status") != "tested":
+        msg += " The port has not been tested with this build yet."
+    return res("ok", "Known build", msg, **kw)
+
+
+def _brief(rec):
+    return {k: rec.get(k) for k in ("title_id", "region", "app_ver", "media", "status")}
+
+
 # ------------------------------------------------------------------------------------------------ scanning
 def _vkey(v):
     try:
@@ -423,6 +599,9 @@ def discover(paths, depth=DEFAULT_DEPTH, excluded=()):
                                   "content_type": h["content_type"]})
             elif low.endswith(".elf") and _elf_ok(path):
                 items.append({"kind": "eboot", "path": path, "sha256": _sha256(path)})
+            elif low.endswith(".elf") and _self_ok(path):
+                # an encrypted file renamed to .elf: kept so the EBOOT check can say what it is
+                items.append({"kind": "eboot", "path": path, "sha256": _sha256(path), "encrypted": True})
     return items
 
 
@@ -435,15 +614,18 @@ def _under(path, folder):
 
 
 def _eboot_for(entry, base, ebs, base_items):
-    """ASSUMPTION: an EBOOT.elf belongs to a game when its hash is in the catalogue, or its path holds a folder named
+    """An EBOOT.elf belongs to a game when its hash is in the catalogue's `eboots` (decrypted or encrypted hash).
+    ASSUMPTION (files of unknown builds): or its path holds a folder named
     like the game (id, build title), or it lies inside the game's folder, or next to it when that folder holds only
     one game."""
     names = {entry["id"].lower(), entry.get("build_title", entry["id"]).lower()} | {i.lower() for i in _flat_ids(entry)}
     for e in ebs:
         if e.get("forced"):             # the player's override, already checked
             return e
+    known = {h for r in entry.get("eboots", []) for h in (_lc(r, "sha256"), _lc(r, "self_sha256")) if h}
+    ebs = sorted(ebs, key=lambda e: bool(e.get("encrypted")))     # a decrypted file before an encrypted one
     for e in ebs:
-        if e["sha256"] in entry.get("eboot_sha256", []):
+        if e["sha256"] in known:
             return e
     for e in ebs:
         if names & {p.lower() for p in e["path"].split(os.sep)[:-1]}:
@@ -469,7 +651,7 @@ def _empty(entry, state, reason):
     return e
 
 
-def _resolve_found(entry, items, prior, port_version, saves=()):
+def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
     ids = set(_flat_ids(entry))
     base_items = [i for i in items if _is_base(i)]
     mine = [i for i in base_items if i.get("title_id") in ids]
@@ -514,6 +696,11 @@ def _resolve_found(entry, items, prior, port_version, saves=()):
         src["eboot"] = eb.get("source") or "folder"
     elif prior and (prior.get("files") or {}).get("eboot") and os.path.isfile(prior["files"]["eboot"]):
         r["files"]["eboot"] = prior["files"]["eboot"]
+    if r["files"]["eboot"]:
+        chk = check_eboot(entry, r["files"]["eboot"], known, r.get("title_id"),
+                          eb["sha256"] if eb and eb["path"] == r["files"]["eboot"] else None)
+        if chk:
+            r["eboot_check"] = chk
     if src:
         r["sources"] = src
     mine_saves = [{"dir": v["dir"], "bytes": v["bytes"]} for v in saves
@@ -551,6 +738,9 @@ def _resolve_found(entry, items, prior, port_version, saves=()):
     if not r["files"]["eboot"]:
         r.update(state="needs_attention", reason="EBOOT.elf missing")
         return r
+    if (r.get("eboot_check") or {}).get("level") == "fail":
+        r.update(state="needs_attention", reason=r["eboot_check"]["message"])
+        return r
     r.update(state="ready_to_build", reason="Ready to build")
     return r
 
@@ -562,7 +752,7 @@ def _clean_overrides(prior):
     return {k: v for k, v in ov.items() if k in OVERRIDE_SLOTS and isinstance(v, str) and v}
 
 
-def _check_override(entry, slot, path):
+def _check_override(entry, slot, path, known=()):
     """The player's path for one slot, checked like a found item -> (item or None, problem or None). Forbidden paths
     (licence files, firmware ...) are refused by name before any filesystem call."""
     ids = set(_flat_ids(entry))
@@ -622,25 +812,27 @@ def _check_override(entry, slot, path):
             return None, "The EBOOT.elf you chose is a folder"
         if not os.path.isfile(p):
             return None, "The EBOOT.elf you chose is missing"
-        if not _elf_ok(p):
-            return None, "The file you chose is not a PS3 EBOOT.elf"
-        return {"kind": "eboot", "path": p, "sha256": _sha256(p), "source": "override", "forced": True}, None
+        sha = _sha256(p)
+        chk = check_eboot(entry, p, known, sha=sha)
+        if chk and chk["level"] == "fail":
+            return None, chk["message"]     # encrypted, another game or version, not a PS3 program: like a wrong disc
+        return {"kind": "eboot", "path": p, "sha256": sha, "source": "override", "forced": True}, None
     if not os.path.isdir(p):                                    # saves
         return None, "The save folder you chose is missing"
     return {"path": p}, None
 
 
-def _resolve(entry, items, prior, port_version, saves=()):
+def _resolve(entry, items, prior, port_version, saves=(), known=()):
     """_resolve_found with the player's overrides on top. An override replaces what was found for its slot; a bad
     one makes the game needs_attention (reason + `suggested` = the found candidate), it is never swapped silently."""
     ov = _clean_overrides(prior)
     if not ov:
-        return _resolve_found(entry, items, prior, port_version, saves)
+        return _resolve_found(entry, items, prior, port_version, saves, known)
     ids = set(_flat_ids(entry))
     good, bad = {}, {}
     for slot in OVERRIDE_SLOTS:
         if slot in ov:
-            it, why = _check_override(entry, slot, ov[slot])
+            it, why = _check_override(entry, slot, ov[slot], known)
             if why:
                 bad[slot] = why
             else:
@@ -655,9 +847,9 @@ def _resolve(entry, items, prior, port_version, saves=()):
             return "disc" in ov
         return "update" in ov and (i["kind"] in ("update_pkg", "update_folder") or i["kind"] == "psn")
 
-    detected = _resolve_found(entry, items, prior, port_version, saves) if bad else None
+    detected = _resolve_found(entry, items, prior, port_version, saves, known) if bad else None
     items2 = [i for i in items if not replaced(i)] + [good[k] for k in ("disc", "update", "eboot") if k in good]
-    r = _resolve_found(entry, items2, prior, port_version, saves)
+    r = _resolve_found(entry, items2, prior, port_version, saves, known)
     r["overrides"] = dict(ov)
     src = r.setdefault("sources", {})
     sug = {}
@@ -712,13 +904,14 @@ def scan(paths, library=None, catalog=None, depth=DEFAULT_DEPTH, rpcs3=None, fin
         items += r3["items"]
         saves += r3["saves"]
     prior = {g["id"]: g for g in (library or {}).get("games", [])}
+    known = eboot_index(cat)
     out = []
     for entry in cat["games"]:
         if entry.get("children"):
             kids = []
             for c in entry["children"]:
                 pc = {g["id"]: g for g in (prior.get(entry["id"]) or {}).get("children", [])}.get(c["id"])
-                kids.append(_resolve(c, items, pc, pv, saves))
+                kids.append(_resolve(c, items, pc, pv, saves, known))
             r = _empty(entry, "not_added", "Game files not found")
             found = [k for k in kids if k["state"] != "not_added"]
             if found:
@@ -733,7 +926,7 @@ def scan(paths, library=None, catalog=None, depth=DEFAULT_DEPTH, rpcs3=None, fin
                 r["overrides"] = pov
             out.append(r)
         else:
-            out.append(_resolve(entry, items, prior.get(entry["id"]), pv, saves))
+            out.append(_resolve(entry, items, prior.get(entry["id"]), pv, saves, known))
     return out
 
 
@@ -1157,7 +1350,27 @@ def main(argv=None):
     sp.add_argument("key", choices=sorted(PREFS))
     sp.add_argument("value", nargs="?")
     sp.add_argument("--reset", action="store_true", help="back to the default (drops the key)")
+    ce = sub.add_parser("check-eboot", help="say which build an EBOOT is for one game (exit 1 when it cannot be used)")
+    ce.add_argument("--game", required=True)
+    ce.add_argument("--title-id", help="the title ID of the player's game files, for the region note")
+    ce.add_argument("--json", action="store_true")
+    ce.add_argument("path")
     a = ap.parse_args(argv)
+
+    if a.cmd == "check-eboot":
+        cat = load()
+        known = eboot_index(cat)
+        entry = next((g for g, _ in known if g["id"] == a.game), None) or \
+            next((g for e in cat["games"] for g in [e] + list(e.get("children", [])) if g["id"] == a.game), None)
+        if entry is None:
+            print(f"Unknown game id: {a.game}", file=sys.stderr)
+            return 2
+        chk = check_eboot(entry, a.path, known, a.title_id)
+        if a.json:
+            print(json.dumps(chk, indent=1, ensure_ascii=False))
+        else:
+            print(f"{chk['level'].upper()} [{chk['tag']}] {chk['message']}")
+        return 1 if chk["level"] == "fail" else 0
 
     if a.cmd == "set-pref":
         allowed = PREFS[a.key]

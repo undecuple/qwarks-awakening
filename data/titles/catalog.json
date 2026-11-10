@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "port_version": "0.2.1",
- "note": "Numbers, ids and versions only. eboot_sha256 stays empty until decrypted EBOOT hashes are recorded (ASSUMPTION: an EBOOT.elf is then attributed by path).",
+ "note": "Numbers, ids and versions only. Known executables: see eboots_format.",
  "games": [
   {
    "id": "tods",
@@ -43,7 +43,22 @@
    "build_title": "tods",
    "disc_version": "02.00",
    "children": [],
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS98127",
+     "region": "US",
+     "app_ver": "01.00",
+     "size": 10923400,
+     "sha256": "0ee9a8414c8fc182bc19fa2a523e6d050d0be76138b3733ae515798d77d2468c",
+     "status": "tested",
+     "self_sha256": "91e37dadc89556880f1708176e2828cbdb0a156cf32427c0b3877783a362f461",
+     "segment_sha256": "e9bca74d899828b3d578138c4c6f2398e65875e3640c0301a993fb40ee50e015",
+     "self_size": 10925832,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "02.00"
+    }
+   ]
   },
   {
    "id": "qfb",
@@ -84,7 +99,23 @@
    },
    "children": [],
    "build_title": "qfb",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCES00301",
+     "region": "EU",
+     "app_ver": null,
+     "size": 10062784,
+     "sha256": "4d35a01d5154d2ca301b813bf293965f96e44e0f964a67a0496b0256c1bf04f1",
+     "status": "tested",
+     "self_sha256": "cd1ecf784c67ecec2e4ee0af563a19b30088c22e5d1e3a9c4963967e675759a6",
+     "segment_sha256": "5f13b9d7690c26793a100546ca76f56a279fd1121941e94b1fb556d8cfcda169",
+     "self_size": 10065216,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: APP_VER and VERSION of this disc are not recorded yet"
+    }
+   ]
   },
   {
    "id": "acit",
@@ -154,7 +185,37 @@
    },
    "build_title": "acit120",
    "children": [],
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS98124",
+     "region": "US",
+     "app_ver": "01.00",
+     "size": 14515152,
+     "sha256": "406bded328d9dbdfa9684ed392554ca34c76f4ed95aa21685f622d3ab2b04592",
+     "status": "untested",
+     "self_sha256": "49dce2238421bdf6a4301516a126125a3139e6398c129bbfb06f9d20995dc626",
+     "segment_sha256": "2e31f222fe00a55ccd407861a432e118b1888e2583d67a2c3c95d73b8d20c00f",
+     "self_size": 14517584,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "01.01"
+    },
+    {
+     "title_id": "BCUS98124",
+     "region": "US",
+     "app_ver": "01.20",
+     "size": 14515488,
+     "sha256": "dd304912f85cb9afc344f4a0d4e071d05a08b2af8de216d458b26060417549ad",
+     "status": "tested",
+     "self_sha256": "",
+     "segment_sha256": "175b533d02846504bc5a6b91cdb4c60737cdfb80fa5fcf9c01c93747d2a85629",
+     "self_size": null,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: app_ver from the update package name (A0120); its encrypted EBOOT.BIN is inside the package and was not hashed"
+    }
+   ]
   },
   {
    "id": "a4o",
@@ -233,7 +294,23 @@
    },
    "children": [],
    "build_title": "a4o",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS98175",
+     "region": "US",
+     "app_ver": "01.03",
+     "size": 15990904,
+     "sha256": "fe55e6985fab19d2eaf505280eb91df4900ae205b28a21fe0211f0ea45c5e635",
+     "status": "tested",
+     "self_sha256": "",
+     "segment_sha256": "8a6b1ea7a34a3b241f1505799d40732334028ac6579a9f534a5cc93d548608d6",
+     "self_size": null,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: app_ver from the update package name (A0103); its encrypted EBOOT.BIN is inside the package and was not hashed"
+    }
+   ]
   },
   {
    "id": "ffa",
@@ -307,7 +384,38 @@
    },
    "children": [],
    "build_title": "ffa",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS98380",
+     "region": "US",
+     "app_ver": "01.00",
+     "size": null,
+     "sha256": "",
+     "status": "untested",
+     "self_sha256": "13f4dba2e5810a6859fb50d8919416eeb47bf2070150ca02fe05fc543a59a245",
+     "segment_sha256": "",
+     "self_size": 16387912,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "01.00",
+     "note": "encrypted disc EBOOT.BIN only; its decrypted form was not made"
+    },
+    {
+     "title_id": "BCUS98380",
+     "region": "US",
+     "app_ver": "01.05",
+     "size": 16451016,
+     "sha256": "6e2d4f257219cc038210a990af16576d6bd77d686dda266f94cd52803e347f24",
+     "status": "tested",
+     "self_sha256": "",
+     "segment_sha256": "5ba8a1cb7242792ddfadfaa76f20d233867e920ee2c8de67e26876e6d52d206a",
+     "self_size": null,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: app_ver from the update package name (A0105); its encrypted EBOOT.BIN is inside the package and was not hashed"
+    }
+   ]
   },
   {
    "id": "nexus",
@@ -381,7 +489,37 @@
    },
    "children": [],
    "build_title": "nexus101",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS99245",
+     "region": "US",
+     "app_ver": "01.00",
+     "size": 15536464,
+     "sha256": "ca1a1a293d211095fc834eaaa10cd5fa9248b0e0328919fdeadeed1675c52c3f",
+     "status": "untested",
+     "self_sha256": "4258a04e151d14be286f098bfb8179761c3042d1868fb1ddda98ed466d78f794",
+     "segment_sha256": "518c4eb2f0f8d08d65dbe573de3f18c99ba9c306c3203b6415758114fc99c7d7",
+     "self_size": 15538896,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "01.00"
+    },
+    {
+     "title_id": "BCUS99245",
+     "region": "US",
+     "app_ver": "01.01",
+     "size": 15536464,
+     "sha256": "b66c17e406a695f2dc538bd581709afcc4862077f46edb9f637f7d5640e3af47",
+     "status": "tested",
+     "self_sha256": "",
+     "segment_sha256": "aa519f8e1d3379e90d21fc8676484c674ee0f1cd1a96f3bcf7ac0b57a043f680",
+     "self_size": null,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: app_ver from the update package name (A0101); its encrypted EBOOT.BIN is inside the package and was not hashed; same size as the disc build, only the hashes tell them apart"
+    }
+   ]
   },
   {
    "id": "collection",
@@ -467,8 +605,23 @@
       "artwork": null
      },
      "build_title": "rc1",
-     "eboot_sha256": [],
-     "children": []
+     "children": [],
+     "eboots": [
+      {
+       "title_id": "BCUS98282",
+       "region": "US",
+       "app_ver": "01.00",
+       "size": 9764896,
+       "sha256": "393434bf9941c7802c6511764b22fcef8d215590feefa11f6c454c2d2eac657c",
+       "status": "untested",
+       "self_sha256": "c084c3bd741477ac0ea77a9b770461373e94c196f9aa609e78a7f1ba778480b1",
+       "segment_sha256": "844f5d5cf143d02ad71c81dbccf6c8cc93cbc1d1693fda6a6ebeba4bda119428",
+       "self_size": 9767328,
+       "media": "disc",
+       "file": "RC1.ppu.self",
+       "disc_version": "02.00"
+      }
+     ]
     },
     {
      "id": "rc2",
@@ -508,8 +661,23 @@
       "artwork": null
      },
      "build_title": "rc2",
-     "eboot_sha256": [],
-     "children": []
+     "children": [],
+     "eboots": [
+      {
+       "title_id": "BCUS98282",
+       "region": "US",
+       "app_ver": "01.00",
+       "size": 21070000,
+       "sha256": "c995c975a1318972bde4cefeebfb5e1cf871fe91f72e0a0fcd63b20ec441b25a",
+       "status": "untested",
+       "self_sha256": "0913d021cb68a22da78a1d2e72ab1003243dc00ffae556b6d6b5e74d2616e392",
+       "segment_sha256": "6de46e0cb87e0ffc732ef16dc09682461192e0cd022596941c76b7e968fc7d60",
+       "self_size": 21072432,
+       "media": "disc",
+       "file": "RC2.ppu.self",
+       "disc_version": "02.00"
+      }
+     ]
     },
     {
      "id": "rc3",
@@ -549,12 +717,42 @@
       "artwork": null
      },
      "build_title": "rc3",
-     "eboot_sha256": [],
-     "children": []
+     "children": [],
+     "eboots": [
+      {
+       "title_id": "BCUS98282",
+       "region": "US",
+       "app_ver": "01.00",
+       "size": 13337168,
+       "sha256": "a11ee33a662feb2eca21d8b4d0e736c706586a9c019b38b7b6af9f61d929ee0b",
+       "status": "untested",
+       "self_sha256": "697e98331a5a06892272cded3a2d85e0e4679d655f2d8cf0c811ac85dc89b09e",
+       "segment_sha256": "107984632f8006cc8a3769e6acf66001bb5e4c9e018a8eaeecd2a2434687989d",
+       "self_size": 13339600,
+       "media": "disc",
+       "file": "RC3.ppu.self",
+       "disc_version": "02.00"
+      }
+     ]
     }
    ],
    "build_title": "collection",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "BCUS98282",
+     "region": "US",
+     "app_ver": "01.00",
+     "size": 2255976,
+     "sha256": "85841ecb4e1a265e683d357796820b59e60cfdaec0298e6512c16179fca5ccf3",
+     "status": "untested",
+     "self_sha256": "0f0e1fa0a36a762fb91402566b7466d05329700b072461d82b2b1d6abd6981cd",
+     "segment_sha256": "76633501d9b1be6583438f92387f9cb004a105f691e6b672dd8d4119dd46fa41",
+     "self_size": 2258408,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "02.00"
+    }
+   ]
   },
   {
    "id": "dlhd",
@@ -591,7 +789,24 @@
    },
    "children": [],
    "build_title": "dlhd",
-   "eboot_sha256": []
+   "eboots": [
+    {
+     "title_id": "NPUA80646",
+     "region": "US",
+     "app_ver": null,
+     "size": 10863032,
+     "sha256": "cbd5e93d0277451504d776b497190c025e204702ed16d58d85f5d1ed588f5a08",
+     "status": "untested",
+     "self_sha256": "d35a28a2572384462a15284e34aa82ac938431199e133395e317ee2ccf2ad2a8",
+     "segment_sha256": "6c595e9c6eda2d28b5aed166710f133d269bb3817d6293c02182e7913d5efcbf",
+     "self_size": 10865776,
+     "media": "digital",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "ASSUMPTION: APP_VER of the installed game is not recorded yet"
+    }
+   ]
   }
- ]
+ ],
+ "eboots_format": "eboots: the known executables of each game, one entry per build, in the format shared with the other PS3 ports; hashed from the maintainer's own copies, only hashes and sizes are recorded. Fields: title_id, region, app_ver (PARAM.SFO APP_VER of the disc, game or update the file comes from; null = not recorded), size (bytes of the decrypted ELF; null = not made), sha256 (of the whole decrypted ELF; empty = not made), status (tested = the port was built and run from it; untested = identified only), self_sha256 (of the encrypted file as shipped, a SELF; empty = not recorded), segment_sha256. segment_sha256 = SHA-256 over the concatenation, for every program header with p_type == 1 (PT_LOAD) and p_filesz or p_memsz non-zero, in program-header order, of: p_vaddr, p_filesz, p_memsz (8 bytes each, big-endian), then the p_filesz segment bytes read from file offset p_offset; nothing else is hashed, so another decrypter's layout gives the same value (ELF64 program header: p_offset +8, p_vaddr +16, p_filesz +32, p_memsz +40). Project fields: self_size, media (disc, update, digital), file (the shipped file name), disc_version (PARAM.SFO VERSION of a disc), note. A build that is not listed is unknown, not wrong."
 }

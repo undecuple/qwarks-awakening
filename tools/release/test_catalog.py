@@ -404,6 +404,7 @@ def run(tmp):
     check(rc == 2, "CLI: scan with nothing to look at is still a usage error")
     run_rpcs3(tmp)
     run_locations(tmp)
+    run_eboot(tmp)
 
 
 # ------------------------------------------------------------------------------------------------- RPCS3 source
@@ -662,7 +663,7 @@ def run_locations(tmp):
     # --- EBOOT
     bad = elf(os.path.join(root, "badelf", "EBOOT.elf"), machine=62)
     r = guard(lambda: by_id(catalog.scan([found], with_ov(base, "tods", eboot=bad)), "tods"))
-    check(r and r["state"] == "needs_attention" and r["reason"] == "The file you chose is not a PS3 EBOOT.elf"
+    check(r and r["state"] == "needs_attention" and r["reason"].startswith("This file is not a PS3 game program.")
           and r["suggested"] == {"eboot": fe}, "override: x86 ELF as EBOOT refused, found EBOOT suggested")
     good = elf(os.path.join(root, "myelf", "EBOOT.elf"))
     r = guard(lambda: by_id(catalog.scan([found], with_ov(base, "tods", eboot=good)), "tods"))
@@ -825,6 +826,200 @@ def run_locations(tmp):
           "CLI: set-pref with a bad or no value -> exit 2, file untouched")
     rc, o, _ = cli("set-pref", "--library", lf, "theme", "--reset")
     check(rc == 0 and "prefs" not in catalog.read_library(lf), "CLI: set-pref --reset drops the key (and the empty block)")
+
+
+# ------------------------------------------------------------------------------------------ EBOOT check
+def elf64(path, segs, pad=0, tail=b""):
+    """A synthetic PPC64 big-endian ELF: segs = [(vaddr, bytes, memsz)] as PT_LOAD, plus one PT_NOTE that is not
+    hashed; `pad` bytes between the program headers and the first segment, `tail` after the last (layout only)."""
+    phs = [(1, v, d, m) for v, d, m in segs] + [(4, 0, b"note", 4)]
+    phoff, n = 64, len(phs)
+    off = phoff + 56 * n + pad
+    body, table = b"", b""
+    for typ, v, d, m in phs:
+        table += struct.pack(">IIQQQQQQ", typ, 5, off + len(body), v, v, len(d), m, 0x10)
+        body += d
+    hdr = (b"\x7fELF" + bytes([2, 2, 1, 0]) + b"\0" * 8 + struct.pack(">HHIQQQIHHHHHH", 2, 21, 1, 0x10000, phoff, 0, 0,
+                                                                           64, 56, n, 64, 0, 0))
+    wr(path, hdr + table + b"\0" * pad + body + tail)
+    return path
+
+
+def seg_ref(segs):
+    import hashlib
+    h = hashlib.sha256()
+    for v, d, m in segs:
+        if not d and not m:
+            continue
+        h.update(struct.pack(">QQQ", v, len(d), m) + d)
+    return h.hexdigest()
+
+
+def run_eboot(tmp):
+    import contextlib
+    import hashlib
+    import io
+    sha = catalog._sha256
+    root = os.path.join(tmp, "eb")
+
+    # --- the real table: shared format, numbers only, every title covered
+    cat = catalog.load()
+    allg = [x for e in cat["games"] for x in [e] + e.get("children", [])]
+    recs = [(x["id"], r) for x in allg for r in x.get("eboots", [])]
+    hexok = lambda v: v == "" or (isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v))
+    check(all("eboot_sha256" not in x and isinstance(x.get("eboots"), list) and x["eboots"] for x in allg),
+          "eboots: every entry and child has a non-empty eboots list (old eboot_sha256 gone)")
+    need = {"title_id", "region", "app_ver", "size", "sha256", "status", "self_sha256", "segment_sha256"}
+    check(all(need <= set(r) and hexok(r["sha256"]) and hexok(r["self_sha256"]) and hexok(r["segment_sha256"])
+              and r["status"] in ("tested", "untested") and (r["size"] is None or isinstance(r["size"], int))
+              and (r["sha256"] == "") == (r["size"] is None) and (r["sha256"] == "") == (r["segment_sha256"] == "")
+              and r["media"] in ("disc", "update", "digital") for _, r in recs),
+          "eboots: shared fields (title_id, region, app_ver, size, sha256, status, self_sha256, segment_sha256), hex hashes")
+    ids_of = {x["id"]: set(catalog._flat_ids(x)) for x in allg}
+    check(all(r["title_id"] in ids_of[g] for g, r in recs), "eboots: every record's title ID belongs to its game")
+    hs = [h for _, r in recs for h in (r["sha256"], r["self_sha256"]) if h]
+    check(len(hs) == len(set(hs)), "eboots: no hash is listed twice")
+    upd = [(g, r) for g, r in recs if r["media"] == "update"]
+    check(all(r["app_ver"] == by_id(allg, g)["update"]["version"] for g, r in upd),
+          "eboots: update records carry the catalogue's required update version")
+    check(all(any(r["media"] == "update" and r["sha256"] for r in x["eboots"]) for x in allg if x.get("update")),
+          "eboots: every game that needs an update has the update's decrypted hash")
+    check(by_id(allg, "tods")["eboots"][0]["status"] == "tested" and "eboots_format" in cat
+          and "PT_LOAD" in cat["eboots_format"], "eboots: ToD tested; the format text names the segment hash layout")
+
+    # --- segment hash: the documented layout; the same segments in another file layout give the same value
+    segs = [(0x10000, b"\x60\x00\x00\x00" * 64, 256), (0x30000, b"", 0), (0x20000, b"DATA" * 8, 0x400)]   # p_paddr = p_vaddr != p_filesz; the empty PT_LOAD is skipped
+    e1 = elf64(os.path.join(root, "seg", "a.elf"), segs)
+    e2 = elf64(os.path.join(root, "seg", "b.elf"), segs, pad=48, tail=b"\0" * 100)
+    check(catalog.segment_sha256(e1) == seg_ref(segs), "segment_sha256: vaddr, filesz, memsz big-endian + bytes, non-empty PT_LOAD only")
+    check(catalog.segment_sha256(e2) == catalog.segment_sha256(e1) and sha(e1) != sha(e2),
+          "segment_sha256: same segments, other padding and tail -> same value (whole-file hash differs)")
+    check(catalog.segment_sha256(os.path.join(root, "seg", "none.elf")) is None
+          and catalog.segment_sha256(wr_ret(os.path.join(root, "seg", "x.bin"), b"SCE\0" + b"\0" * 80)) is None,
+          "segment_sha256: missing file or a SELF -> None")
+
+    # --- check_eboot against a synthetic catalogue (no game data): game A needs update 01.20, game B has a disc only
+    def mk(name, n):
+        return elf64(os.path.join(root, "lib", name), [(0x10000, bytes([n]) * 512, 512)])
+    a_disc, a_upd, b_disc = mk("a_disc.elf", 1), mk("a_upd.elf", 2), mk("b_disc.elf", 3)
+    a_self = wr_ret(os.path.join(root, "lib", "a.self"), b"SCE\0" + b"\1" * 200)
+    b_self = wr_ret(os.path.join(root, "lib", "b.self"), b"SCE\0" + b"\2" * 200)
+
+    def rec(tid, reg, ver, media, f, self_f=None, status="tested", dv=None):
+        return {"title_id": tid, "region": reg, "app_ver": ver, "size": os.path.getsize(f), "sha256": sha(f),
+                "status": status, "self_sha256": sha(self_f) if self_f else "",
+                "segment_sha256": catalog.segment_sha256(f), "media": media, "file": "EBOOT.BIN", "disc_version": dv}
+
+    def game(gid, title, tids, update, eboots, supported=True):
+        return {"id": gid, "title": title, "year": 2000, "order": 1, "readme_state": "x", "supported": supported,
+                "title_ids": {"disc": tids, "digital": {}}, "update": update, "exe": gid + ".exe", "estimate": None,
+                "igdb": {"game": None, "cover": None, "artwork": None}, "children": [], "build_title": gid,
+                "eboots": eboots}
+    A = game("aaa", "Game A", {"US": ["BCUS00001"], "EU": ["BCES00001"]}, {"version": "01.20", "title_ids": ["BCUS00001"]},
+             [rec("BCUS00001", "US", "01.00", "disc", a_disc, a_self, dv="01.01"),
+              rec("BCUS00001", "US", "01.20", "update", a_upd)])
+    B = game("bbb", "Game B", {"US": ["BCUS00002"]}, None,
+             [rec("BCUS00002", "US", "01.00", "disc", b_disc, b_self, status="untested")])
+    cat2 = {"schema": 1, "port_version": "0.0.1", "games": [A, B]}
+    known = catalog.eboot_index(cat2)
+
+    def ck(entry, path, tid=None):
+        return catalog.check_eboot(entry, path, known, tid)
+    r = ck(A, a_self)
+    check(r["level"] == "fail" and r["tag"] == "Encrypted" and "encrypted EBOOT.BIN from Game A (disc BCUS00001, version 01.01)"
+          in r["message"] and "decrypted EBOOT.elf" in r["message"] and catalog.DOCS_HINT in r["message"],
+          "check: the game's own encrypted EBOOT.BIN is named (disc and version) and refused")
+    r = ck(A, wr_ret(os.path.join(root, "lib", "c.self"), b"SCE\0" + b"\3" * 50))
+    check(r["level"] == "fail" and r["tag"] == "Encrypted" and r["message"].startswith("This file is still encrypted."),
+          "check: an unknown encrypted file is refused as encrypted")
+    r = ck(A, b_self)
+    check(r["level"] == "fail" and r["tag"] == "Other game" and "Game B" in r["message"], "check: another game's encrypted file")
+    r1 = ck(A, wr_ret(os.path.join(root, "lib", "t.elf"), b"hello"))
+    r2 = ck(A, elf(os.path.join(root, "lib", "x86.elf"), machine=62))
+    check(r1["tag"] == r2["tag"] == "Not a game program" and r1["level"] == r2["level"] == "fail",
+          "check: a text file and an x86 ELF are not a PS3 game program")
+    r = ck(A, a_upd, "BCUS00001")
+    check(r["level"] == "ok" and r["tag"] == "Known build" and "update 01.20 (BCUS00001)" in r["message"]
+          and r["match"]["via"] == "sha256", "check: the required update build is known (by its SHA-256)")
+    r = ck(A, a_disc, "BCUS00001")
+    check(r["level"] == "fail" and r["tag"] == "Wrong version" and "from the disc" in r["message"]
+          and "update 01.20" in r["message"], "check: the disc EBOOT where an update is needed -> wrong version")
+    lay = elf64(os.path.join(root, "lib", "a_upd_other_layout.elf"), [(0x10000, bytes([2]) * 512, 512)], pad=16, tail=b"x")
+    r = ck(A, lay, "BCUS00001")
+    check(r["level"] == "ok" and r["match"]["via"] == "segments" and "only the file layout differs" in r["message"],
+          "check: another decrypter's layout of a known build is matched by its segments")
+    r = ck(A, b_disc)
+    check(r["level"] == "fail" and r["tag"] == "Other game" and "Game B" in r["message"], "check: another game's EBOOT.elf")
+    unk = mk("unknown.elf", 9)
+    r = ck(A, unk, "BCUS00001")
+    check(r["level"] == "warn" and r["tag"] == "Unknown build" and r["message"].startswith("Unknown build, may still work.")
+          and "modified" not in r["message"].lower() and "BCUS00001" in r["message"],
+          "check: an unknown hash is 'Unknown build, may still work', never 'modified'")
+    near = elf64(os.path.join(root, "lib", "near.elf"), [(0x10000, bytes([2]) * 511 + b"\7", 512)])
+    r = ck(A, near, "BCUS00001")
+    check(os.path.getsize(near) == os.path.getsize(a_upd) and r["tag"] == "Unknown build",
+          "check: same size as a known build but other bytes -> still unknown build, not modified")
+    r = ck(A, a_upd, "BCES00001")
+    check(r["level"] == "warn" and r["tag"] == "Other region" and "BCES00001" in r["message"], "check: known build of another region")
+    r = ck(B, b_disc)
+    check(r["level"] == "ok" and "not been tested" in r["message"], "check: a known untested build says so")
+    msgs = [ck(A, p)["message"] for p in (a_self, b_self, a_upd, a_disc, b_disc, unk, lay)]
+    check(not any(root in m or os.sep + "lib" in m or "--" in m for m in msgs),
+          "check: player messages hold no path and no tool option")
+    check(catalog.check_eboot(A, None, known) is None and
+          ck(A, os.path.join(root, "lib", "gone.elf"))["tag"] == "Not readable", "check: no file -> None; missing -> not readable")
+
+    # --- scan: the check runs before the first build and sets the state
+    lib = os.path.join(root, "scan")
+    disc(lib, "A disc", "BCUS00001")
+    psn(lib, "A upd", "BCUS00001", "01.20")
+    eb = os.path.join(lib, "aaa", "EBOOT.elf")
+
+    def place(src):
+        with open(src, "rb") as f:
+            wr(eb, f.read())
+        return by_id(catalog.scan([lib], catalog=cat2), "aaa")
+    r = place(a_upd)
+    check(r["state"] == "ready_to_build" and r["eboot_check"]["level"] == "ok", "scan: known update build -> ready to build, check ok")
+    r = place(a_disc)
+    check(r["state"] == "needs_attention" and r["reason"] == r["eboot_check"]["message"] and r["eboot_check"]["tag"] == "Wrong version",
+          "scan: disc EBOOT where the update is needed -> needs attention with the check's message")
+    r = place(a_self)
+    check(r["state"] == "needs_attention" and r["eboot_check"]["tag"] == "Encrypted" and r["files"]["eboot"] == eb,
+          "scan: an encrypted file named EBOOT.elf is found and called encrypted")
+    r = place(unk)
+    check(r["state"] == "ready_to_build" and r["eboot_check"]["level"] == "warn", "scan: unknown build -> still ready to build, with a warning")
+    os.remove(eb)
+    wr(os.path.join(lib, "loose", "renamed.elf"), open(a_upd, "rb").read())
+    r = by_id(catalog.scan([lib], catalog=cat2), "aaa")
+    check(r["files"]["eboot"].endswith("renamed.elf") and r["eboot_check"]["tag"] == "Known build",
+          "scan: an EBOOT.elf anywhere is attributed to its game by hash")
+    games = catalog.scan([lib], catalog=cat2)
+    r = by_id(catalog.scan([lib], with_ov(games, "aaa", eboot=a_self), catalog=cat2), "aaa")
+    check(r["state"] == "needs_attention" and r["reason"].startswith("This is the encrypted EBOOT.BIN from Game A")
+          and r["suggested"].get("eboot", "").endswith("renamed.elf"),
+          "scan: an encrypted override is refused with the check's message, the found EBOOT suggested")
+
+    # --- CLI check-eboot (real catalogue, synthetic files)
+    def cli(*args):
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = catalog.main(list(args))
+        except SystemExit as e:
+            rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+    rc, o, _ = cli("check-eboot", "--game", "tods", unk)
+    check(rc == 0 and o.startswith("WARN [Unknown build] Unknown build, may still work."), "CLI: check-eboot unknown build -> exit 0, WARN")
+    rc, o, _ = cli("check-eboot", "--game", "rc2", "--json", a_self)
+    check(rc == 1 and json.loads(o)["tag"] == "Encrypted", "CLI: check-eboot on an encrypted file (Collection child) -> exit 1, JSON")
+    rc, _, e = cli("check-eboot", "--game", "nosuch", unk)
+    check(rc == 2 and "nosuch" in e, "CLI: check-eboot with an unknown game -> exit 2")
+
+
+def wr_ret(path, data):
+    wr(path, data)
+    return path
 
 
 if __name__ == "__main__":

@@ -1294,6 +1294,9 @@ static void FilesScreen() {
         std::string key = "g|" + g.id + "|" + slot, msg; unsigned msgCol = 0;
         bool has = RowMsg(key, msg, msgCol);
         unsigned tc; const char* tag = SourceWord(g, slot, path, tc);
+        // EBOOT row: the engine's check (which build the file is) replaces the source word; its message goes below
+        bool ebChk = i == 2 && !path.empty() && !g.ebootTag.empty();
+        if (ebChk) { tag = g.ebootTag.c_str(); tc = g.ebootLevel == "ok" ? T->success : g.ebootLevel == "warn" ? T->warning : T->destructive; }
         bool folderSlot = i == 3, fileSlot = i == 2, both = i < 2;
         const char* lbF = both ? "Folder##bf" : "Browse##bf";
         const char* lbZ = both ? "File##bz" : "Browse##bz";
@@ -1328,6 +1331,8 @@ static void FilesScreen() {
                     ImGui::EndDisabled();
                 }
             });
+        } else if (ebChk && !has) {
+            BodyRow([&] { Wrapped(g.ebootMsg.c_str(), g.ebootLevel == "ok" ? T->dimFg : tc, 15.f); });
         }
         ImGui::PopID();
     }
