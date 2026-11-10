@@ -7,7 +7,7 @@ data, a 20-bit wrap, an index count that is not a multiple of 3, other primitive
 plan keep the old path. New header libs/video/rsx_vg_index.h (pure, host-tested: R&C port/rc/tests/run_vg_index_test.sh).
 R&C ToD: P1 measured refs + remap + copy ~218 ms/s of the walker. ENHANCEMENT (performance; output identical by construction).
 Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: same logic. Patch 7010 is dropped (KZ3 2089 does it), so the include
-sits right after rsx_live_draw.h. The index write joins KZ3 2093's timed index branch as its own else-if before it; the
+sits right after rsx_live_draw.h (2026-11-09: after KZ3 2156's two includes, which come first in patch order). The index write joins KZ3 2093's timed index branch as its own else-if before it; the
 vertex-buffer view keeps KZ3 2092's device-cache hit first (a GPU-fetch draw never uses the vertex cache: ld_vc is off
 with LD_VTX_GPU=1, so vg_direct and vd_hit never meet).
 
@@ -15,10 +15,12 @@ diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
 index 45148df..3053b65 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -20,6 +20,7 @@
+@@ -20,8 +20,9 @@
   */
  
  #include "rsx_live_draw.h"
+ #include "rsx_present_geometry.h"
+ #include "rsx_ui_provenance.h"
 +#include "rsx_vg_index.h"     /* R&C patch 7013 */
  #include "ps3emu/yz_runtime_config.h"
  #include "ps3emu/yz_frontier_trace.h"

@@ -60,6 +60,24 @@ static const PadKbUse rc_kb_base_uses[] = {
 
 #define RC_KB_N(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
+/* Shared key bindings (launcher "All games", 2026-11-09): the inputs whose action is the same in every game, read
+ * from <data folder>/shared/keybinds.ini before the game's own file (rc_settings.h). Checked against each game's default
+ * table (2026-11-09): every game id uses rc_kb_base_keys (ToD through its own profile, every other id through
+ * rc_kb_profile_base), so the input names line up by construction; the actions behind them:
+ *   ls_up/ls_down/ls_left/ls_right  move (left stick)        ToD: series standard; other games: ASSUMPTION (same)
+ *   rs_up/rs_down/rs_left/rs_right  camera (right stick)     ToD: series standard; other games: ASSUMPTION (same)
+ *   cross                           jump; menu accept        ToD [src:tod-faq-gamerev]; other games: ASSUMPTION
+ *   start                           pause menu               ToD; other games: ASSUMPTION (the PS3 pause button)
+ * Not shared: the d-pad, circle, square, triangle, L1/R1/L2/R2, L3/R3, select (weapons, gadgets and maps differ per
+ * game, and most of their ToD uses are themselves ASSUMPTION), [prompts] and [pad] (the profile carries no prompts
+ * default, and the pad layout remaps game actions). [mouse] (look, sensitivity, zoom_sensitivity, invert_y) is shared. */
+static const char* const rc_kb_shared_inputs[] = {
+    "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "cross", "start",
+};
+static const char* const rc_kb_shared_mouse[] = { "look", "sensitivity", "zoom_sensitivity", "invert_y" };
+#define RC_KB_N_SHARED_INPUTS RC_KB_N(rc_kb_shared_inputs)
+#define RC_KB_N_SHARED_MOUSE RC_KB_N(rc_kb_shared_mouse)
+
 /* Mouse look default OFF until it has been tried by hand (RC_MOUSE_LOOK=1 or keybinds.ini [mouse] look = on). Sensitivity
  * 2.5 x 0.022 deg/count and zoom 1.0 are Project Helghast's defaults (pad_mouse.h; ASSUMPTION for a third-person
  * camera). */

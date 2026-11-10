@@ -15,6 +15,8 @@ With --library the file is read for build records (built games) and rewritten at
     catalog.py set-location --library FILE KEY [VALUE] [--add|--remove|--reset]
     catalog.py set-pref --library FILE KEY [VALUE|--reset]
     catalog.py check-eboot --game ID [--title-id ID] [--json] FILE
+    catalog.py get-settings [--data DIR] [--game ID]
+    catalog.py set-setting [--data DIR] (--game ID | --shared) KEY [VALUE] [--unset]
 
 EBOOT check (check_eboot, run by every scan on the EBOOT a game would build from, and on an EBOOT override): an
 encrypted SELF, not a PS3 program, another game's file or the wrong version is a failure (needs_attention with a plain
@@ -25,6 +27,12 @@ warning: the whole-file hash can depend on the program that made the file). Libr
 Launcher preferences live in library.json's top-level `prefs` block, kept across rescans like `locations`;
 `set-pref` changes one and rewrites the file without a rescan. Keys and values: PREFS below (theme: system, light or
 dark; absent = system).
+
+Game settings (launcher-plan.md "Shared display and control settings"): get-settings prints, as JSON, the settable
+display and control keys (SETTINGS) of the shared files (<data>/shared/display.ini, keybinds.ini) and of every game's
+own files (<data>/<game id>/), with their defaults; set-setting changes one key in the shared file (--shared) or in one
+game's file (--game ID), or with --unset leaves it to the shared file (per game) or the default (shared), then prints
+the same JSON. Read-modify-write: comments, other keys and sections are kept. The games read shared, then their own.
 
 Locations (launcher-plan.md "Locations"): detection is the default, every location can be set by hand. library.json
 keeps per game `overrides` {disc, update, eboot, saves} and a top-level `locations` {library_folders, excluded,
@@ -1238,6 +1246,387 @@ def import_save(src_dir, dest_root):
     return {"ok": True, "reason": None, "dest": dest}
 
 
+# ------------------------------------------------------------------------------------------------ game settings files
+# Shared display and control settings (launcher-plan.md "Shared display and control settings", 2026-11-09). The
+# games read <data>/shared/<file> first, then <data>/<game id>/<file>; a key in the game's own file wins (port/rc/
+# rc_settings.h, rc_display_ini.h, rc_keybinds.h). This engine is the only writer of the shared files; the games write
+# only their own. Every write is read-modify-write: the key's line is replaced in place, every other line (comments,
+# foreign keys, other sections) is kept byte for byte, and the file is replaced atomically.
+#   <data> = the launcher's folder when kz3-install.ini there (or one level up) says [install] portable = 1, else
+#            %APPDATA%\Qwark's Awakening, else the working folder (the games' rule, rc_settings.h; ASSUMPTION: the
+#            launcher sits in the install root, beside the marker). --data DIR names it.
+# Only the keys every game has are settable (SETTINGS). An --unset per-game key is kept as a "# (shared) " comment
+# line (RC_INI_SHARED_MARK in rc_settings.h), so the game follows the shared file; a later set reuses that line.
+PRODUCT = "Qwark's Awakening"     # names.py PRODUCT (test_catalog checks they agree); the games' APPDATA folder
+SHARED_FOLDER = "shared"          # rc_settings.h RC_SETTINGS_SHARED_FOLDER
+SHARED_MARK = "# (shared) "       # rc_settings.h RC_INI_SHARED_MARK
+ONOFF = ("on", "off")
+SIZE_WORDS = ("720p", "900p", "1080p", "1440p", "2160p", "4k")   # rsx_window_size.h presets (and WxH)
+# Key positions (libs/input/pad_keybinds.h pad_kb_keys, KZ3 patch 2061: US key legends).
+KEY_NAMES = (["Mouse1", "Mouse2", "Mouse3", "Mouse4", "Mouse5", "Backspace", "Tab", "Enter", "Pause", "CapsLock",
+              "Escape", "Space", "PageUp", "PageDown", "End", "Home", "Left", "Up", "Right", "Down", "Insert", "Delete"]
+             + [str(i) for i in range(10)] + [chr(c) for c in range(ord("A"), ord("Z") + 1)]
+             + [f"Numpad{i}" for i in range(10)]
+             + ["NumpadMultiply", "NumpadAdd", "NumpadSubtract", "NumpadDecimal", "NumpadDivide"]
+             + [f"F{i}" for i in range(1, 13)]
+             + ["LeftShift", "RightShift", "LeftCtrl", "RightCtrl", "LeftAlt", "RightAlt", "Semicolon", "Equals",
+                "Comma", "Minus", "Period", "Slash", "Grave", "LeftBracket", "Backslash", "RightBracket", "Apostrophe",
+                "Oem102"])
+_KEY_BY_LOWER = {k.lower(): k for k in KEY_NAMES}
+# pad_kb_key_by_name's other spellings, written back under the file's own names
+_KEY_BY_LOWER.update({"return": "Enter", "esc": "Escape", "lshift": "LeftShift", "rshift": "RightShift",
+                      "lctrl": "LeftCtrl", "leftcontrol": "LeftCtrl", "rctrl": "RightCtrl", "rightcontrol": "RightCtrl",
+                      "lalt": "LeftAlt", "ralt": "RightAlt", "leftmouse": "Mouse1", "mouseleft": "Mouse1",
+                      "rightmouse": "Mouse2", "mouseright": "Mouse2", "middlemouse": "Mouse3", "mousemiddle": "Mouse3"})
+# Settable keys: "<section>.<key>" -> (file, kind, default). kind: a tuple of words, "size", "keys", "number" or "stops"
+# (0..2, the FSR 1 sharpness of KZ3 2145).
+# Defaults: what a game uses when neither file has the key (display: rsx_null_backend.c and the R&C Fit default in
+# rc_display_ini.h; keys and [mouse]: rc_keybinds.h rc_kb_base_keys / RC_KB_MOUSE_DEFAULT).
+SETTINGS = {
+    "display.mode": ("display.ini", ("windowed", "borderless", "fullscreen"), "windowed"),
+    "display.size": ("display.ini", "size", "1280x720"),
+    "display.scaling": ("display.ini", ("fit", "stretch"), "fit"),
+    "display.filter": ("display.ini", ("bilinear", "nearest"), "bilinear"),
+    "display.vsync": ("display.ini", ONOFF, "on"),
+    "display.upscale": ("display.ini", ("none", "fsr1"), "none"),
+    "display.upscale_sharpness": ("display.ini", "stops", "0.2"),
+    "keyboard.ls_up": ("keybinds.ini", "keys", "W"),
+    "keyboard.ls_down": ("keybinds.ini", "keys", "S"),
+    "keyboard.ls_left": ("keybinds.ini", "keys", "A"),
+    "keyboard.ls_right": ("keybinds.ini", "keys", "D"),
+    "keyboard.rs_up": ("keybinds.ini", "keys", "Up, Numpad8"),
+    "keyboard.rs_down": ("keybinds.ini", "keys", "Down, Numpad2"),
+    "keyboard.rs_left": ("keybinds.ini", "keys", "Left, Numpad4"),
+    "keyboard.rs_right": ("keybinds.ini", "keys", "Right, Numpad6"),
+    "keyboard.cross": ("keybinds.ini", "keys", "Space, Enter"),
+    "keyboard.start": ("keybinds.ini", "keys", "Escape, P"),
+    "mouse.look": ("keybinds.ini", ONOFF, "off"),
+    "mouse.sensitivity": ("keybinds.ini", "number", "2.5"),
+    "mouse.zoom_sensitivity": ("keybinds.ini", "number", "1"),
+    "mouse.invert_y": ("keybinds.ini", ONOFF, "off"),
+}
+SETTINGS_FILES = ("display.ini", "keybinds.ini")
+# The runtime's readers: display.ini takes a key's first line (rsx_dm_ini_value), keybinds.ini its last (cellPad's
+# parser). A write leaves one line per key, so both agree. Trailing "# comments" are kept only in keybinds.ini (its
+# parser cuts them; the display parser does not).
+_FILE_RULES = {"display.ini": {"comments": False},
+               "keybinds.ini": {"comments": True, "first_section": "keyboard"}}
+_SHARED_HEAD = {
+    "display.ini": ("# Display settings of every game (the launcher's Settings > All games; written by the launcher).\n"
+                    "# A game's own display.ini (in its folder beside this one) wins for each key it has. The games read\n"
+                    "# mode, size, scaling, filter, vsync and upscale from here; the window's place stays per game.\n"),
+    "keybinds.ini": ("# Key bindings and mouse of every game (the launcher's Settings > All games; written by the launcher).\n"
+                     "# A game's own keybinds.ini (in its folder beside this one) wins for each line it has. The games\n"
+                     "# read only the inputs every game has (ls_*, rs_*, cross, start) and [mouse] from here.\n"),
+}
+
+
+def _portable_dir(d):
+    try:
+        with open(os.path.join(d, "kz3-install.ini"), encoding="utf-8", errors="replace") as f:
+            t = f.read(1 << 16)
+    except OSError:
+        return False
+    v = ini_get(t, "install", "portable")
+    return v == "1"
+
+
+def default_data_dir(env=None, launcher_dir=None):
+    """The games' data folder as rc_settings.h finds it (see the block comment above)."""
+    env = os.environ if env is None else env
+    base = os.path.abspath(launcher_dir or os.path.join(HERE, "..", ".."))
+    for d in (base, os.path.dirname(base)):
+        if _portable_dir(d):
+            return d
+    if env.get("APPDATA"):
+        return os.path.join(env["APPDATA"], PRODUCT)
+    return os.getcwd()
+
+
+def settings_folder(data, game=None):
+    """<data>/shared or <data>/<game id> (game ids as rc_settings_game_folder: 1..31 of [a-z0-9_-], never "shared")."""
+    if game is None:
+        return os.path.join(data, SHARED_FOLDER)
+    if not re.fullmatch(r"[a-z0-9_-]{1,31}", game or "") or game == SHARED_FOLDER:
+        raise ValueError(f"not a game id: {game!r}")
+    return os.path.join(data, game)
+
+
+def _lines(text):
+    return text.splitlines(keepends=True)
+
+
+def _split_line(line):
+    """-> (indent, body without the newline, newline)."""
+    body = line.rstrip("\r\n")
+    nl = line[len(body):]
+    stripped = body.lstrip(" \t")
+    return body[:len(body) - len(stripped)], stripped, nl
+
+
+def _section_of(stripped):
+    s = stripped.rstrip(" \t")
+    if s.startswith("["):
+        r = s.find("]")
+        if r > 0:
+            return s[1:r].strip().lower()
+        return ""
+    return None
+
+
+def _key_of(stripped):
+    """The key of an active "key = value" line (lower case), else None."""
+    if not stripped or stripped[0] in "#;[":
+        return None
+    q = stripped.find("=")
+    if q <= 0:
+        return None
+    return stripped[:q].strip().lower()
+
+
+def _marked_key(stripped):
+    """The key of a "# (shared) key = value" line, else None."""
+    if not stripped.startswith(SHARED_MARK.rstrip()):
+        return None
+    return _key_of(stripped[len(SHARED_MARK.rstrip()):].lstrip(" \t"))
+
+
+def _value_of(stripped, comments):
+    v = stripped[stripped.find("=") + 1:]
+    if comments:
+        for c in "#;":
+            i = v.find(c)
+            if i >= 0:
+                v = v[:i]
+    return v.strip(" \t\r")
+
+
+def ini_get(text, section, key, last=False, comments=True, first_section=None):
+    """The value of key in [section] (no case), or None. last=True: the last line wins (keybinds.ini)."""
+    sec, key, found = (first_section or "").lower(), key.lower(), None
+    section = section.lower()
+    for line in _lines(text or ""):
+        _, s, _ = _split_line(line)
+        hs = _section_of(s)
+        if hs is not None:
+            sec = hs
+            continue
+        if sec == section and _key_of(s) == key:
+            found = _value_of(s, comments)
+            if not last:
+                return found
+    return found
+
+
+def _trailing_comment(stripped):
+    v = stripped[stripped.find("=") + 1:]
+    i = min([p for p in (v.find("#"), v.find(";")) if p >= 0], default=-1)
+    return v[i:].rstrip(" \t\r") if i >= 0 else ""
+
+
+def ini_edit(text, section, key, value, comments=True, first_section=None, head=""):
+    """text with key in [section] set to value (value None: unset, the line kept as SHARED_MARK + line). One line per key
+    stays; every other line is kept. A missing section is appended. -> new text."""
+    lines = _lines(text or "")
+    nl = "\r\n" if "\r\n" in (text or "") else "\n"
+    sec, key, section = (first_section or "").lower(), key.lower(), section.lower()
+    active, marked, last_in_sec, has_sec = [], [], None, False   # has_sec: an explicit [section] header
+    for i, line in enumerate(lines):
+        _, s, _ = _split_line(line)
+        hs = _section_of(s)
+        if hs is not None:
+            sec = hs
+            if sec == section:
+                has_sec, last_in_sec = True, i
+            continue
+        if sec != section:
+            continue
+        if s:
+            last_in_sec = i
+        if _key_of(s) == key:
+            active.append(i)
+        elif _marked_key(s) == key:
+            marked.append(i)
+    out = list(lines)
+    drop = set()
+
+    def line_for(i, v):
+        ind, s, end = _split_line(lines[i])
+        if s.startswith(SHARED_MARK.rstrip()):
+            s = s[len(SHARED_MARK.rstrip()):].lstrip(" \t")
+        tc = _trailing_comment(s) if comments else ""
+        return f"{ind}{key} = {v}" + (f"  {tc}" if tc else "") + (end or nl)
+
+    if value is None:
+        if active:
+            ind, s, end = _split_line(lines[active[0]])
+            out[active[0]] = f"{ind}{SHARED_MARK}{s}" + (end or nl)
+            drop.update(active[1:])
+    elif active:
+        out[active[0]] = line_for(active[0], value)
+        drop.update(active[1:])
+    elif marked:
+        out[marked[0]] = line_for(marked[0], value)
+    elif has_sec:
+        at = last_in_sec if last_in_sec is not None else -1
+        if at >= 0 and not out[at].endswith(("\n", "\r")):
+            out[at] += nl
+        out.insert(at + 1, f"{key} = {value}{nl}")
+    else:
+        if not out:
+            out.append(head.replace("\n", nl) if head else "")
+        elif not out[-1].endswith(("\n", "\r")):
+            out[-1] += nl
+        if out and out[-1].strip():
+            out.append(nl)
+        out.append(f"[{section}]{nl}{key} = {value}{nl}")
+    return "".join(x for i, x in enumerate(out) if i not in drop)
+
+
+def check_setting(key, value):
+    """A setting's value in its written form, or raise ValueError with a plain message."""
+    if key not in SETTINGS:
+        raise ValueError(f"unknown setting {key!r} (one of: {', '.join(SETTINGS)})")
+    _, kind, _ = SETTINGS[key]
+    v = str(value).strip()
+    if isinstance(kind, tuple):
+        lv = v.lower()
+        if kind == ONOFF:
+            lv = {"1": "on", "true": "on", "yes": "on", "0": "off", "false": "off", "no": "off"}.get(lv, lv)
+        if lv not in kind:
+            raise ValueError(f"{key}: give one of {', '.join(kind)}")
+        return lv
+    if kind == "size":
+        lv = v.lower()
+        if lv in SIZE_WORDS:
+            return lv
+        m = re.fullmatch(r"(\d{3,5})\s*x\s*(\d{3,5})", lv)
+        if not m or not (320 <= int(m.group(1)) <= 16384 and 180 <= int(m.group(2)) <= 16384):
+            raise ValueError(f"{key}: give WIDTHxHEIGHT (e.g. 1920x1080) or one of {', '.join(SIZE_WORDS)}")
+        return f"{int(m.group(1))}x{int(m.group(2))}"
+    if kind == "number":
+        try:
+            f = float(v)
+        except ValueError:
+            f = -1.0
+        if not (0 < f < 1000):
+            raise ValueError(f"{key}: give a number above 0 and below 1000")
+        return f"{f:g}"
+    if kind == "stops":
+        try:
+            f = float(v)
+        except ValueError:
+            f = -1.0
+        if not (0 <= f <= 2):
+            raise ValueError(f"{key}: give a number from 0 (sharpest) to 2")
+        return f"{f:g}"
+    if kind == "keys":
+        parts = [p.strip() for p in v.split(",")] if v else []
+        if not parts or len(parts) > 2:
+            raise ValueError(f"{key}: give one or two keys, e.g. \"W\" or \"Up, Numpad8\" (or none)")
+        names = []
+        for p in parts:
+            if p.lower() == "none" or p == "":
+                names.append("none")
+            elif p.lower() in _KEY_BY_LOWER:
+                names.append(_KEY_BY_LOWER[p.lower()])
+            else:
+                raise ValueError(f"{key}: unknown key {p!r}")
+        if names == ["none", "none"] or names == ["none"]:
+            return "none"
+        if len(names) == 2 and names[1] == "none":
+            names = names[:1]
+        return ", ".join(names)
+    raise ValueError(f"{key}: no rule")
+
+
+_BOM = "\ufeff"
+
+
+def _read_text(path):
+    """The file's text (a UTF-8 BOM kept as its first character, bytes that are not UTF-8 kept as they are), or None."""
+    try:
+        with open(path, "rb") as f:
+            b = f.read(1 << 20)
+    except OSError:
+        return None
+    return b.decode("utf-8", "surrogateescape")
+
+
+def _write_text(path, text):
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(text.encode("utf-8", "surrogateescape"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _file_values(text, fname):
+    rules = _FILE_RULES[fname]
+    out = {}
+    text = text[1:] if text.startswith(_BOM) else text
+    for k, (f, _, _) in SETTINGS.items():
+        if f != fname:
+            continue
+        sec, key = k.split(".", 1)
+        v = ini_get(text, sec, key, last=fname == "keybinds.ini", comments=rules["comments"],
+                    first_section=rules.get("first_section"))
+        if v is not None:
+            out[k] = v
+    return out
+
+
+def folder_settings(folder):
+    """The settable keys a settings folder's files hold: {key: value as written}."""
+    out = {}
+    for fname in SETTINGS_FILES:
+        t = _read_text(os.path.join(folder, fname))
+        if t is not None:
+            out.update(_file_values(t, fname))
+    return out
+
+
+def setting_game_ids(cat=None):
+    cat = cat or load()
+    return [i for e in cat["games"] for i in [e["id"]] + [c["id"] for c in e.get("children", [])]]
+
+
+def read_settings(data, games):
+    """-> {data, shared_folder, defaults, shared: {key: value}, games: {id: {key: value}}} (only keys a file has)."""
+    return {"data": data, "shared_folder": settings_folder(data), "defaults": {k: v[2] for k, v in SETTINGS.items()},
+            "shared": folder_settings(settings_folder(data)),
+            "games": {g: folder_settings(settings_folder(data, g)) for g in games}}
+
+
+def set_setting(data, key, value=None, game=None, unset=False):
+    """Set (or with unset=True leave to the shared file / the default) one key in the shared file (game None) or a
+    game's own file. Raises ValueError with a plain message. -> the value written (None when unset)."""
+    if key not in SETTINGS:
+        raise ValueError(f"unknown setting {key!r} (one of: {', '.join(SETTINGS)})")
+    v = None if unset else check_setting(key, value)
+    fname = SETTINGS[key][0]
+    rules = _FILE_RULES[fname]
+    path = os.path.join(settings_folder(data, game), fname)
+    old = _read_text(path)
+    if unset and old is None:
+        return None   # nothing to leave to the shared file
+    sec, k = key.split(".", 1)
+    head = _SHARED_HEAD[fname] if game is None else ""
+    bom = _BOM if (old or "").startswith(_BOM) else ""
+    new = bom + ini_edit((old or "")[len(bom):], sec, k, v, comments=rules["comments"],
+                         first_section=rules.get("first_section"), head=head)
+    if new != (old or ""):
+        _write_text(path, new)
+    return v
+
+
 # ------------------------------------------------------------------------------------------------ library.json
 def read_library(path):
     try:
@@ -1350,6 +1739,17 @@ def main(argv=None):
     sp.add_argument("key", choices=sorted(PREFS))
     sp.add_argument("value", nargs="?")
     sp.add_argument("--reset", action="store_true", help="back to the default (drops the key)")
+    gs = sub.add_parser("get-settings", help="print the shared and per-game display and control settings (JSON)")
+    ss = sub.add_parser("set-setting", help="set one display or control key, shared or for one game; --unset to fall back")
+    for x in (gs, ss):
+        x.add_argument("--data", help="the games' data folder (default: as the games find it)")
+    gs.add_argument("--game", help="only this game (and the shared values)")
+    who = ss.add_mutually_exclusive_group(required=True)
+    who.add_argument("--game")
+    who.add_argument("--shared", action="store_true")
+    ss.add_argument("key", help="e.g. display.mode, keyboard.cross, mouse.sensitivity")
+    ss.add_argument("value", nargs="?")
+    ss.add_argument("--unset", action="store_true", help="per game: use the shared value; shared: use the default")
     ce = sub.add_parser("check-eboot", help="say which build an EBOOT is for one game (exit 1 when it cannot be used)")
     ce.add_argument("--game", required=True)
     ce.add_argument("--title-id", help="the title ID of the player's game files, for the region note")
@@ -1371,6 +1771,25 @@ def main(argv=None):
         else:
             print(f"{chk['level'].upper()} [{chk['tag']}] {chk['message']}")
         return 1 if chk["level"] == "fail" else 0
+
+    if a.cmd in ("get-settings", "set-setting"):
+        data = os.path.abspath(a.data) if a.data else default_data_dir()
+        ids = setting_game_ids()
+        if a.game is not None and a.game not in ids:
+            print(f"Unknown game id: {a.game}", file=sys.stderr)
+            return 2
+        if a.cmd == "set-setting":
+            if not a.unset and a.value is None:
+                print(f"set-setting {a.key}: give a VALUE (or --unset)", file=sys.stderr)
+                return 2
+            try:
+                set_setting(data, a.key, a.value, None if a.shared else a.game, a.unset)
+            except (ValueError, OSError) as e:
+                print(str(e), file=sys.stderr)
+                return 2
+        print(json.dumps(read_settings(data, [a.game] if a.game and a.cmd == "get-settings" else ids), indent=1,
+                         ensure_ascii=False))
+        return 0
 
     if a.cmd == "set-pref":
         allowed = PREFS[a.key]

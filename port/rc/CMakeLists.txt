@@ -194,26 +194,44 @@ if(EXISTS "${RC_CATALOG}")
     file(READ "${RC_CATALOG}" RC_CATALOG_JSON)
     string(JSON RC_NGAMES LENGTH "${RC_CATALOG_JSON}" games)
     math(EXPR RC_LAST "${RC_NGAMES} - 1")
+    # Catalog rows and their children (the Collection's rc1..rc3); a build title collection_rcN is the child row whose build_title
+    # is its alias rcN (data/titles/build_profiles.json).
+    set(RC_CATALOG_KEY "${RC_GAME}")
+    if(RC_GAME MATCHES "^collection_(rc[123])$")
+        set(RC_CATALOG_KEY "${CMAKE_MATCH_1}")
+    endif()
+    set(RC_ROWS "")
     foreach(i RANGE ${RC_LAST})
-        string(JSON bt GET "${RC_CATALOG_JSON}" games ${i} build_title)
-        if(bt STREQUAL RC_GAME)
-            string(JSON RC_GAME_ID GET "${RC_CATALOG_JSON}" games ${i} id)
-            string(JSON RC_GAME_TITLE GET "${RC_CATALOG_JSON}" games ${i} title)
-            string(JSON nreg LENGTH "${RC_CATALOG_JSON}" games ${i} title_ids disc)
+        list(APPEND RC_ROWS "games:${i}")
+        string(JSON nch ERROR_VARIABLE jerr LENGTH "${RC_CATALOG_JSON}" games ${i} children)
+        if(NOT jerr AND nch GREATER 0)
+            math(EXPR nch1 "${nch} - 1")
+            foreach(c RANGE ${nch1})
+                list(APPEND RC_ROWS "games:${i}:children:${c}")
+            endforeach()
+        endif()
+    endforeach()
+    foreach(row ${RC_ROWS})
+        string(REPLACE ":" ";" i "${row}")   # the row's JSON path, used unquoted as path arguments
+        string(JSON bt GET "${RC_CATALOG_JSON}" ${i} build_title)
+        if(bt STREQUAL RC_CATALOG_KEY)
+            string(JSON RC_GAME_ID GET "${RC_CATALOG_JSON}" ${i} id)
+            string(JSON RC_GAME_TITLE GET "${RC_CATALOG_JSON}" ${i} title)
+            string(JSON nreg LENGTH "${RC_CATALOG_JSON}" ${i} title_ids disc)
             if(nreg GREATER 0)
                 math(EXPR nreg1 "${nreg} - 1")
                 foreach(r RANGE ${nreg1})
                     # the US disc id (the one the setup accepts); another region only when there is no US one
-                    string(JSON reg MEMBER "${RC_CATALOG_JSON}" games ${i} title_ids disc ${r})
-                    string(JSON nid LENGTH "${RC_CATALOG_JSON}" games ${i} title_ids disc ${reg})
+                    string(JSON reg MEMBER "${RC_CATALOG_JSON}" ${i} title_ids disc ${r})
+                    string(JSON nid LENGTH "${RC_CATALOG_JSON}" ${i} title_ids disc ${reg})
                     if(nid GREATER 0 AND (RC_GAME_TITLE_ID STREQUAL "" OR reg STREQUAL "US"))
-                        string(JSON RC_GAME_TITLE_ID GET "${RC_CATALOG_JSON}" games ${i} title_ids disc ${reg} 0)
+                        string(JSON RC_GAME_TITLE_ID GET "${RC_CATALOG_JSON}" ${i} title_ids disc ${reg} 0)
                     endif()
                 endforeach()
             endif()
-            string(JSON utype TYPE "${RC_CATALOG_JSON}" games ${i} update)
+            string(JSON utype TYPE "${RC_CATALOG_JSON}" ${i} update)
             if(utype STREQUAL "OBJECT")
-                string(JSON RC_GAME_UPDATE GET "${RC_CATALOG_JSON}" games ${i} update version)
+                string(JSON RC_GAME_UPDATE GET "${RC_CATALOG_JSON}" ${i} update version)
             endif()
             break()
         endif()
@@ -233,6 +251,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rc_log_ident.h.in" "${CMAKE_CURRENT_
 add_executable(${PROJECT_NAME}
     main.cpp
     rc_settings.cpp                          # per-game settings folder (keybinds.ini, display.ini, settings.ini)
+    rc_keybinds_shared.c                     # <data folder>/shared/keybinds.ini over the game's key defaults (C: pad_keybinds.h)
     rc_trace_read.cpp                        # RC_TRACE_READ access tracer (diagnostic, default off)
     ${RC_LOG_SOURCES}
     stubs.cpp
@@ -265,7 +284,12 @@ endif()
 # app.rc carries the icon, the version block and the manifest, and needs a
 # resource compiler. Listing it as a source on a host that has none is not a
 # link error, it is a "no rule to make" for a file nothing can consume.
+# Since 2026-11-09 it carries the PerMonitorV2 DPI manifest (app.manifest) for every game exe built from here.
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
+    enable_language(RC)
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/app.rc" PROPERTIES
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}"
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest")
     target_sources(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
 endif()
 

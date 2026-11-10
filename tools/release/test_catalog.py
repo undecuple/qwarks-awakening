@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Host test for catalog.py with SYNTHETIC fixtures written into a temp dir (no game data is read).
+"""Host test for catalog.py with SYNTHETIC fixtures written into a temp dir (no game data is read), including the
+shared / per-game display and control settings files (get-settings, set-setting).
 
     python3 -I tools/release/test_catalog.py
 """
@@ -405,6 +406,7 @@ def run(tmp):
     run_rpcs3(tmp)
     run_locations(tmp)
     run_eboot(tmp)
+    run_settings(tmp)
 
 
 # ------------------------------------------------------------------------------------------------- RPCS3 source
@@ -1015,6 +1017,188 @@ def run_eboot(tmp):
     check(rc == 1 and json.loads(o)["tag"] == "Encrypted", "CLI: check-eboot on an encrypted file (Collection child) -> exit 1, JSON")
     rc, _, e = cli("check-eboot", "--game", "nosuch", unk)
     check(rc == 2 and "nosuch" in e, "CLI: check-eboot with an unknown game -> exit 2")
+
+
+def run_settings(tmp):
+    """Shared and per-game display / control settings (get-settings, set-setting): synthetic files only."""
+    import contextlib
+    import io
+    import re as _re
+
+    def cli(*args):
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = catalog.main(list(args))
+        except SystemExit as e:
+            rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def rd(p):
+        with open(p, "rb") as f:
+            return f.read().decode("utf-8")
+
+    data = os.path.join(tmp, "settings-data")
+    sh_disp, sh_keys = os.path.join(data, "shared", "display.ini"), os.path.join(data, "shared", "keybinds.ini")
+    g_disp, g_keys = os.path.join(data, "tods", "display.ini"), os.path.join(data, "tods", "keybinds.ini")
+
+    # the keys line up with the games' readers (port/rc headers) and the product name with names.py
+    root = os.path.join(HERE, "..", "..")
+    with open(os.path.join(root, "port", "rc", "rc_keybinds.h"), encoding="utf-8") as f:
+        kbh = f.read()
+    with open(os.path.join(root, "port", "rc", "rc_display_ini.h"), encoding="utf-8") as f:
+        dih = f.read()
+    with open(os.path.join(root, "port", "rc", "rc_settings.h"), encoding="utf-8") as f:
+        rsh = f.read()
+    shared_in = _re.findall(r'"(\w+)"', _re.search(r"rc_kb_shared_inputs\[\] = \{(.*?)\};", kbh, _re.S).group(1))
+    shared_mouse = _re.findall(r'"(\w+)"', _re.search(r"rc_kb_shared_mouse\[\] = \{(.*?)\};", kbh, _re.S).group(1))
+    disp_keys = _re.findall(r'"(\w+)"', _re.search(r"RC_DINI_SHARED_KEYS\[\] = \{(.*?)\};", dih, _re.S).group(1))
+    check(sorted(k.split(".", 1)[1] for k in catalog.SETTINGS if k.startswith("keyboard.")) == sorted(shared_in),
+          "settings: keyboard keys = rc_keybinds.h rc_kb_shared_inputs")
+    check(sorted(k.split(".", 1)[1] for k in catalog.SETTINGS if k.startswith("mouse.")) == sorted(shared_mouse),
+          "settings: mouse keys = rc_keybinds.h rc_kb_shared_mouse")
+    check(sorted(k.split(".", 1)[1] for k in catalog.SETTINGS if k.startswith("display.")) == sorted(disp_keys),
+          "settings: display keys = rc_display_ini.h RC_DINI_SHARED_KEYS")
+    check(f'#define RC_SETTINGS_SHARED_FOLDER "{catalog.SHARED_FOLDER}"' in rsh and
+          f'#define RC_INI_SHARED_MARK "{catalog.SHARED_MARK}"' in rsh, "settings: folder name and mark = rc_settings.h")
+    import names
+    check(catalog.PRODUCT == names.PRODUCT, "settings: product folder name = names.py PRODUCT")
+    # key defaults = rc_kb_base_keys (the VK codes in the C table, named as catalog.KEY_NAMES)
+    vk = {"W": 0x57, "S": 0x53, "A": 0x41, "D": 0x44, "Up": 0x26, "Down": 0x28, "Left": 0x25, "Right": 0x27,
+          "Numpad8": 0x68, "Numpad2": 0x62, "Numpad4": 0x64, "Numpad6": 0x66, "Space": 0x20, "Enter": 0x0D,
+          "Escape": 0x1B, "P": 0x50}
+    ok = True
+    for inp in shared_in:
+        m = _re.search(r'\{ "%s", (0x[0-9A-Fa-f]+), (0x[0-9A-Fa-f]+|0) \}' % inp, kbh)
+        want = [int(m.group(1), 16), int(m.group(2), 16)] if m else None
+        got = [vk[x] for x in catalog.SETTINGS["keyboard." + inp][2].split(", ")] + [0]
+        ok = ok and want is not None and got[:2] == want
+    check(ok, "settings: key defaults = rc_kb_base_keys")
+
+    # data folder: portable launcher folder (or one up), else APPDATA\product, else the working folder
+    pl = os.path.join(tmp, "inst", "launcher")
+    wr(os.path.join(pl, "kz3-install.ini"), b"[install]\nportable = 1\n")
+    check(catalog.default_data_dir({"APPDATA": "/x"}, pl) == os.path.abspath(pl), "data folder: portable launcher folder")
+    up = os.path.join(tmp, "inst2", "a", "launcher")
+    wr(os.path.join(tmp, "inst2", "a", "kz3-install.ini"), b"[Install]\r\nportable=1 ; c\r\n")
+    os.makedirs(up, exist_ok=True)
+    check(catalog.default_data_dir({}, up) == os.path.abspath(os.path.join(tmp, "inst2", "a")), "data folder: portable one level up")
+    np_ = os.path.join(tmp, "inst3")
+    wr(os.path.join(np_, "kz3-install.ini"), b"[install]\nportable = 10\n")
+    check(catalog.default_data_dir({"APPDATA": "/u/AppData"}, np_) == os.path.join("/u/AppData", "Qwark's Awakening"),
+          "data folder: not portable -> APPDATA\\Qwark's Awakening")
+    check(catalog.default_data_dir({}, np_) == os.getcwd(), "data folder: no APPDATA -> the working folder")
+    try:
+        catalog.settings_folder(data, "shared")
+        bad = False
+    except ValueError:
+        bad = True
+    check(bad, "a game id 'shared' is refused (it is the shared folder)")
+
+    # empty: nothing set, the defaults listed
+    rc, o, _ = cli("get-settings", "--data", data)
+    j = json.loads(o)
+    check(rc == 0 and j["shared"] == {} and j["games"]["tods"] == {} and "rc2" in j["games"] and
+          j["defaults"]["display.mode"] == "windowed" and j["defaults"]["display.scaling"] == "fit",
+          "get-settings on an empty folder: nothing set, defaults, every catalogue id")
+    check(not os.path.exists(data), "get-settings writes nothing")
+
+    # shared file created with its header; values normalised
+    rc, o, _ = cli("set-setting", "--data", data, "--shared", "display.mode", "Borderless")
+    check(rc == 0 and json.loads(o)["shared"] == {"display.mode": "borderless"}, "set-setting --shared prints the new state")
+    t = rd(sh_disp)
+    check(t.startswith("# Display settings of every game") and t.endswith("[display]\nmode = borderless\n"),
+          "new shared display.ini: header, [display], the key")
+    for k, v, want in (("display.size", "1920 x 1080", "1920x1080"), ("display.vsync", "0", "off"),
+                       ("keyboard.cross", "space, f", "Space, F"), ("keyboard.start", "esc, p", "Escape, P"),
+                       ("mouse.sensitivity", "4.00", "4"), ("mouse.look", "yes", "on"), ("keyboard.ls_up", "none, i", "none, I"),
+                       ("display.upscale", "FSR1", "fsr1"), ("display.upscale_sharpness", "0", "0"),
+                       ("display.upscale_sharpness", "0.50", "0.5")):
+        rc, o, e = cli("set-setting", "--data", data, "--shared", k, v)
+        if want is None:
+            check(rc == 2 and "unknown key" in e, f"set-setting {k} {v!r} refused: {e.strip()}")
+        else:
+            check(rc == 0 and json.loads(o)["shared"][k] == want, f"set-setting {k} {v!r} -> {want!r}")
+    for k, v in (("display.mode", "huge"), ("display.size", "10x10"), ("mouse.sensitivity", "-1"),
+                 ("keyboard.cross", "A, B, C"), ("display.window_x", "5"), ("keyboard.square", "G"),
+                 ("display.upscale", "dlss"), ("display.upscale_sharpness", "2.5"), ("display.upscale_sharpness", "soft")):
+        rc, _, e = cli("set-setting", "--data", data, "--shared", k, v)
+        check(rc == 2 and e.strip(), f"bad value refused: {k} {v!r} ({e.strip()[:60]})")
+    rc, _, e = cli("set-setting", "--data", data, "--shared", "display.mode")
+    check(rc == 2 and "VALUE" in e, "set-setting without a value -> exit 2")
+    rc, _, e = cli("set-setting", "--data", data, "--game", "nosuch", "display.mode", "fullscreen")
+    check(rc == 2 and "nosuch" in e, "set-setting for an unknown game -> exit 2")
+    t = rd(sh_keys)
+    check(t.startswith("# Key bindings and mouse of every game") and "[keyboard]\ncross = Space, F\nstart = Escape, P\nls_up = none, I\n" in t and
+          "[mouse]\nsensitivity = 4\nlook = on\n" in t, "shared keybinds.ini: [keyboard] and [mouse] (%r)" % t[-120:])
+
+    # a game's own file written by the game: foreign keys, comments, other sections, CRLF kept; key replaced in place
+    game_d = ("# Display settings of this game\r\n[display]\r\n# mode = windowed | borderless | fullscreen\r\n"
+              "mode = windowed\r\nfoo = 1\r\nwindow_x = 100\r\nmode = fullscreen\r\n\r\n[other]\r\nscaling = x\r\n")
+    wr(g_disp, game_d.encode())
+    rc, o, _ = cli("get-settings", "--data", data, "--game", "tods")
+    j = json.loads(o)
+    check(rc == 0 and list(j["games"]) == ["tods"] and j["games"]["tods"] == {"display.mode": "windowed"},
+          "get-settings --game: display.ini's first line wins (the runtime's reader), other sections not read")
+    rc, o, _ = cli("set-setting", "--data", data, "--game", "tods", "display.scaling", "stretch")
+    t = rd(g_disp)
+    check(rc == 0 and t == game_d.replace("window_x = 100\r\nmode = fullscreen\r\n", "window_x = 100\r\nmode = fullscreen\r\nscaling = stretch\r\n"),
+          "per-game set: a missing key appended at the end of [display] with CRLF, everything else byte for byte")
+    rc, o, _ = cli("set-setting", "--data", data, "--game", "tods", "display.mode", "borderless")
+    t = rd(g_disp)
+    check(t.count("\r\nmode = ") == 1 and "\r\nmode = borderless\r\nfoo = 1\r\n" in t and "# mode = windowed | borderless" in t,
+          "per-game set: replaced in place, a later duplicate dropped, comments kept")
+    # --unset: the line kept as a "# (shared)" comment; the game then reads the shared value; a later set reuses it
+    rc, o, _ = cli("set-setting", "--data", data, "--game", "tods", "display.mode", "--unset")
+    j, t = json.loads(o), rd(g_disp)
+    check(rc == 0 and "display.mode" not in j["games"]["tods"] and "\r\n# (shared) mode = borderless\r\nfoo = 1" in t,
+          "--unset: the line marked '# (shared) ', the game's value gone (falls back to shared)")
+    rc, o, _ = cli("set-setting", "--data", data, "--game", "tods", "display.mode", "fullscreen")
+    t = rd(g_disp)
+    check("\r\nmode = fullscreen\r\nfoo = 1" in t and "(shared) mode" not in t, "set after --unset reuses the marked line")
+    cli("set-setting", "--data", data, "--game", "acit", "display.mode", "--unset")
+    check(not os.path.exists(os.path.join(data, "acit")), "--unset on a game without a file creates nothing")
+
+    # keybinds.ini as the game writes it (aligned, trailing use comments, [mouse] at the end, marked shared lines)
+    game_k = ("# Tools of Destruction key bindings.\n\n[keyboard]\nkeys     = positions             # keep this line\n"
+              "# (shared) ls_up    = W                     # move forward (left stick up)\n"
+              "square   = F, Mouse3             # wrench\n"
+              "cross    = Space, Enter          # jump; menu accept\n\n[prompts]\nbuttons  = auto\n\n"
+              "[mouse]\n# Mouse look\n# (shared) look             = off\nsensitivity      = 2.5\n")
+    wr(g_keys, game_k.encode())
+    rc, o, _ = cli("get-settings", "--data", data, "--game", "tods")
+    j = json.loads(o)["games"]["tods"]
+    check(j.get("keyboard.cross") == "Space, Enter" and j.get("mouse.sensitivity") == "2.5" and "keyboard.ls_up" not in j and
+          "mouse.look" not in j and "keyboard.square" not in j, "get-settings: keybinds.ini values, trailing comments cut, marked lines not set")
+    cli("set-setting", "--data", data, "--game", "tods", "keyboard.ls_up", "Up")
+    cli("set-setting", "--data", data, "--game", "tods", "keyboard.cross", "--unset")
+    cli("set-setting", "--data", data, "--game", "tods", "mouse.look", "on")
+    t = rd(g_keys)
+    check("\nls_up = Up  # move forward (left stick up)\n" in t, "keybinds: set on a marked line keeps its use comment")
+    check("\n# (shared) cross    = Space, Enter          # jump; menu accept\n" in t, "keybinds: --unset marks the line as it was")
+    check("\n# Mouse look\nlook = on\nsensitivity      = 2.5\n" in t and "square   = F, Mouse3             # wrench\n" in t and
+          "[prompts]\nbuttons  = auto\n" in t and "keys     = positions" in t, "keybinds: other lines and sections kept")
+    # what the games read: shared, then their own (the launcher's view is the same rule)
+    j = json.loads(cli("get-settings", "--data", data)[1])
+    eff = lambda g, k: j["games"][g].get(k, j["shared"].get(k, j["defaults"][k]))  # noqa: E731
+    check(eff("tods", "display.mode") == "fullscreen" and eff("acit", "display.mode") == "borderless" and
+          eff("acit", "display.scaling") == "fit" and eff("tods", "keyboard.cross") == "Space, F",
+          "effective values: game key > shared > default")
+    # comment / foreign-key edge cases of the edit itself
+    check(catalog.ini_edit("x = 1", "display", "mode", "fit") == "x = 1\n\n[display]\nmode = fit\n",
+          "ini_edit: a file without the section and without a final newline")
+    check(catalog.ini_edit("[display]\nmode = a\n[display]\nmode = b\n", "display", "mode", "c") == "[display]\nmode = c\n[display]\n",
+          "ini_edit: one line per key across repeated sections")
+    check(catalog.ini_edit("ls_up = W\n", "keyboard", "ls_up", "I", first_section="keyboard") == "ls_up = I\n",
+          "ini_edit: keybinds lines before any header are [keyboard]")
+    check(catalog.ini_edit("[display]\nmode = a\n", "display", "mode", None) == "[display]\n# (shared) mode = a\n",
+          "ini_edit: unset")
+    wr(os.path.join(data, "rc1", "display.ini"), b"\xef\xbb\xbf[display]\nmode = fullscreen\n")
+    cli("set-setting", "--data", data, "--game", "rc1", "display.vsync", "off")
+    check(rd(os.path.join(data, "rc1", "display.ini")) == "\ufeff[display]\nmode = fullscreen\nvsync = off\n",
+          "a UTF-8 BOM is read past and kept")
+    leftovers = [f for d_, _, fs in os.walk(data) for f in fs if f.endswith(".tmp")]
+    check(not leftovers, "no temporary files left behind")
 
 
 def wr_ret(path, data):

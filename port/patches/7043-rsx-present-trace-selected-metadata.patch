@@ -1,3 +1,7 @@
+R&C patch 7043: RSX_TARGET_TRACE traces every present with its selected/current surface metadata
+(rsx_target_trace.h). 2026-11-09: the present hunk's trailing context follows KZ3 2156 (its geometry line
+after ld_gamma_present).
+
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
@@ -70,7 +74,7 @@ diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
 +    ld_trace_target("present", target, buffer_id);
      ID3D12Resource* srcimg = presented_surface->tex;
      ID3D12Resource* gm_copy = ld_gamma_present(target);   /* patch 2070 */
-     ld_dm_sync_size();                                    /* patch 2095: back buffers at the client size */
+     rsx_present_geometry geometry; memset(&geometry, 0, sizeof geometry);
 diff --git a/libs/video/rsx_target_trace.h b/libs/video/rsx_target_trace.h
 new file mode 100644
 --- /dev/null

@@ -51,6 +51,12 @@ struct Engine {
     std::mutex m; std::string key, output; int rc = 0;     // key = the row that asked ("g|id|slot" or "l|key"); written by the thread, read after done
 };
 struct Job { int game = -1; float t = 0; };   // TEMP: the fake build
+// Display and control settings as the engine's get-settings reports them (values as written in the files).
+struct Settings {
+    bool loaded = false, loading = false; std::string err, sharedFolder;
+    std::map<std::string, std::string> defaults, shared;                   // "display.mode" -> "borderless"
+    std::map<std::string, std::map<std::string, std::string>> games;       // game id -> its own keys only
+};
 
 struct App {
     SDL_Window* win = nullptr; SDL_Renderer* ren = nullptr;
@@ -76,6 +82,7 @@ struct App {
     // settings (the cover art switch is TEMP: kept in memory only; locations live in library.json)
     char buildFolder[512] = ""; bool artFetch = false;
     Toast toast; Dialog dlg; Job job; Engine eng;
+    Settings set; std::string dataDir;       // display/control settings (engine get-settings); --data DIR for the engine
     std::vector<std::string> engineCmd;      // argv prefix of the engine command; the verb and its arguments are appended
     std::string busyKey;                     // the row the running engine command belongs to
     std::string errKey, errText;             // last engine failure, shown on the row that asked
@@ -779,16 +786,25 @@ static void ReloadLibrary() {
     for (size_t i = 0; i < A.lib.games.size(); i++) if (A.lib.games[i].id == selId) A.sel = (int)i;
     SyncBuildFolder();
 }
+static bool ParseSettings(const std::string& out);
+static void LoadSettings();
 static void PumpEngine() {
     if (!A.eng.done.exchange(false)) return;
     std::string key, out; int rc;
     { std::lock_guard<std::mutex> l(A.eng.m); key = A.eng.key; out = A.eng.output; rc = A.eng.rc; }
     A.eng.busy = false; A.busyKey.clear();
+    bool settings = key.compare(0, 2, "s|") == 0;   // get-settings / set-setting: the reply is the settings, not library.json
+    if (rc == 0 && settings) {
+        if (!ParseSettings(out)) { A.set.loading = false; A.set.err = "The engine's answer could not be read."; }
+        return;
+    }
     if (rc == 0) { ReloadLibrary(); return; }
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
     size_t nl = out.find_last_of('\n');
     A.errKey = key;
     A.errText = out.empty() ? "The engine failed without a message." : (rc == 2 || nl == std::string::npos ? out : out.substr(nl + 1));   // exit 2 = the engine's own message
+    if (key == "s|load") { A.set.loading = false; A.set.err = A.errText; }
+    else if (settings) LoadSettings();   // a refused change: show the files as they are again
 }
 
 // Dialog results for engine actions: tag "ov|<game>|<slot>" or "loc|<key>|<mode>".
@@ -1169,6 +1185,7 @@ static bool NoGame() {
     return true;
 }
 
+static void SettingGroups(const std::string& scope, float w);
 static void DetailsScreen() {
     if (NoGame()) return;
     Game& g = *Sel();
@@ -1223,6 +1240,11 @@ static void DetailsScreen() {
         }
         if (g.igdbGame) { char b[64]; snprintf(b, sizeof b, "game %lld, cover %s", g.igdbGame, g.igdbCover.empty() ? "-" : g.igdbCover.c_str()); PropRow("IGDB id", b, true); }
     });
+    // this game's display and controls: each row follows the shared value or keeps the game's own
+    ImGui::SetCursorPosX(x);
+    ImGui::BeginGroup();
+    SettingGroups(g.id, w);
+    ImGui::EndGroup();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1270,6 +1292,207 @@ static bool RowMsg(const std::string& key, std::string& msg, unsigned& col) {
     if (A.errKey == key) { msg = A.errText; col = T->destructive; return true; }
     return false;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Display and control settings (launcher-plan.md "Shared display and control settings"): the shared files every game
+// reads first (<data>/shared/display.ini, keybinds.ini) and each game's own (<data>/<game id>/). Read and written only
+// through the engine (catalog.py get-settings / set-setting); a game's own value wins, "Use the shared value" removes it.
+enum class SK { Choice, OnOff, Number, Keys };
+struct SDef { const char* key; const char* title; const char* desc; SK kind; std::vector<std::string> labels, values; float step = 0, lo = 0, hi = 0; };
+static const std::vector<SDef>& DisplayDefs() {
+    static const std::vector<SDef> d = {
+        {"display.mode", "Window mode", "Alt+Enter switches in the game.", SK::Choice, {"Windowed", "Borderless", "Fullscreen"}, {"windowed", "borderless", "fullscreen"}},
+        {"display.size", "Window size", "The first start's size. Each game then remembers its own window.", SK::Choice, {"720p", "1080p", "1440p", "4K"}, {"720p", "1080p", "1440p", "2160p"}},
+        {"display.scaling", "Scaling", "Fit keeps the picture's shape (black bars); Stretch fills the window.", SK::Choice, {"Fit", "Stretch"}, {"fit", "stretch"}},
+        {"display.filter", "Filter", "Nearest with Fit scales by whole numbers (sharp pixels).", SK::Choice, {"Bilinear", "Nearest"}, {"bilinear", "nearest"}},
+        {"display.vsync", "Vertical sync", "Waits for the screen: no tearing.", SK::OnOff, {}, {}},
+        {"display.upscale", "Upscaler", "FSR 1 sharpens the picture when the window is larger than 720p.", SK::Choice, {"Off", "FSR 1"}, {"none", "fsr1"}},
+        {"display.upscale_sharpness", "FSR 1 sharpness", "0 is the sharpest, 2 the softest.", SK::Number, {}, {}, 0.1f, 0.f, 2.f},
+    };
+    return d;
+}
+static const std::vector<SDef>& ControlDefs() {
+    static const std::vector<SDef> d = {
+        {"mouse.look", "Mouse look", "The mouse turns the camera.", SK::OnOff, {}, {}},
+        {"mouse.sensitivity", "Mouse sensitivity", "", SK::Number, {}, {}, 0.25f, 0.25f, 20.f},
+        {"mouse.zoom_sensitivity", "Zoomed sensitivity", "A factor while zoomed in.", SK::Number, {}, {}, 0.25f, 0.25f, 5.f},
+        {"mouse.invert_y", "Invert mouse Y", "", SK::OnOff, {}, {}},
+        {"keyboard.ls_up", "Move forward", "", SK::Keys, {}, {}}, {"keyboard.ls_down", "Move back", "", SK::Keys, {}, {}},
+        {"keyboard.ls_left", "Move left", "", SK::Keys, {}, {}}, {"keyboard.ls_right", "Move right", "", SK::Keys, {}, {}},
+        {"keyboard.rs_up", "Camera up", "", SK::Keys, {}, {}}, {"keyboard.rs_down", "Camera down", "", SK::Keys, {}, {}},
+        {"keyboard.rs_left", "Camera left", "", SK::Keys, {}, {}}, {"keyboard.rs_right", "Camera right", "", SK::Keys, {}, {}},
+        {"keyboard.cross", "Jump, accept", "", SK::Keys, {}, {}}, {"keyboard.start", "Pause menu", "", SK::Keys, {}, {}},
+    };
+    return d;
+}
+static std::string Lower(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
+// The value a scope ("shared" or a game id) uses: the game's own, else the shared one, else the default. own/set: where it came from.
+static std::string SetVal(const std::string& scope, const std::string& key, bool* own = nullptr, bool* shared = nullptr) {
+    const Settings& s = A.set;
+    if (own) *own = false;
+    if (shared) *shared = false;
+    if (scope != "shared") {
+        auto g = s.games.find(scope);
+        if (g != s.games.end()) { auto v = g->second.find(key); if (v != g->second.end()) { if (own) *own = true; return v->second; } }
+    }
+    auto v = s.shared.find(key);
+    if (v != s.shared.end()) { if (shared) *shared = true; return v->second; }
+    auto d = s.defaults.find(key);
+    return d == s.defaults.end() ? "" : d->second;
+}
+static int ChoiceIndex(const SDef& d, std::string v) {
+    v = Lower(v);
+    if (d.key == std::string("display.size")) {   // WxH of a preset reads as the preset
+        static const char* wh[4] = {"1280x720", "1920x1080", "2560x1440", "3840x2160"};
+        for (int i = 0; i < 4; i++) if (v == wh[i]) return i;
+        if (v == "4k") return 3;
+    }
+    for (size_t i = 0; i < d.values.size(); i++) if (d.values[i] == v) return (int)i;
+    return -1;
+}
+static std::string ValueWords(const SDef& d, const std::string& v) {   // the value as the row shows it
+    if (d.kind == SK::Choice) { int i = ChoiceIndex(d, v); return i >= 0 ? d.labels[i] : v; }
+    if (d.kind == SK::OnOff) return Lower(v) == "on" ? "On" : "Off";
+    return v;
+}
+static void SettingsArgs(std::vector<std::string>& a) { if (!A.dataDir.empty()) { a.push_back("--data"); a.push_back(A.dataDir); } }
+static void LoadSettings() {
+    std::vector<std::string> a = {"get-settings"}; SettingsArgs(a);
+    A.set.loading = true;
+    RunEngine("s|load", a);
+}
+static void SetSetting(const std::string& scope, const std::string& key, const std::string& value, bool unset = false) {
+    std::vector<std::string> a = {"set-setting"}; SettingsArgs(a);
+    if (scope == "shared") a.push_back("--shared"); else { a.push_back("--game"); a.push_back(scope); }
+    a.push_back(key);
+    if (unset) a.push_back("--unset"); else a.push_back(value);
+    RunEngine("s|" + scope + "|" + key, a);
+    if (A.shotMode) return;
+    // shown at once; the engine's answer (the files as written) replaces it
+    if (scope == "shared") { if (unset) A.set.shared.erase(key); else A.set.shared[key] = value; }
+    else { if (unset) A.set.games[scope].erase(key); else A.set.games[scope][key] = value; }
+}
+// get-settings / set-setting output -> A.set
+static bool ParseSettings(const std::string& out) {
+    Json j; std::string err;
+    size_t b = out.find('{');
+    if (b == std::string::npos || !Json::parse(out.substr(b), j, err)) return false;
+    Settings s; s.loaded = true;
+    s.sharedFolder = j["shared_folder"].str();
+    for (auto& kv : j["defaults"].o) s.defaults[kv.first] = kv.second.str();
+    for (auto& kv : j["shared"].o) s.shared[kv.first] = kv.second.str();
+    for (auto& g : j["games"].o) for (auto& kv : g.second.o) s.games[g.first][kv.first] = kv.second.str();
+    A.set = std::move(s);
+    return true;
+}
+// Not read yet (or the engine failed): one row that says so. Returns true when the rows can be drawn.
+static bool SettingsReady(float w) {
+    if (A.set.loaded) return true;
+    if (!A.set.loading && !EngineBusy() && A.set.err.empty()) LoadSettings();
+    BeginBoxedList(w);
+    if (!A.set.err.empty()) Row("The settings files could not be read", A.set.err, 0, [] {}, T->destructive);
+    else Row("Reading the settings files...", "", 0, [] {});
+    EndBoxedList();
+    return false;
+}
+// One setting row. scope "shared": the value control (and Reset when the shared file has it). A game id: the value
+// control, disabled while the row uses the shared value, then "Shared" and its switch.
+static void SettingRow(const std::string& scope, const SDef& d) {
+    bool own = false, inShared = false;
+    std::string v = SetVal(scope, d.key, &own, &inShared);
+    bool perGame = scope != "shared", useShared = perGame && !own;
+    std::string rowKey = "s|" + scope + "|" + d.key, msg; unsigned col = 0;
+    bool has = RowMsg(rowKey, msg, col);
+    ImGui::PushID(d.key);
+    float gap = A.S(10.f), swW = A.S(48.f);
+    ImVec2 lblSz = A.fBody->CalcTextSizeA(A.S(15.f), FLT_MAX, 0, "Shared");
+    float valW = d.kind == SK::Choice ? ToggleGroupW(d.labels) : d.kind == SK::OnOff ? swW
+               : d.kind == SK::Number ? A.S(38.f) * 2 + A.S(64.f) + gap * 2 : 0.f;
+    float resetW = BtnW("Reset");
+    float ctrlW = valW + (perGame ? (valW > 0 ? gap * 2 : 0.f) + lblSz.x + gap + swW : (valW > 0 ? gap : 0.f) + resetW);
+    std::string sub;
+    std::string shownShared = ValueWords(d, SetVal("shared", d.key));
+    if (has) sub = msg;
+    else if (d.kind == SK::Keys) sub = perGame ? (own ? v + "   (this game; shared: " + shownShared + ")" : v) : v;
+    else if (perGame) sub = own ? "This game only. Shared: " + shownShared : "Shared value";
+    else sub = d.desc;
+    if (!has && !perGame && !inShared && d.kind != SK::Keys) sub += std::string(sub.empty() ? "" : " ") + "(default)";
+    RowOpt o; o.subCol = has ? col : 0; o.mono = d.kind == SK::Keys && !has;
+    RowX(d.title, sub, ctrlW, [&] {
+        bool busy = EngineBusy();
+        float y0 = ImGui::GetCursorPosY();
+        ImGui::BeginDisabled(busy || useShared);
+        if (d.kind == SK::Choice) {
+            ImGui::SetCursorPosY(y0 - A.S(1.f));
+            int cur = ChoiceIndex(d, v);
+            if (ToggleGroup("v", d.labels, &cur) && cur >= 0) SetSetting(scope, d.key, d.values[cur]);
+        } else if (d.kind == SK::OnOff) {
+            ImGui::SetCursorPosY(y0 + A.S(6.f));
+            bool on = Lower(v) == "on";
+            if (Switch("##v", &on)) SetSetting(scope, d.key, on ? "on" : "off");
+        } else if (d.kind == SK::Number) {
+            float f = (float)atof(v.c_str());
+            char b[32];
+            if (PillButton("-##dec", Kind::Normal, ImVec2(A.S(38.f), 0), false) && f - d.step >= d.lo - 1e-4f) { snprintf(b, sizeof b, "%g", f - d.step); SetSetting(scope, d.key, b); }
+            ImGui::SameLine(0, gap);
+            snprintf(b, sizeof b, "%g", f);
+            ImVec2 ts = A.fBodySemi->CalcTextSizeA(A.S(17.f), FLT_MAX, 0, b);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddText(A.fBodySemi, A.S(17.f), ImVec2(p.x + (A.S(64.f) - ts.x) / 2, p.y + (A.S(38.f) - ts.y) / 2),
+                                                Col(T->windowFg, useShared ? 0.5f : 1.f), b);
+            ImGui::Dummy(ImVec2(A.S(64.f), A.S(38.f)));
+            ImGui::SameLine(0, gap);
+            if (PillButton("+##inc", Kind::Normal, ImVec2(A.S(38.f), 0), false) && f + d.step <= d.hi + 1e-4f) { snprintf(b, sizeof b, "%g", f + d.step); SetSetting(scope, d.key, b); }
+        }
+        ImGui::EndDisabled();
+        if (perGame) {
+            if (valW > 0) ImGui::SameLine(0, gap * 2);
+            ImGui::SetCursorPosY(y0);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddText(A.fBody, A.S(15.f), ImVec2(p.x, p.y + (A.S(38.f) - lblSz.y) / 2), Col(T->dimFg), "Shared");
+            ImGui::Dummy(ImVec2(lblSz.x, A.S(38.f)));
+            ImGui::SameLine(0, gap);
+            ImGui::SetCursorPosY(y0 + A.S(6.f));
+            ImGui::BeginDisabled(busy);
+            bool sh = useShared;
+            if (Switch(("##shared_" + std::string(d.key)).c_str(), &sh)) {
+                if (sh) SetSetting(scope, d.key, "", true);   // back to the shared value
+                else SetSetting(scope, d.key, v);           // this game keeps the value it uses now
+            }
+            ImGui::EndDisabled();
+        } else {
+            if (valW > 0) ImGui::SameLine(0, gap);
+            ImGui::SetCursorPosY(y0);
+            ImGui::BeginDisabled(busy || !inShared);   // Reset: back to the default (the shared file drops the key)
+            if (PillButton("Reset##r", Kind::Flat, ImVec2(resetW, 0), false)) SetSetting(scope, d.key, "", true);
+            ImGui::EndDisabled();
+        }
+    }, o);
+    ImGui::PopID();
+}
+static void SettingGroups(const std::string& scope, float w) {
+    bool perGame = scope != "shared";
+    GroupTitle(perGame ? "Display for this game" : "All games: display",
+               perGame ? "Turn \"Shared\" off to give this game its own value; on, it follows Settings > All games."
+                       : "Every game uses these unless its own page says otherwise. Read when a game starts; the window's place stays with each game.", w);
+    if (!SettingsReady(w)) return;
+    BeginBoxedList(w);
+    for (auto& d : DisplayDefs()) SettingRow(scope, d);
+    EndBoxedList();
+    GroupTitle(perGame ? "Controls for this game" : "All games: controls",
+               perGame ? "Keys are changed in the game's keybinds.ini for now; here a key can follow the shared one or keep this game's."
+                       : "The mouse and the keys every game has (move, camera, jump, pause). Other keys stay with each game. Keys are changed in keybinds.ini for now.", w);
+    BeginBoxedList(w);
+    for (auto& d : ControlDefs()) SettingRow(scope, d);
+    if (!perGame) {
+        float bwO = BtnW("Open", Ico::Open);
+        Row("Shared settings folder", A.set.sharedFolder, bwO, [&] {
+            if (PillButton("Open##sf", Kind::Normal, ImVec2(bwO, 0), false, Ico::Open)) OpenFolderOf(A.set.sharedFolder);
+        }, 0, true);
+    }
+    EndBoxedList();
+}
+
 // Files: the selected game's four places as one boxed list. Each row: the slot as its title, where it came from as a
 // tag, the path in use as a Mono subtitle, and Browse / Open / Use found at the right. A row the engine flags gets a
 // second row under it with the reason (and "Use found" when the engine suggests a place).
@@ -1444,6 +1667,8 @@ static void SettingsScreen() {
         }, col);
     }
     EndBoxedList();
+
+    SettingGroups("shared", w);   // All games: display and controls
 
     const Locations& L = A.lib.loc;
     GroupTitle("Game library folders", "The launcher looks in these folders, and the folders inside them, for your game files.", w);
@@ -1802,9 +2027,10 @@ int main(int argc, char** argv) {
         else if (a == "--fonts") A.fontDir = next();
         else if (a == "--engine") engine = next();
         else if (a == "--scroll") A.shotScroll = (float)atof(next().c_str());   // screenshots: scroll the screen down by this many px (at 720 high)
-        else if (a == "--keys") keyList = next();   // screenshots: press these keys first (comma list), then print where focus is
+        else if (a == "--keys") keyList = next();
+        else if (a == "--data") A.dataDir = next();   // the games' data folder for the engine's settings commands (default: the engine's rule)   // screenshots: press these keys first (comma list), then print where focus is
         else if (a == "--theme") { themeArg = next(); if (themeArg != "system" && themeArg != "light" && themeArg != "dark") { fprintf(stderr, "--theme: system, light or dark\n"); return 2; } }
-        else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--screenshot OUT.png --screen library|details|add|settings|locations|files|about|sidebar [--select ID] [--size WxH] [--progress F] [--scroll PX] [--keys up,down,left,right,enter,esc,tab,f10,...]] [--theme system|light|dark]\n"); return 2; }
+        else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--data DIR] [--screenshot OUT.png --screen library|details|add|settings|locations|files|about|sidebar [--select ID] [--size WxH] [--progress F] [--scroll PX] [--keys up,down,left,right,enter,esc,tab,f10,...]] [--theme system|light|dark]\n"); return 2; }
     }
     if (engine.empty()) { const char* e = SDL_getenv("RC_LAUNCHER_ENGINE"); if (e && *e) engine = e; }
     A.engineCmd = engine.empty() ? DefaultEngine(base ? base : "") : SplitCommand(engine);
@@ -1863,6 +2089,14 @@ int main(int argc, char** argv) {
             if (!A.lib.games.empty()) OpenAdd(A.lib.games[A.sel]);
             if (progress >= 0 && !A.lib.games.empty()) { StartBuild(A.sel); A.job.t = progress * kBuildSeconds; }
         }
+    }
+
+    // A shot of a page with settings reads them first: get-settings is read only, the one engine command a screenshot runs.
+    if (A.shotMode && (A.screen == App::ScSettings || A.screen == App::ScDetails)) {
+        std::vector<std::string> argv = A.engineCmd; argv.push_back("get-settings"); SettingsArgs(argv);
+        A.eng.busy = true; A.busyKey = "s|load"; A.set.loading = true;
+        { std::lock_guard<std::mutex> l(A.eng.m); A.eng.key = "s|load"; }
+        EngineThread(argv);
     }
 
     // --keys: one key every 6 frames from frame 8 (down on the first, up on the next), the shot 8 frames after the last

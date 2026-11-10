@@ -3,6 +3,7 @@
  * main() (with RC_LOG_GAME_ID) before anything reads a setting (the first pad poll, the window, the env defaults). */
 #include "rc_settings.h"
 #include "rc_keybinds.h"
+#include "rc_keybinds_shared.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,9 @@
 #define PS3RECOMP_PRODUCT_NAME "Qwark's Awakening"
 #endif
 
-static std::string s_dir;   /* UTF-8, no trailing separator */
+static std::string s_dir;          /* UTF-8, no trailing separator */
+static std::string s_shared_dir;   /* <data folder>/shared (launcher "All games"; never written by the game) */
+static RcKbShared s_kbs;           /* the game's keybinds profile with the shared file's values as its defaults */
 
 static void rc_set_env(const char* k, const char* v)
 {
@@ -107,24 +110,23 @@ std::string rc_settings_path(const char* name)
 #endif
 }
 
-/* RC_* names of the runtime's mouse and keybinds switches (pad_mouse.c, cellPad.c read the KZ3_* ones). The RC_ name
- * wins when both are set. */
-static const char* const rc_alias[][2] = {
-    {"RC_MOUSE_LOOK", "KZ3_MOUSE_LOOK"},   {"RC_MOUSE_SENS", "KZ3_MOUSE_SENS"},
-    {"RC_MOUSE_ZOOM_SENS", "KZ3_MOUSE_ZOOM_SENS"}, {"RC_MOUSE_INVERT", "KZ3_MOUSE_INVERT"},
-    {"RC_MOUSE_YAW", "KZ3_MOUSE_YAW"},     {"RC_MOUSE_SCRIPT", "KZ3_MOUSE_SCRIPT"},
-    {"RC_MOUSE_FEED", "KZ3_MOUSE_FEED"},   {"RC_MOUSE_LOG", "KZ3_MOUSE_LOG"},
-    {"RC_CURSOR_HIDE", "KZ3_CURSOR_HIDE"}, {"RC_KEYBINDS", "KZ3_KEYBINDS"},
-};
+std::string rc_settings_shared_path(const char* name)
+{
+#ifdef _WIN32
+    return s_shared_dir + "\\" + name;
+#else
+    return s_shared_dir + "/" + name;
+#endif
+}
 
 void rc_settings_init(const char* game_id)
 {
     const char* game = rc_settings_game_folder(game_id);
-    for (const auto& a : rc_alias)
+    for (const auto& a : rc_settings_env_alias)   /* rc_settings.h */
         if (const char* v = rc_env(a[0])) rc_set_env(a[1], v);
 
     /* 1. the folder */
-    char d[2048];
+    char d[2048], sd[2048];
 #ifdef _WIN32
     std::string exe_dir, root_dir, appdata;
     {
@@ -142,30 +144,62 @@ void rc_settings_init(const char* game_id)
     if (rc_settings_dir(d, sizeof d, exe_dir.c_str(), ep, root_dir.c_str(), rp, appdata.c_str(), PS3RECOMP_PRODUCT_NAME,
                         game_id, '\\') < 0)
         snprintf(d, sizeof d, "%s", game);
+    if (rc_settings_shared_dir(sd, sizeof sd, exe_dir.c_str(), ep, root_dir.c_str(), rp, appdata.c_str(),
+                               PS3RECOMP_PRODUCT_NAME, '\\') < 0)
+        snprintf(sd, sizeof sd, "%s", RC_SETTINGS_SHARED_FOLDER);
     if (!ep && !rp && !appdata.empty()) rc_mkdir(appdata + "\\" + PS3RECOMP_PRODUCT_NAME);
 #else
     if (rc_settings_dir(d, sizeof d, nullptr, 0, nullptr, 0, nullptr, PS3RECOMP_PRODUCT_NAME, game_id, '/') < 0)
         snprintf(d, sizeof d, "%s", game);
+    if (rc_settings_shared_dir(sd, sizeof sd, nullptr, 0, nullptr, 0, nullptr, PS3RECOMP_PRODUCT_NAME, '/') < 0)
+        snprintf(sd, sizeof sd, "%s", RC_SETTINGS_SHARED_FOLDER);
 #endif
     s_dir = d;
+    s_shared_dir = sd;   /* read only: the launcher's engine writes it */
     rc_mkdir(s_dir);
-    printf("[settings] per-game folder (%s): %s\n", game, s_dir.c_str());
+    printf("[settings] per-game folder (%s): %s; shared folder: %s\n", game, s_dir.c_str(), s_shared_dir.c_str());
 
-    /* 2. keybinds.ini: its place (RC_KEYBINDS / KZ3_KEYBINDS win) and the game's default table */
-    if (!rc_env("KZ3_KEYBINDS")) rc_set_env("KZ3_KEYBINDS", rc_settings_path("keybinds.ini").c_str());
+    /* 2. keybinds.ini: its place (RC_KEYBINDS / KZ3_KEYBINDS win) and the game's default table, with the shared file's
+     * values (shared inputs and [mouse] only, rc_keybinds.h) as its defaults: the game's own file is read over them. */
+    const bool kb_env = rc_env("KZ3_KEYBINDS") != nullptr;
+    if (!kb_env) rc_set_env("KZ3_KEYBINDS", rc_settings_path("keybinds.ini").c_str());
+    {
+        char* st = rc_read_file(rc_settings_shared_path("keybinds.ini"));
+        rc_kb_shared_apply(rc_kb_profile_for(game_id), st, &s_kbs);
+        printf("[settings] %s: %s (%d key line(s), %d mouse line(s), %d problem part(s) ignored)\n",
+               rc_settings_shared_path("keybinds.ini").c_str(), st ? "read" : "not found, the game's defaults",
+               s_kbs.n_keys, s_kbs.n_mouse, s_kbs.n_bad);
+        free(st);
+    }
+    const std::string kp = rc_settings_path("keybinds.ini");
+    char* kb_before = kb_env ? nullptr : rc_read_file(kp);
+    const bool kb_new = !kb_env && !kb_before;
+    free(kb_before);
 #ifdef _WIN32
-    cellPad_keybinds_profile(rc_kb_profile_for(game_id));
+    cellPad_keybinds_profile(&s_kbs.prof);
     PadKbMouse m;
     const bool have_m = cellPad_keybinds_mouse(&m) != 0;   /* reads (or writes) keybinds.ini now */
 #else
-    PadKbMouse m = rc_kb_profile_for(game_id)->mouse;
+    PadKbMouse m = s_kbs.prof.mouse;
     const bool have_m = true;
 #endif
+    if (kb_new) {   /* written just now with every default: leave its shared lines to the shared file */
+        if (char* t = rc_read_file(kp)) {
+            const size_t cap = strlen(t) * 2 + 4096;
+            char* o = (char*)malloc(cap);
+            const int n = o ? rc_kb_mark_shared(t, o, cap) : -1;
+            const bool ok = n > 0 && rc_write_file(kp, o, (size_t)n);
+            printf("[settings] %s: shared lines marked \"# (shared)\" (they follow the shared file): %s\n", kp.c_str(),
+                   ok ? "ok" : "NOT written");
+            free(o);
+            free(t);
+        }
+    }
     /* 3. [mouse] -> the runtime's switches: built-in default < keybinds.ini < environment. Mouse look is always set
      * explicitly: the runtime's own default is on (KZ3), ours is the profile's (off until the hand test). */
     if (have_m) {
         char look[4], sens[32], zoom[32], inv[4];
-        const PadKbMouse& def = rc_kb_profile_for(game_id)->mouse;
+        const PadKbMouse& def = s_kbs.prof.mouse;
         snprintf(look, sizeof look, "%d", m.look >= 0 ? m.look : def.look > 0);
         snprintf(sens, sizeof sens, "%g", (double)(m.sens > 0 ? m.sens : def.sens));
         snprintf(zoom, sizeof zoom, "%g", (double)(m.zoom > 0 ? m.zoom : def.zoom));
@@ -176,7 +210,7 @@ void rc_settings_init(const char* game_id)
             int from;
             const char* v = rc_setting_pick(e[1], e[1], rc_env(e[0]), &from);
             if (from != RC_SET_ENV) rc_set_env(e[0], v);
-            printf("[settings] %s = %s (%s)\n", e[0], v, from == RC_SET_ENV ? "environment" : "keybinds.ini [mouse] or default");
+            printf("[settings] %s = %s (%s)\n", e[0], v, from == RC_SET_ENV ? "environment" : "keybinds.ini [mouse], the shared file or default");
         }
     }
 

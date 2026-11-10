@@ -1,0 +1,6 @@
+// Resources of every R&C game exe (port/rc/CMakeLists.txt, all RC_GAME values): the application manifest only
+// (window resize stage 1a, 2026-11-09). PerMonitorV2 DPI awareness, so Windows at 125-200 % does not bitmap-scale
+// (blur) the window and client sizes are physical pixels; pattern from the Killzone 3 port's port/kz3/app.rc.
+// No icon or version block yet. Only the port is named; no game publisher or developer.
+
+1 24 "app.manifest"

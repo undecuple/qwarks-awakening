@@ -30,6 +30,7 @@
 void rc_settings_init(const char* game_id);   /* rc_settings.cpp: the per-game settings folder */
 void rc_trace_read_start(void);              /* rc_trace_read.cpp: RC_TRACE_READ=<ea>,<len> access tracer (diagnostic) */
 std::string rc_settings_path(const char* name);
+std::string rc_settings_shared_path(const char* name);   /* <data folder>/shared/<name> (launcher "All games") */
 extern "C" void edat_set_cache_dir(const char* dir);   /* libs/filesystem/edat.c, patch 5002 */
 
 #ifdef _WIN32
@@ -190,8 +191,10 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location, uint32_t offs
  * toggles windowed and the last fullscreen-type mode. The choice is kept in display.ini in the game's own settings
  * folder (rc_settings.h; per game since 2026-11-03, before that beside one shared keybinds.ini) ([display] mode/scaling/filter), read here before the window opens and written by the window's thread when the mode
  * changes. KZ3_DISPLAY / KZ3_DISPLAY_SCALING / KZ3_DISPLAY_FILTER (names from the patch) override it for one run.
- * Same code as KZ3's port/kz3/main.cpp display block. */
+ * Same code as KZ3's port/kz3/main.cpp display block. Window resize stage 1a (2026-11-09): display.ini is
+ * read-modify-write, the window placement (2126) is restored and saved, R&C display defaults (rc_display_ini.h). */
 #include "rsx_display_mode.h"
+#include "rc_display_ini.h"
 #ifdef _WIN32
 static bool rc_display_ini(wchar_t* out, size_t n)   /* <per-game folder>\display.ini (rc_settings.cpp) */
 {
@@ -201,41 +204,143 @@ static bool rc_display_ini(wchar_t* out, size_t n)   /* <per-game folder>\displa
 extern "C" void rsx_display_configure(int saved_mode, int saved_scaling, int saved_filter, int saved_vsync,
                                       void (*save)(int mode, int scaling, int filter, int vsync));   /* rsx_null_backend.c */
 
+/* KZ3 patch 2126 (carried): the window remembered in display.ini (rsx_window_place.h). The runtime restores it at
+ * creation (rsx_wp_resolve: the saved monitor when it is still there with the same rectangle, else the primary one,
+ * centred; always clamped into that monitor's work area, so an off-screen position never comes back) and calls
+ * rc_display_save at every move/resize end, maximize change and close. KZ3_WINDOW_SIZE / RC_WINDOW_SIZE or
+ * KZ3_DISPLAY / RC_DISPLAY rule one run: then the placement is neither restored nor saved. */
+extern "C" void rsx_display_configure_window(const rsx_wp* saved, int maximize_borderless, int (*close_ask)(int src),
+                                             void (*focus)(int focused, int minimized));   /* rsx_null_backend.c */
+extern "C" int  rsx_display_get_window(rsx_wp* out);
+extern "C" int  rsx_display_get_maximize(void);
+extern "C" void rsx_live_draw_set_hud169(int on);   /* rsx_live_draw.c (KZ3 patch 2113) */
+static rc_dini_read_t s_dini;                      /* what display.ini held at start (the shared file's keys filled in) */
+static rc_dini_shared_t s_dini_shared;             /* what <data folder>/shared/display.ini held at start */
+static SRWLOCK s_dini_lock = SRWLOCK_INIT;
+
+static char* rc_display_read_text(const wchar_t* p, size_t* len)   /* the whole file, NUL-terminated; NULL = none */
+{
+    FILE* f = _wfopen(p, L"rb");
+    if (!f) return nullptr;
+    char* t = nullptr;
+    size_t n = 0, cap = 0;
+    for (;;) {
+        if (cap - n < 4096) {
+            if (cap >= (1u << 20)) break;   /* a display.ini over 1 MiB is not ours: read no further */
+            const size_t nc = cap ? cap * 2 : 8192;
+            char* g = (char*)realloc(t, nc);
+            if (!g) break;
+            t = g; cap = nc;
+        }
+        const size_t k = fread(t + n, 1, cap - n - 1, f);
+        n += k;
+        if (!k) break;
+    }
+    fclose(f);
+    if (t) t[n] = 0;
+    if (len) *len = n;
+    return t;
+}
+
+/* Read-modify-write (rc_dini_merge): mode/scaling/filter/vsync, maximize and the window_* keys are replaced in place,
+ * every other line is kept. Written to display.ini.tmp, then moved over the file. Called on the window's thread. */
 static void rc_display_save(int mode, int scaling, int filter, int vsync)   /* vsync: KZ3 patch 2103 */
 {
-    wchar_t p[1100];
-    char t[512];
-    const int n = rsx_dm_ini_write(t, sizeof t, mode, scaling, filter, vsync);
+    wchar_t p[1100], tp[1110];
     if (!rc_display_ini(p, 1100)) return;
-    FILE* f = _wfopen(p, L"wb");
-    const bool ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
-    if (f) fclose(f);
-    printf("[display] %ls: mode %s, scaling %s, filter %s, vsync %s %s\n", p, rsx_dm_name(mode),
-           rsx_dm_scaling_name(scaling), rsx_dm_filter_name(filter), rsx_dm_vsync_name(vsync), ok ? "saved" : "NOT saved");
+    AcquireSRWLockExclusive(&s_dini_lock);
+    rsx_wp w;
+    if (!rsx_display_get_window(&w)) {
+        memset(&w, 0, sizeof w);
+        if (s_dini.wp.valid && !s_dini.from_size) w = s_dini.wp;
+    }
+    const int mx = s_dini.maximize >= 0 ? s_dini.maximize : rsx_display_get_maximize();
+    rc_dini_kv kv[16];
+    int nkv = rc_dini_owned(kv, mode, scaling, filter, vsync, mx, &w);
+    size_t ol = 0;
+    char* old = rc_display_read_text(p, &ol);
+    nkv = rc_dini_drop_inherited(kv, nkv, old, &s_dini_shared);   /* an unchanged shared value stays shared */
+    const size_t cap = ol + 4096;
+    char* t = (char*)malloc(cap);
+    const int n = t ? rc_dini_merge(old, kv, nkv, t, cap) : -1;
+    bool ok = false;
+    if (n >= 0) {
+        swprintf(tp, 1110, L"%ls.tmp", p);
+        FILE* f = _wfopen(tp, L"wb");
+        ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
+        if (f) ok = (fclose(f) == 0) && ok;
+        ok = ok && MoveFileExW(tp, p, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (!ok) _wremove(tp);
+    }
+    free(t);
+    free(old);
+    ReleaseSRWLockExclusive(&s_dini_lock);
+    printf("[display] %ls: mode %s, scaling %s, filter %s, vsync %s, window %s %s\n", p, rsx_dm_name(mode),
+           rsx_dm_scaling_name(scaling), rsx_dm_filter_name(filter), rsx_dm_vsync_name(vsync),
+           w.valid ? "placement" : "(none)", ok ? "saved (other keys kept)" : "NOT saved");
     fflush(stdout);
 }
 
 static void rc_display_load(void)
 {
     wchar_t p[1100];
-    char t[2048];
-    int mode = -1, scaling = -1, filter = -1, vsync = -1;
-    if (rc_display_ini(p, 1100)) {
-        FILE* f = _wfopen(p, L"rb");
-        if (f) {
-            const size_t n = fread(t, 1, sizeof t - 1, f);
-            fclose(f);
-            t[n] = 0;
-            mode = rsx_dm_ini_parse(t);
-            scaling = rsx_dm_ini_scaling(t);
-            filter = rsx_dm_ini_filter(t);
-            vsync = rsx_dm_ini_vsync(t);
-            printf("[display] %ls: mode %s, scaling %s, filter %s, vsync %s\n", p, mode >= 0 ? rsx_dm_name(mode) : "(none)",
-                   scaling >= 0 ? rsx_dm_scaling_name(scaling) : "(none)", filter >= 0 ? rsx_dm_filter_name(filter) : "(none)",
-                   vsync >= 0 ? rsx_dm_vsync_name(vsync) : "(none)");
+    memset(&s_dini, 0, sizeof s_dini);
+    s_dini.mode = s_dini.scaling = s_dini.filter = s_dini.vsync = s_dini.maximize = s_dini.hud169 = -1;
+    rc_dini_read_shared(nullptr, &s_dini_shared);
+    char* shared = nullptr;
+    {
+        const std::string sp = rc_settings_shared_path("display.ini");
+        wchar_t sw[1100];
+        if (MultiByteToWideChar(CP_UTF8, 0, sp.c_str(), -1, sw, 1100) > 0 && (shared = rc_display_read_text(sw, nullptr))) {
+            rc_dini_read_shared(shared, &s_dini_shared);
+            printf("[display] %ls (shared): mode %s, scaling %s, filter %s, vsync %s, size %dx%d\n", sw,
+                   s_dini_shared.mode >= 0 ? rsx_dm_name(s_dini_shared.mode) : "(none)",
+                   s_dini_shared.scaling >= 0 ? rsx_dm_scaling_name(s_dini_shared.scaling) : "(none)",
+                   s_dini_shared.filter >= 0 ? rsx_dm_filter_name(s_dini_shared.filter) : "(none)",
+                   s_dini_shared.vsync >= 0 ? rsx_dm_vsync_name(s_dini_shared.vsync) : "(none)", s_dini_shared.w, s_dini_shared.h);
         }
     }
-    rsx_display_configure(mode, scaling, filter, vsync, rc_display_save);
+    if (rc_display_ini(p, 1100)) {
+        char* t = rc_display_read_text(p, nullptr);
+        if (t || shared) {
+            const int from = rc_dini_read_layered(t, shared, &s_dini, &s_dini_shared);
+            free(t);
+            if (from) printf("[display] from the shared file:%s%s%s%s%s%s%s\n", from & RC_DINI_SH_MODE ? " mode" : "",
+                             from & RC_DINI_SH_SIZE ? " size" : "", from & RC_DINI_SH_SCALING ? " scaling" : "",
+                             from & RC_DINI_SH_FILTER ? " filter" : "", from & RC_DINI_SH_VSYNC ? " vsync" : "",
+                             from & RC_DINI_SH_UPSCALE ? " upscale" : "", from & RC_DINI_SH_SHARPNESS ? " upscale_sharpness" : "");
+            printf("[display] %ls: mode %s, scaling %s, filter %s, vsync %s, maximize %s, hud_169 %s, window %s\n", p,
+                   s_dini.mode >= 0 ? rsx_dm_name(s_dini.mode) : "(none)",
+                   s_dini.scaling >= 0 ? rsx_dm_scaling_name(s_dini.scaling) : "(none)",
+                   s_dini.filter >= 0 ? rsx_dm_filter_name(s_dini.filter) : "(none)",
+                   s_dini.vsync >= 0 ? rsx_dm_vsync_name(s_dini.vsync) : "(none)",
+                   s_dini.maximize < 0 ? "(none)" : s_dini.maximize ? "borderless" : "window",
+                   s_dini.hud169 < 0 ? "(none)" : s_dini.hud169 ? "on" : "off",
+                   !s_dini.wp.valid ? "(none)" : s_dini.from_size ? "size = (first start)" : "saved");
+        }
+    }
+    free(shared);
+    /* ENHANCEMENT (R&C display defaults, rc_display_ini.h): Fit and no 2D squeeze when display.ini has no key. */
+    const int scaling = rc_dini_scaling_or_default(s_dini.scaling);
+    const int h169 = rc_dini_hud169_or_default(s_dini.hud169);
+    rsx_live_draw_set_hud169(h169);   /* KZ3_HUD_169 / RC_HUD_169 win for one run (rsx_live_draw.c) */
+    if (s_dini.from_size)
+        printf("[window] display.ini size = %dx%d: the first start's client size (centred, shrunk to the work area)\n",
+               s_dini.wp.w, s_dini.wp.h);
+    printf("[display] scaling %s%s, 2D layer kept 16:9 %s%s\n", rsx_dm_scaling_name(scaling),
+           s_dini.scaling < 0 ? " (R&C default)" : "", h169 ? "on" : "off", s_dini.hud169 < 0 ? " (R&C default)" : "");
+    {   /* window stage 1d (2026-11-09): display.ini upscale / upscale_sharpness -> KZ3 2145's environment switches */
+        char kv[2][48];
+        const char* eu = getenv("RSX_UPSCALE");
+        const char* es = getenv("RSX_UPSCALE_SHARPNESS");
+        const int n = rc_dini_upscale_env(&s_dini, eu && *eu, es && *es, kv);
+        for (int i = 0; i < n; i++) _putenv(kv[i]);
+        if (s_dini.upscale >= 0 || (eu && *eu))
+            printf("[display] upscale %s%s\n", eu && *eu ? eu : s_dini.upscale == RC_DINI_UPSCALE_FSR1 ? "fsr1" : "none",
+                   eu && *eu ? " (RSX_UPSCALE wins for this run)" : " (display.ini)");
+    }
+    rsx_display_configure_window(&s_dini.wp, s_dini.maximize, nullptr, nullptr);
+    rsx_display_configure(s_dini.mode, scaling, s_dini.filter, s_dini.vsync, rc_display_save);
 }
 #endif
 
@@ -409,75 +514,201 @@ static void present_guest_frame(void)
     InterlockedIncrement(&g_frames_presented);
 }
 
+/* Frame-clock state, shared by the frame loop and the modal-loop tick below (both on the frame thread). */
+static int       s_fc_rsx_ok;
+static unsigned  s_fc_last_flip;
+static ULONGLONG s_fc_next_tick;
+
+/* vblank/flip ticks off real time, presenting a pending flip before each drain. */
+static void rc_frame_ticks(ULONGLONG now)
+{
+    int fired = 0;
+    while ((long long)(now - s_fc_next_tick) >= 0 && fired < 240) {
+        cellGcmTickVBlank();
+        cellGcmTickFlip();
+        /* Present a pending flip BEFORE draining any further. The flip
+         * fires at a get==put frame boundary on the guest thread, so the
+         * batch held right now is exactly the completed frame; presenting
+         * after the drain races the guest's next-frame writes and shows a
+         * mixed one. */
+        if (s_fc_rsx_ok && cellGcm_take_flip_pending()) {
+            present_guest_frame();
+            s_fc_last_flip = cellGcm_flip_request_count();
+        }
+        /* Drain the FIFO every tick. This is what writes the RSX sync-fence
+         * labels the game's per-frame logic blocks on, so it has to keep
+         * advancing at 60 Hz even while present() throttles. */
+        if (s_fc_rsx_ok) cellGcm_rsx_process_fifo();
+        s_fc_next_tick += 16;             /* ~60 Hz */
+        fired++;
+    }
+    if (fired >= 240) s_fc_next_tick = now;   /* fell too far behind -- resync */
+}
+
+/* Drain at the outer cadence too, not only on the 16 ms tick: titles
+ * fence every render pass on a label the drain writes, and one wave of
+ * those at 16 ms apiece paces the guest into single-figure frame rates.
+ * The real RSX writes them in microseconds. */
+static void rc_frame_drain(void)
+{
+    if (cellGcm_take_flip_pending()) {
+        present_guest_frame();
+        s_fc_last_flip = cellGcm_flip_request_count();
+    }
+    cellGcm_rsx_process_fifo();
+}
+
+/* Present on a guest flip. A present on a fixed clock can catch the
+ * drain mid-frame and flash a partial one. Before the first flip
+ * present freely, so the window is not blank during boot. */
+static void rc_frame_present_on_flip(void)
+{
+    unsigned fc = cellGcm_flip_request_count();
+    if (fc != s_fc_last_flip) {
+        /* Consume the pending flip too, or the next pass presents the same
+         * flip again (3,904 presents for 2,483 flips). */
+        cellGcm_take_flip_pending();
+        present_guest_frame();
+        s_fc_last_flip = fc;
+    } else if (fc == 0) {
+        rc_rsx_present();
+    }
+}
+
+/* Window stage 1c (rc_modal_tick.h has the cause and the rules): while DefWindowProc's modal move/size or menu loop
+ * holds the frame thread inside the pump, the loop's own dispatch runs the frame clock. Not an ENHANCEMENT: on the PS3
+ * nothing stops the vblank interrupt, so this keeps the console's behaviour on a host whose window can be dragged. */
+#include "rc_modal_tick.h"
+#define RC_WM_MODAL_TICK (WM_APP + 0x1C0)
+static rc_modal  s_modal;
+static SRWLOCK   s_modal_lock = SRWLOCK_INIT;
+static HANDLE    s_modal_evt;
+static HWND      s_modal_hwnd;
+static WNDPROC   s_modal_prev;
+static unsigned  s_modal_flips0;
+static int       s_modal_in_step;
+
+static unsigned long long rc_ms_now(void)
+{
+    LARGE_INTEGER qf, qc;
+    QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qc);
+    return (unsigned long long)((double)qc.QuadPart * 1000.0 / (double)qf.QuadPart);
+}
+
+/* Posts one tick every ~4 ms while a modal loop runs, never a second one before the first was handled. */
+static DWORD WINAPI rc_modal_pacer(LPVOID)
+{
+    rc_log_set_thread_label("modal");
+    for (;;) {
+        WaitForSingleObject(s_modal_evt, INFINITE);
+        for (;;) {
+            AcquireSRWLockExclusive(&s_modal_lock);
+            const int in = s_modal.depth > 0, post = rc_modal_want_post(&s_modal);
+            ReleaseSRWLockExclusive(&s_modal_lock);
+            if (!in) break;
+            if (post && !PostMessageA(s_modal_hwnd, RC_WM_MODAL_TICK, 0, 0)) {
+                AcquireSRWLockExclusive(&s_modal_lock);
+                s_modal.posted = 0;
+                ReleaseSRWLockExclusive(&s_modal_lock);
+            }
+            Sleep(4);
+        }
+    }
+    return 0;
+}
+
+static LRESULT CALLBACK rc_modal_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == RC_WM_MODAL_TICK) {
+        AcquireSRWLockExclusive(&s_modal_lock);
+        const int run = rc_modal_take_tick(&s_modal);
+        ReleaseSRWLockExclusive(&s_modal_lock);
+        if (run && !s_modal_in_step) {   /* the step never pumps; the guard only covers a nested loop we do not expect */
+            s_modal_in_step = 1;
+            rc_frame_ticks(GetTickCount64());
+            if (s_fc_rsx_ok) { rc_frame_drain(); rc_frame_present_on_flip(); }
+            s_modal_in_step = 0;
+        }
+        return 0;
+    }
+    if (msg == WM_SYSCOMMAND) {   /* the commands that start a modal loop, for the log (a drag test reads them) */
+        const unsigned sc = (unsigned)(wp & 0xFFF0);
+        if (sc == SC_MOVE || sc == SC_SIZE || sc == SC_KEYMENU || sc == SC_MOUSEMENU) {
+            printf("[window] WM_SYSCOMMAND %s (0x%04x)\n", sc == SC_MOVE ? "SC_MOVE" : sc == SC_SIZE ? "SC_SIZE" :
+                   sc == SC_KEYMENU ? "SC_KEYMENU" : "SC_MOUSEMENU", (unsigned)wp);
+            fflush(stdout);
+        }
+    }
+    if (msg == WM_ENTERSIZEMOVE || msg == WM_ENTERMENULOOP) {
+        AcquireSRWLockExclusive(&s_modal_lock);
+        const int first = rc_modal_enter(&s_modal, rc_ms_now());
+        ReleaseSRWLockExclusive(&s_modal_lock);
+        if (first) {
+            s_modal_flips0 = cellGcm_flip_request_count();
+            printf("[window] modal %s loop entered at flip %u: the frame clock runs from the window's message loop\n",
+                   msg == WM_ENTERSIZEMOVE ? "move/size" : "menu", s_modal_flips0);
+            fflush(stdout);
+            SetEvent(s_modal_evt);
+        }
+    } else if (msg == WM_EXITSIZEMOVE || msg == WM_EXITMENULOOP) {
+        AcquireSRWLockExclusive(&s_modal_lock);
+        const int last = rc_modal_exit(&s_modal);
+        const unsigned ticks = s_modal.ticks;
+        const unsigned long long t0 = s_modal.t0;
+        ReleaseSRWLockExclusive(&s_modal_lock);
+        if (last) {
+            const unsigned long long ms = rc_ms_now() - t0;
+            const unsigned flips = cellGcm_flip_request_count() - s_modal_flips0;
+            printf("[window] modal loop left after %llu ms: %u clock steps, %u guest flips inside (%.1f/s)\n", ms, ticks,
+                   flips, ms ? flips * 1000.0 / (double)ms : 0.0);
+            fflush(stdout);
+        }
+    }
+    return CallWindowProcA(s_modal_prev, hwnd, msg, wp, lp);
+}
+
+/* Subclass the game window (the runtime's null backend window, live-draw path) on the frame thread that created it. */
+static void rc_modal_install(HWND hwnd)
+{
+    if (!hwnd) return;
+    s_modal_evt = CreateEventA(NULL, FALSE, FALSE, NULL);
+    s_modal_hwnd = hwnd;
+    s_modal_prev = (WNDPROC)SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)rc_modal_wndproc);
+    if (!s_modal_evt || !s_modal_prev || !CreateThread(NULL, 64u * 1024, rc_modal_pacer, NULL, 0, NULL)) {
+        if (s_modal_prev) SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)s_modal_prev);
+        fprintf(stderr, "[window] modal-loop clock not installed (error %lu): a drag stops the game until released\n",
+                (unsigned long)GetLastError());
+        return;
+    }
+    printf("[window] modal-loop clock on: dragging or resizing the window keeps the game running\n");
+}
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     rc_log_set_thread_label("frame");
     const char* title = getenv("PS3_TITLE");
     if (!title || !*title) title = "ps3recomp";
 
-    int rsx_ok = (rc_rsx_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
+    s_fc_rsx_ok = (rc_rsx_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
-            rsx_ok ? "OK -- window open" : "FAILED");
+            s_fc_rsx_ok ? "OK -- window open" : "FAILED");
+    if (s_fc_rsx_ok && s_rsx_live) rc_modal_install((HWND)rsx_null_backend_get_hwnd());
 
-    unsigned  last_flip = 0;
-    ULONGLONG next_tick = GetTickCount64();
+    s_fc_next_tick = GetTickCount64();
 
     for (;;) {
         Sleep(4);
         ULONGLONG now = GetTickCount64();
         rc_mouse_cursor_tick();
-
-        int fired = 0;
-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
-            cellGcmTickVBlank();
-            cellGcmTickFlip();
-            /* Present a pending flip BEFORE draining any further. The flip
-             * fires at a get==put frame boundary on the guest thread, so the
-             * batch held right now is exactly the completed frame; presenting
-             * after the drain races the guest's next-frame writes and shows a
-             * mixed one. */
-            if (rsx_ok && cellGcm_take_flip_pending()) {
-                present_guest_frame();
-                last_flip = cellGcm_flip_request_count();
-            }
-            /* Drain the FIFO every tick. This is what writes the RSX sync-fence
-             * labels the game's per-frame logic blocks on, so it has to keep
-             * advancing at 60 Hz even while present() throttles. */
-            if (rsx_ok) cellGcm_rsx_process_fifo();
-            next_tick += 16;             /* ~60 Hz */
-            fired++;
-        }
-        if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
-
-        /* Drain at the outer cadence too, not only on the 16 ms tick: titles
-         * fence every render pass on a label the drain writes, and one wave of
-         * those at 16 ms apiece paces the guest into single-figure frame rates.
-         * The real RSX writes them in microseconds. */
-        if (rsx_ok) {
-            if (cellGcm_take_flip_pending()) {
-                present_guest_frame();
-                last_flip = cellGcm_flip_request_count();
-            }
-            cellGcm_rsx_process_fifo();
-
+        rc_frame_ticks(now);
+        if (s_fc_rsx_ok) {
+            rc_frame_drain();
             if (rc_rsx_pump() != 0 || g_rc_quit_request) {
                 rc_exit_on_window_close();   /* does not return */
-                rsx_ok = 0;
+                s_fc_rsx_ok = 0;
                 continue;
             }
-            /* Present on a guest flip. A present on a fixed clock can catch the
-             * drain mid-frame and flash a partial one. Before the first flip
-             * present freely, so the window is not blank during boot. */
-            unsigned fc = cellGcm_flip_request_count();
-            if (fc != last_flip) {
-                /* Consume the pending flip too, or the next pass presents the same
-                 * flip again (3,904 presents for 2,483 flips). */
-                cellGcm_take_flip_pending();
-                present_guest_frame();
-                last_flip = fc;
-            } else if (fc == 0) {
-                rc_rsx_present();
-            }
+            rc_frame_present_on_flip();
         }
     }
     return 0;

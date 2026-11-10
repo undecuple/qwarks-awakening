@@ -14,7 +14,7 @@ DIR="${1:?usage: build-rc.sh BUILD_DIR [cmake --build args]}"; shift
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GAME="${RC_TITLE:-tods}"   # RC_GAME is the sandbox's game-disc path, not a title
 EXE="$GAME"   # the exe's name: the title, except update lifts (acit120 -> acit.exe, nexus101 -> nexus.exe)
-case "$GAME" in acit120) EXE=acit ;; nexus101) EXE=nexus ;; esac
+case "$GAME" in acit120) EXE=acit ;; nexus101) EXE=nexus ;; collection_rc[123]) EXE="${GAME#collection_}" ;; esac   # the Collection's games: rc1.exe..rc3.exe (build_profiles.json)
 OUT="${RC_OUT:-work}"; case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 PT="$OUT/ps3recomp-patched"
 MAINC="$ROOT"; [[ -f "$ROOT/.rc-main" ]] && MAINC="$(cat "$ROOT/.rc-main")"

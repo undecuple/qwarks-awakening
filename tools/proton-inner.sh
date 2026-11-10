@@ -31,10 +31,24 @@ cd "$RUN/app" || exit 1
 # cut at "Ratchet"). In a batch file a quoted '&' is literal. A '%' in an argument would still expand (none here).
 # EXE is a bare name in app/ (proton-test.sh passes its basename), so it needs no quotes.
 ARGQ=""; for a in "$@"; do ARGQ+=" \"$a\""; done
-printf '@echo off\r\n%s%s > app_stdout.txt 2>&1\r\nset RC_EXIT=%%errorlevel%%\r\necho [exit code %%RC_EXIT%%]>> app_stdout.txt\r\nexit /b %%RC_EXIT%%\r\n' \
-  "$EXE" "$ARGQ" > run.bat
+# RC_WINE_UNMANAGED=1 (2026-11-09, window stage 1c): X11 driver Managed=N in this run's prefix before the program
+# starts. Bare Xvfb has no window manager, so a managed Wine window is only its client area with nobody drawing the
+# frame; unmanaged, Wine draws the title bar and borders itself, and a mouse drag on them runs the real modal
+# move/size loop (driven by an RC_XDO script). Changes window decoration only; never set for ordinary runs.
+PRE=""
+[[ "${RC_WINE_UNMANAGED:-0}" == 1 ]] && PRE='reg add "HKCU\Software\Wine\X11 Driver" /v Managed /t REG_SZ /d N /f >nul 2>&1'$'\r\n'
+printf '@echo off\r\n%s%s%s > app_stdout.txt 2>&1\r\nset RC_EXIT=%%errorlevel%%\r\necho [exit code %%RC_EXIT%%]>> app_stdout.txt\r\nexit /b %%RC_EXIT%%\r\n' \
+  "$PRE" "$EXE" "$ARGQ" > run.bat
 steam-run "$PROTON_DIR/proton" run cmd /c run.bat >"$RUN/proton.log" 2>&1 &
 APP=$!
+# RC_XDO=SCRIPT (2026-11-09, window stage 1c): a bash script run alongside the program on the same display (Xvfb or
+# the real one), for X input the Win32 side cannot fake from inside, e.g. an xdotool script (a mouse drag on the title bar
+# or border, or Alt+Space -> Move / Size: Wine's own modal move/size loop). Its output goes to <run>/xdo.log; it is killed with the run.
+XDO=""
+if [[ -n "${RC_XDO:-}" ]]; then
+  bash "$RC_XDO" > "$RUN/xdo.log" 2>&1 &
+  XDO=$!
+fi
 # RC_VIDEO=START:SECONDS: snapshot the hidden display from START s
 # for SECONDS s as fast as import manages (~5-10/s), then tools/make_clip.py builds <shot>.mp4 at wall-clock speed
 # with the game's own fps (from its [flip] log, GCM_FLIPCOUNT=1) burned in. Xvfb only, never the user's display.
@@ -61,6 +75,7 @@ else
   sleep "$SECS"
 fi
 [[ -n "$VID" ]] && { kill "$VID" 2>/dev/null; wait "$VID" 2>/dev/null; }
+[[ -n "$XDO" ]] && { kill "$XDO" 2>/dev/null; wait "$XDO" 2>/dev/null; }
 # Alive = the cmd wrapper has not written its "[exit code N]" line yet. The steam-run/proton launcher PID is not
 # a reliable signal: it can return while the game keeps running, which used to report a live run as "status 255".
 ALIVE=1; grep -aq '\[exit code' "$RUN/app/app_stdout.txt" 2>/dev/null && ALIVE=0
