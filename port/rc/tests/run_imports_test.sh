@@ -16,8 +16,12 @@ tests=("$@"); [[ ${#tests[@]} -gt 0 ]] || tests=(test_savedata_list_auto.c test_
        test_game_exit_broken.c test_avc2_state.c test_gcm_func15_log.c)
 for t in "${tests[@]}"; do
   echo "== $t"
-  lenient=""   # a test marked RC_LINK_LENIENT unity-builds a source with many unrelated references (cellSpurs.c): they are never called
-  if grep -q RC_LINK_LENIENT "$here/$t"; then lenient="-Wl,--unresolved-symbols=ignore-all"; fi
-  "$cc" -std=gnu11 -O1 -w -I"$tree/include" -I"$tree" -I"$tree/runtime/spu" ${RC_TEST_CFLAGS:-} $lenient -o "$tmp/${t%.c}" "$here/$t"
+  extra=()
+  if [[ "$t" == test_spurs_global_exception.c ]]; then
+    # Keep constructors and every reachable test path; unrelated unity-build
+    # functions are outside this test's coverage. Never suppress undefineds.
+    extra=(-ffunction-sections -fdata-sections -Wl,--gc-sections -pthread "$here/rc_spurs_host_support.c")
+  fi
+  "$cc" -std=gnu11 -O1 -w -I"$tree/include" -I"$tree" -I"$tree/runtime/spu" ${RC_TEST_CFLAGS:-} "${extra[@]}" -o "$tmp/${t%.c}" "$here/$t"
   "$tmp/${t%.c}"
 done

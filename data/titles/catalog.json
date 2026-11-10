@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "port_version": "0.1.0",
+ "port_version": "0.2.1",
  "note": "Numbers, ids and versions only. eboot_sha256 stays empty until decrypted EBOOT hashes are recorded (ASSUMPTION: an EBOOT.elf is then attributed by path).",
  "games": [
   {

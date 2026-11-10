@@ -31,6 +31,7 @@ import re
 import shutil
 import stat
 import tarfile
+import tempfile
 import sys
 import urllib.request
 import zipfile
@@ -177,8 +178,74 @@ def hash_from_list(text, filename):
 
 
 # ---------------------------------------------------------------------------------------------------------- unpack
+class PublicationError(OSError):
+    """Publication failed; preserve_temporary keeps owned extraction recovery data."""
+    def __init__(self, message, preserve_temporary=False):
+        super().__init__(message)
+        self.preserve_temporary = preserve_temporary
+
+
+def new_stage(out):
+    """Own a fresh sibling directory; never remove a pre-existing .partial path."""
+    parent = os.path.dirname(os.path.abspath(out))
+    os.makedirs(parent, exist_ok=True)
+    return tempfile.mkdtemp(prefix="." + os.path.basename(out) + ".partial-", dir=parent)
+
+
+def publish_tree(src, out):
+    """Publish a prepared owned tree, restoring an existing tree on rename failure.
+
+    This is rollback, not concurrent-reader atomic visibility or a writer lock.
+    If restore also fails, keep both the old backup and prepared replacement.
+    """
+    backup_root = backup = None
+    if os.path.lexists(out):
+        if os.path.islink(out) or not os.path.isdir(out):
+            raise OSError("cache tree destination is not a plain directory: " + out)
+        backup_root = tempfile.mkdtemp(prefix="." + os.path.basename(out) + ".backup-",
+                                       dir=os.path.dirname(os.path.abspath(out)))
+        backup = os.path.join(backup_root, "previous")
+        try:
+            os.replace(out, backup)
+        except OSError:
+            os.rmdir(backup_root)  # Still empty; the old tree has not moved.
+            raise
+    try:
+        os.replace(src, out)
+    except OSError as publication:
+        if backup:
+            try:
+                os.replace(backup, out)
+            except OSError as restore:
+                raise PublicationError(
+                    f"cache publication failed ({publication}); previous tree restore also failed ({restore}); "
+                    f"old tree retained at {backup}; prepared replacement retained at {src}", True) from publication
+            os.rmdir(backup_root)
+            raise PublicationError(f"cache publication failed ({publication}); previous tree restored") from publication
+        raise
+    if backup_root:
+        try:
+            shutil.rmtree(backup_root)
+        except OSError as cleanup:
+            raise PublicationError(f"new cache tree published at {out}, but previous-tree backup cleanup failed "
+                                   f"at {backup_root}: {cleanup}") from cleanup
+
+
+def finish_stage(part, src, out):
+    """Only clean staging we created; a failed rollback explicitly retains it."""
+    try:
+        publish_tree(src, out)
+    except PublicationError as error:
+        if error.preserve_temporary:
+            part = None
+        raise
+    finally:
+        if part and os.path.lexists(part):
+            shutil.rmtree(part)
+
+
 def unpack_zip(path, out, strip_top):
-    """Extract into out (which must not exist). Refuses unsafe member names and symlinks; strip_top drops the one
+    """Extract and publish into out. Refuses unsafe member names and symlinks; strip_top drops the one
     top-level folder every member shares (refused when there is not exactly one)."""
     with zipfile.ZipFile(path) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
@@ -198,19 +265,18 @@ def unpack_zip(path, out, strip_top):
             tops = {n.split("/", 1)[0] for n in names}
             if len(tops) != 1 or any("/" not in n for n in names):
                 raise ValueError(f"strip_top: expected one top folder, found {sorted(tops)[:5]}")
-        part = out + ".partial"
-        if os.path.lexists(part):
+        part = new_stage(out)
+        try:
+            for i in infos:
+                rel = i.filename.split("/", 1)[1] if strip_top else i.filename
+                d = os.path.join(part, *rel.split("/"))
+                os.makedirs(os.path.dirname(d), exist_ok=True)
+                with z.open(i) as src, open(d, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 1 << 20)
+        except BaseException:
             shutil.rmtree(part)
-        for i in infos:
-            rel = i.filename.split("/", 1)[1] if strip_top else i.filename
-            d = os.path.join(part, *rel.split("/"))
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            with z.open(i) as src, open(d, "wb") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
-        os.makedirs(part, exist_ok=True)
-    if os.path.lexists(out):
-        shutil.rmtree(out)
-    os.replace(part, out)
+            raise
+    finish_stage(part, part, out)
     return len(infos)
 
 
@@ -230,18 +296,29 @@ def unpack_tar(path, out, strip_top):
         tops = {n.split("/", 1)[0] for n in names}
         if strip_top and (len(tops) != 1 or any("/" not in n for n in names)):
             raise ValueError(f"strip_top: expected one top folder, found {sorted(tops)[:5]}")
-        part = out + ".partial"
-        if os.path.lexists(part):
+        part = new_stage(out)
+        try:
+            t.extractall(part, filter="data")
+        except BaseException:
             shutil.rmtree(part)
-        os.makedirs(part)
-        t.extractall(part, filter="data")
+            raise
     src = os.path.join(part, tops.pop()) if strip_top else part
-    if os.path.lexists(out):
-        shutil.rmtree(out)
-    os.replace(src, out)
-    if os.path.lexists(part):
-        shutil.rmtree(part)
+    finish_stage(part, src, out)
     return len(names)
+
+
+def unpack_file(path, out, name):
+    """The plain-file archive kind uses the same owned publication/rollback."""
+    if not safe_rel(name) or "/" in name:
+        raise ValueError("plain-file archive needs a safe file name")
+    part = new_stage(out)
+    try:
+        shutil.copyfile(path, os.path.join(part, name))
+    except BaseException:
+        shutil.rmtree(part)
+        raise
+    finish_stage(part, part, out)
+    return 1
 
 
 # ---------------------------------------------------------------------------------------------------------- fetch
@@ -316,11 +393,7 @@ def fetch_one(raw, cache, fill, manifest_path, opener=open_url, out=sys.stdout):
         elif e["archive"] == "tar":
             n = unpack_tar(dl, tree, bool(e.get("strip_top")))
         else:
-            if os.path.lexists(tree):
-                shutil.rmtree(tree)
-            os.makedirs(tree)
-            shutil.copyfile(dl, os.path.join(tree, e["file_name"]))
-            n = 1
+            n = unpack_file(dl, tree, e["file_name"])
     except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as ex:
         print(f"FAIL {name}: unpack: {ex}", file=out)
         return False

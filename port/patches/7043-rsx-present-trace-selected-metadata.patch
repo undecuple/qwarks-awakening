@@ -1,0 +1,159 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -100,6 +100,7 @@
+ #define _CRT_SECURE_NO_WARNINGS
+ 
+ #include "rsx_dispatch.h"
++#include "rsx_target_trace.h"
+ #include "rsx_fp_decompiler.h"
+ static unsigned long long g_ld_bind_white = 0, g_ld_bind_real = 0, g_ld_bind_surf = 0;
+ /* Set once PS1 VRAM actually holds a drawn frame (see the PS1_PC heartbeat).
+@@ -12364,17 +12365,39 @@
+     return enabled;
+ }
+ 
+-static void ld_trace_target(const char* event, u32 target, u32 mask)
++static int ld_trace_read_surface(void* state, uint32_t target, rsx_tt_surface* out)
++{
++    (void)state;
++    if (target >= g.n_surfaces) return 0;
++    const surface_t* s = &g.surfaces[target];
++    *out = (rsx_tt_surface){s->location, s->offset, s->pitch,
++                            s->w, s->h, (uint32_t)s->fmt};
++    return 1;
++}
++
++static int ld_trace_read_display(void* state, uint32_t buffer_id, rsx_tt_display* out)
++{
++    (void)state;
++    if (buffer_id >= 8 || !g.display_buffers[buffer_id].valid) return 0;
++    const display_buffer_t* d = &g.display_buffers[buffer_id];
++    *out = (rsx_tt_display){d->location, d->offset, d->pitch,
++                            d->width, d->height};
++    return 1;
++}
++
++static void ld_trace_target(const char* event, u32 target, u32 arg)
+ {
+     if (!ld_target_trace_enabled()) return;
+     rsx_dsp_surface sf;
+     rsx_dsp_get_surface(&g.rsx, &sf);
+-    fprintf(stderr,
+-            "[rsx-target] frame=%u event=%s target=%u loc=%u off=0x%08X "
+-            "fmt=0x%X pitch=%u clip=%u,%u+%ux%u mask=0x%02X\n",
+-            g_ld_frames, event, target, sf.color_location[0], sf.color_offset[0],
+-            sf.color_format, sf.color_pitch[0], sf.clip_x, sf.clip_y,
+-            sf.clip_w, sf.clip_h, mask);
++    const rsx_tt_current current = {
++        sf.color_location[0], sf.color_offset[0], sf.color_pitch[0],
++        sf.color_format, sf.clip_x, sf.clip_y, sf.clip_w, sf.clip_h};
++    rsx_tt_record record;
++    if (rsx_tt_build(1, event, g_ld_frames, target, arg, g.n_surfaces, 8,
++                     &current, ld_trace_read_surface, ld_trace_read_display,
++                     NULL, &record))
++        rsx_tt_print(stderr, &record);
+ }
+ 
+ /* Movie mode: while a host-decoded movie owns the window
+@@ -18903,11 +18926,9 @@
+         g.cb_used, g.vb_used, g.srv_ring_used,
+         presented_surface->last_present_copy_generation);
+ #endif
+-    { static u32 last_present_target = LD_INVALID_SURFACE;
+-      if (target != last_present_target) {
+-          ld_trace_target("present", target, buffer_id);
+-          last_present_target = target;
+-      } }
++    /* Trace every opt-in present so its selected/current metadata joins the
++     * readbacks and draw CSV by live frame, including unchanged target slots. */
++    ld_trace_target("present", target, buffer_id);
+     ID3D12Resource* srcimg = presented_surface->tex;
+     ID3D12Resource* gm_copy = ld_gamma_present(target);   /* patch 2070 */
+     ld_dm_sync_size();                                    /* patch 2095: back buffers at the client size */
+diff --git a/libs/video/rsx_target_trace.h b/libs/video/rsx_target_trace.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_target_trace.h
+@@ -0,0 +1,81 @@
++#ifndef RSX_TARGET_TRACE_H
++#define RSX_TARGET_TRACE_H
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++/* Diagnostic metadata only. Surface readers describe existing resources and
++ * never select, create, transition, fence or present one. */
++typedef struct {
++    uint32_t location, offset, pitch, width, height, dxgi_format;
++} rsx_tt_surface;
++
++typedef struct {
++    uint32_t location, offset, pitch, guest_format;
++    uint32_t clip_x, clip_y, clip_w, clip_h;
++} rsx_tt_current;
++
++typedef struct {
++    uint32_t location, offset, pitch, width, height;
++} rsx_tt_display;
++
++typedef int (*rsx_tt_surface_reader)(void*, uint32_t, rsx_tt_surface*);
++typedef int (*rsx_tt_display_reader)(void*, uint32_t, rsx_tt_display*);
++
++typedef struct {
++    const char* event;
++    uint32_t frame, target, arg;
++    int selected_valid, current_valid, is_present, display_valid;
++    rsx_tt_surface selected;
++    rsx_tt_current current;
++    rsx_tt_display display;
++} rsx_tt_record;
++
++static inline int rsx_tt_build(
++    int enabled, const char* event, uint32_t frame, uint32_t target,
++    uint32_t arg, uint32_t surface_count, uint32_t display_count,
++    const rsx_tt_current* current, rsx_tt_surface_reader read_surface,
++    rsx_tt_display_reader read_display, void* state, rsx_tt_record* record)
++{
++    if (!enabled || !record) return 0;
++    memset(record, 0, sizeof(*record));
++    record->event = event ? event : "unknown";
++    record->frame = frame;
++    record->target = target;
++    record->arg = arg;
++    record->is_present = event && strcmp(event, "present") == 0;
++    if (current) {
++        record->current = *current;
++        record->current_valid = 1;
++    }
++    if (target < surface_count && read_surface)
++        record->selected_valid = read_surface(state, target, &record->selected) != 0;
++    if (record->is_present && arg < display_count && read_display)
++        record->display_valid = read_display(state, arg, &record->display) != 0;
++    return 1;
++}
++
++static inline int rsx_tt_print(FILE* stream, const rsx_tt_record* r)
++{
++    return fprintf(stream,
++        "[rsx-target] frame=%u event=%s target=%u arg=0x%X "
++        "selected_valid=%d selected_loc=%u selected_off=0x%08X "
++        "selected_dxgi_fmt=%u selected_pitch=%u selected_size=%ux%u "
++        "current_valid=%d current_loc=%u current_off=0x%08X "
++        "current_guest_fmt=0x%X current_pitch=%u current_clip=%u,%u+%ux%u "
++        "buffer_id_valid=%d buffer_id=%u display_valid=%d display_loc=%u "
++        "display_off=0x%08X display_pitch=%u display_size=%ux%u\n",
++        r->frame, r->event, r->target, r->arg,
++        r->selected_valid, r->selected.location, r->selected.offset,
++        r->selected.dxgi_format, r->selected.pitch,
++        r->selected.width, r->selected.height,
++        r->current_valid, r->current.location, r->current.offset,
++        r->current.guest_format, r->current.pitch,
++        r->current.clip_x, r->current.clip_y, r->current.clip_w, r->current.clip_h,
++        r->is_present, r->is_present ? r->arg : 0u,
++        r->display_valid, r->display.location, r->display.offset,
++        r->display.pitch, r->display.width, r->display.height) >= 0;
++}
++
++#endif
