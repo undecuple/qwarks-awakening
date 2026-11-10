@@ -1,0 +1,70 @@
+{
+ "spu_elfs": [
+  {
+   "file_offset": "0x124a280",
+   "size": 19540,
+   "entry": "0x3090",
+   "sections": 0,
+   "wraps_job_module": false
+  },
+  {
+   "file_offset": "0x1252080",
+   "size": 85128,
+   "entry": "0x4080",
+   "sections": 18,
+   "wraps_job_module": true
+  },
+  {
+   "file_offset": "0x1266d80",
+   "size": 137976,
+   "entry": "0x4080",
+   "sections": 18,
+   "wraps_job_module": true
+  },
+  {
+   "file_offset": "0x1288880",
+   "size": 120168,
+   "entry": "0x4080",
+   "sections": 18,
+   "wraps_job_module": true
+  },
+  {
+   "file_offset": "0x12a5e00",
+   "size": 108128,
+   "entry": "0x4080",
+   "sections": 18,
+   "wraps_job_module": true
+  },
+  {
+   "file_offset": "0x12c0480",
+   "size": 29744,
+   "entry": "0x4080",
+   "sections": 18,
+   "wraps_job_module": true
+  }
+ ],
+ "edge_zlib_inflate_elf": {
+  "count": 1,
+  "size": 19540,
+  "entry": "0x3090",
+  "file_offset": "0x124a280"
+ },
+ "raw_job_binaries_in_ebooot": {
+  "count": 9,
+  "extent_min_max": [
+   5808,
+   135664
+  ],
+  "load_addr": [
+   [
+    "0x4000",
+    9
+   ]
+  ],
+  "offsets_first_last": [
+   19210368,
+   21052800
+  ],
+  "rejected_marker_hits": 0
+ }
+}

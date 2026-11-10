@@ -1,0 +1,44 @@
+cellGcmSys: the SET_REFERENCE fence queue publishes a slot only after its fence is stored in it (release/acquire).
+
+Cause: gcm_ref_push_at stored the queue slot with a plain store and then the volatile tail; MinGW gcc -O2 emits the tail
+store first (objdump of cellGcmSys.c.obj: `mov %r9d,s_ref_qtail` before `mov %ebx,(%rax,%rdx,4)`). The poll path
+(cellGcm_ref_on_poll, a guest thread spinning on ctrl->ref) publishes under its own lock, so between the two stores it
+could see the new tail, write the slot's stale word into ctrl->ref (0 while fewer than GCM_REF_QLEN fences were ever
+queued) and move head past the fence that landed a moment later. An equality waiter then never sees its value again.
+Ratchet & Clank 1 (Collection) waits for ref == its last frame fence each frame (func_00523A48 / func_0052A59C /
+func_0052A780, 40 000 x usleep(50) then "Renderer timed out", and keeps waiting): run rc1-stall2 drained fence 0x7B1
+(GCM_REFLOG), the main thread waited for 0x7B1 (r28) and ctrl->ref read 0x00000000 at 105/120/140 s, get == put; the
+game stopped presenting at t=84 s; rc1-boot1 stopped the same way at 92.8 s. Intermittent (rc1-stall1 ran past it).
+Fix: __atomic_store_n(tail, RELEASE) after the slot, __atomic_load_n(tail, ACQUIRE) before reading it. Not changed: the
+overflow branch (producer bumps head without the publication lock; needs 4096 queued fences, never seen here).
+Upstream candidate (general runtime race, any title with fence waits). R&C port patch 7042.
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2076,7 +2076,16 @@
+         if (PS3_LOG_FIRST(_o, 4)) fprintf(stderr, "[cellGcmSys] fence queue overflow -- oldest dropped\n");
+     }
+     s_ref_q[t % GCM_REF_QLEN] = v;
+-    s_ref_qtail = t + 1;
++    /* R&C patch 7042: publish the slot before the tail. A plain store let the
++     * compiler (MinGW gcc -O2) store the new tail first and the slot second;
++     * a guest thread polling ctrl->ref (cellGcm_ref_on_poll) in between read
++     * the slot before the fence landed in it, wrote that stale word (0 while
++     * fewer than GCM_REF_QLEN fences were ever queued) into ctrl->ref and
++     * moved head past the real fence. The equality-waiter then waited for a
++     * value the register never shows again (R&C 1 Collection: "Renderer
++     * timed out" with ref = 0 after fence 0x7B1 was drained). Release here
++     * pairs with the acquire in gcm_ref_publish_one. */
++    __atomic_store_n(&s_ref_qtail, t + 1, __ATOMIC_RELEASE);
+ }
+
+ /* Global fence-publication counter: lets the lwmutex convoy trace correlate a
+@@ -2097,7 +2106,7 @@
+ static void gcm_ref_publish_one(void)
+ {
+     u32 h = s_ref_qhead;
+-    if (h == s_ref_qtail) return;
++    if (h == __atomic_load_n(&s_ref_qtail, __ATOMIC_ACQUIRE)) return;   /* patch 7042: slot visible once tail is */
+     vm_write32(GCM_CONTROL_GUEST_ADDR + 8, s_ref_q[h % GCM_REF_QLEN]);
+     /* stderr, deliberately: [DRAIN] uses printf and stdout is block-buffered
+      * when redirected, so its interleaving with an stderr probe is not a

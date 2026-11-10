@@ -16,12 +16,14 @@
 > documentation. It contains no game code, game data, assets, keys or firmware, and it never will. To build a game you
 > need your own copy of it and the decrypted `EBOOT.elf` made from that copy ([requirements](docs/requirements.md)).
 
-**8** games in the catalogue · **6** build into their own programs · **1** shared runtime ·
+**10** games in the catalogue · **9** build into their own programs · **1** shared runtime ·
 **5** fixes merged upstream into ps3recomp · **0** game files in this repository
 
 **Status: early work, not playable yet.** Version <!-- version -->0.2.1<!-- /version -->, a pre-release of
 2026-11-04: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from
-its first level, with known bugs, and has not been played through.
+its first level, with known bugs, and has not been played through. In scripted runs of the current source it plays
+about 11 minutes of its first level without a crash, and *Ratchet & Clank 1*, *2* and *3* from the Collection reach
+their first levels.
 
 **[Try the launcher](#try-the-launcher-preview-in-3-minutes)** · **[Status](#status)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
 
@@ -30,7 +32,7 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 
 ## Try the launcher preview in 3 minutes
 
-The launcher preview lists the eight games and finds your files. It does not build or start a game yet: that part is
+The launcher preview lists the games and finds your files. It does not build or start a game yet: that part is
 **coming soon**. Download `Qwarks-Awakening-<version>-launcher-windows-x64.zip` from
 [Releases](https://github.com/undecuple/qwarks-awakening/releases); Python is included, nothing else to install.
 
@@ -58,38 +60,53 @@ To build a game today, follow [docs/BUILDING.md](docs/BUILDING.md) (Linux with N
 | Windows 10/11 | native exe | Direct3D 12 | builds; not run on Windows | - |
 | Linux | the Windows exe under Proton (GE-Proton11-7) | Direct3D 12 through vkd3d-proton | verified | NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-04 |
 
-What the runs under Proton showed for *Tools of Destruction* (this source, ps3recomp v0.18.0, 2026-11-04, five
-minutes each, scripted): a first start on an empty drive installs the game data; a new game reaches Metropolis and goes
-on to Cobalia; a saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. None of the runs
-crashed. An earlier build (2026-10-22) was played by hand at about 37 frames per second in Fastoon, with a DualShock 4,
-Alt+Enter fullscreen and in-game saving working. Not reached yet: a ten-minute run without errors, a chapter played to
-its end, the port's own save loaded again after a quit.
+What the runs under Proton showed for *Tools of Destruction*:
+
+- 2026-11-10, scripted, twice, 16 minutes each: from an empty drive the game installs its data, a new game plays its
+  intro and reaches Metropolis, and the player then moves, jumps, swings the wrench and fires there for about 11
+  minutes. No crash; the only error lines in the log are the game's own script messages, from its data.
+- 2026-11-04, scripted, five minutes each (ps3recomp v0.18.0): a new game reaches Metropolis and goes on to Cobalia; a
+  saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. None of the runs crashed.
+- 2026-10-22, by hand: an earlier build was played at about 37 frames per second in Fastoon, with a DualShock 4,
+  Alt+Enter fullscreen and in-game saving working.
+
+Not reached yet: a chapter played to its end, the port's own save loaded again after a quit.
 
 | Game | PS3 release | State |
 |---|---|---|
-| Ratchet & Clank Future: Tools of Destruction | 2007 | first target: starts and plays by hand, not playable yet |
-| Ratchet & Clank Future: Quest for Booty | 2008 | builds; installs its data and plays the opening cutscene of a new game; not playable |
-| Ratchet & Clank Future: A Crack in Time | 2009 | builds, plays its intro and reaches a loading screen (1.20 update), about 17 frames per second; not playable |
-| Ratchet & Clank: All 4 One | 2011 | builds and shows its title screen (1.03 update); not playable |
+| Ratchet & Clank Future: Tools of Destruction | 2007 | first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet |
+| Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
+| Ratchet & Clank Future: A Crack in Time | 2009 | builds (1.20 update); a scripted new game reaches its first save, then the screen goes black in most runs; not playable |
+| Ratchet & Clank: All 4 One | 2011 | builds (1.03 update); scripted menus reach the first level, then the game stops; not playable |
 | Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
-| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); the screen stays black; not playable |
-| Ratchet & Clank Collection, Ratchet: Deadlocked HD (PS2 remasters) | 2012-2013 | coming soon: a different engine; PPU code lifted, not built yet |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
+| Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |
+| Ratchet: Deadlocked HD (PS2 remaster) | 2013 | coming soon: a different engine; PPU code lifted, not built yet |
+
+What the scripted runs of the Collection showed on 2026-11-10 (under Proton, one build of each game): *Ratchet &
+Clank 1* reaches Veldin and runs about three minutes there at about 8 frames per second; *Ratchet & Clank 2* reaches
+Aranos, about a minute under control at 41 to 65 frames per second; *Ratchet & Clank 3* reaches Veldin, about three
+minutes of running, jumping and fighting at about 23 frames per second. None crashed. A freeze of *Ratchet & Clank 1*
+after its intro is fixed by a new patch to ps3recomp: a race in the runtime's graphics fence queue lost a fence, and
+the renderer timed out waiting for it. None of the three was played by hand.
 
 Each game's console features and whether they work in the port, with an estimate per game:
 [docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md). What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
 **Coming soon,** in this order, no dates ([ROADMAP](docs/ROADMAP.md)): *Tools of Destruction* playable through; an
 installer that builds a game from your own copy; a settings menu and PC display and control options; the other games
-one at a time, the PS2 remasters last. Gameplay changes stay optional.
+one at a time. Gameplay changes stay optional.
 
 ## Settings and known issues
 
-There is no settings menu yet. Each game keeps its own `keybinds.ini`, `display.ini` and `settings.ini`. Alt+Enter
-toggles fullscreen; pads are read through SDL3; *Tools of Destruction* has keyboard controls, and mouse look that is
+There is no in-game settings menu yet. Each game keeps its own `keybinds.ini`, `display.ini` and `settings.ini`;
+display and control settings for all games go in `shared/display.ini` and `shared/keybinds.ini` in the data folder,
+and a key in a game's own file wins. Alt+Enter toggles fullscreen, and each game remembers its window's place and size; pads are read through SDL3; *Tools of Destruction* has keyboard controls, and mouse look that is
 off unless `[mouse] look = on` is set in its `keybinds.ini`.
 
 Known issues in *Tools of Destruction*:
 
+- Glow looks washed out.
 - The picture flickers inside one cave on Fastoon.
 - Level loads stall while graphics pipelines are built; the game's own graphics-stall notice can show during them.
 - The quit entries of the pause menu (off unless `RC_PAUSE_QUIT=1`) are drawn below the menu's box, and QUIT TO MAIN

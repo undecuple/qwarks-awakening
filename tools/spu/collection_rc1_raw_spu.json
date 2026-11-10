@@ -1,0 +1,5 @@
+{
+ "title": "Ratchet & Clank Collection: Ratchet & Clank 1",
+ "note": "RC1.ppu.elf has no raw SPU programs: no sys_raw_spu_create call (syscall 160, `li r11,0xA0` before an sc) in the lifted PPU code (scan of work/recomp/collection_rc1, 2026-11-09).",
+ "programs": []
+}

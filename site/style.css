@@ -24,6 +24,7 @@
   --button-bg: #ffffff1a;
   --button-hover: #ffffff26;
   --button-active: #ffffff4d;
+  --toggle-bg: #ffffff26;
   --accent-bg: #1e70b9;
   --accent-bg-hover: #1b65a7;
   --accent-bg-active: #185a94;
@@ -63,6 +64,7 @@
     --button-bg: #0000061a;
     --button-hover: #00000626;
     --button-active: #0000064d;
+    --toggle-bg: #ffffff;
     --accent-bg: #1e70b9;
     --accent-bg-hover: #1b65a7;
     --accent-bg-active: #185a94;
