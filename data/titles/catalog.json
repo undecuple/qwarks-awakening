@@ -9,6 +9,10 @@
    "year": 2007,
    "order": 1,
    "readme_state": "first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet",
+   "playability": "in_game",
+   "playability_checked": "2026-11-10",
+   "playability_note": "about 10 minutes in Metropolis with scripted input",
+   "badge_name": "ToD",
    "supported": true,
    "title_ids": {
     "disc": {
@@ -66,6 +70,10 @@
    "year": 2008,
    "order": 2,
    "readme_state": "builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable",
+   "playability": "in_game",
+   "playability_checked": "2026-11-10",
+   "playability_note": "reaches the ship deck with scripted input",
+   "badge_name": "QfB",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -123,6 +131,10 @@
    "year": 2009,
    "order": 3,
    "readme_state": "builds (1.20 update); a scripted new game reaches its first save, then the screen goes black in most runs; not playable",
+   "playability": "boots",
+   "playability_checked": "2026-11-10",
+   "playability_note": "the screen goes black after the first save",
+   "badge_name": "ACiT",
    "supported": true,
    "title_ids": {
     "disc": {
@@ -223,6 +235,10 @@
    "year": 2011,
    "order": 4,
    "readme_state": "builds (1.03 update); scripted menus reach the first level, then the game stops; not playable",
+   "playability": "boots",
+   "playability_checked": "2026-11-10",
+   "playability_note": "reaches its first level; the view is white",
+   "badge_name": "A4O",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -318,6 +334,10 @@
    "year": 2012,
    "order": 5,
    "readme_state": "builds and installs its data (1.05 update); the screen stays black; not playable",
+   "playability": "boots",
+   "playability_checked": "2026-11-10",
+   "playability_note": "a black frame",
+   "badge_name": "FFA",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -423,6 +443,10 @@
    "year": 2013,
    "order": 6,
    "readme_state": "builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable",
+   "playability": "boots",
+   "playability_checked": "2026-11-10",
+   "playability_note": "the lobby stays black",
+   "badge_name": "Nexus",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -527,6 +551,10 @@
    "year": 2012,
    "order": 7,
    "readme_state": "each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable",
+   "playability": "in_game",
+   "playability_checked": "2026-11-10",
+   "playability_note": "each of its games reaches its first level with scripted input",
+   "badge_name": "R&C Collection",
    "supported": false,
    "title_ids": {
     "disc": {
@@ -570,6 +598,10 @@
      "year": 2012,
      "order": 1,
      "readme_state": "builds; a scripted new game reaches Veldin, its first level, with the player under scripted control; not playable",
+     "playability": "in_game",
+     "playability_checked": "2026-11-10",
+     "playability_note": "reaches its first level with scripted input",
+     "badge_name": "R&C 1",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -629,6 +661,10 @@
      "year": 2012,
      "order": 2,
      "readme_state": "builds; a scripted new game reaches Aranos, its first level, with the player under scripted control; not playable",
+     "playability": "in_game",
+     "playability_checked": "2026-11-10",
+     "playability_note": "reaches its first level with scripted input",
+     "badge_name": "R&C 2",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -685,6 +721,10 @@
      "year": 2012,
      "order": 3,
      "readme_state": "builds; a scripted new game reaches Veldin, its first level, with the player under scripted control; not playable",
+     "playability": "in_game",
+     "playability_checked": "2026-11-10",
+     "playability_note": "reaches its first level with scripted input",
+     "badge_name": "R&C 3",
      "supported": false,
      "title_ids": {
       "disc": {
@@ -760,6 +800,10 @@
    "year": 2013,
    "order": 8,
    "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
+   "playability": "not_built",
+   "playability_checked": "2026-11-10",
+   "playability_note": "not built yet",
+   "badge_name": "Deadlocked HD",
    "supported": false,
    "title_ids": {
     "disc": {},

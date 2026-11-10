@@ -30,6 +30,12 @@ their first levels.
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
+<!-- badges:start -->
+[![ToD: in game](assets/badges/tods.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-tools-of-destruction) [![QfB: in game](assets/badges/qfb.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-quest-for-booty) [![ACiT: boots](assets/badges/acit.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-a-crack-in-time) [![A4O: boots](assets/badges/a4o.svg)](docs/FEATURE-PARITY.md#ratchet--clank-all-4-one) [![FFA: boots](assets/badges/ffa.svg)](docs/FEATURE-PARITY.md#ratchet--clank-full-frontal-assault) [![Nexus: boots](assets/badges/nexus.svg)](docs/FEATURE-PARITY.md#ratchet--clank-into-the-nexus) [![R&C 1: in game](assets/badges/rc1.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 2: in game](assets/badges/rc2.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 3: in game](assets/badges/rc3.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![Deadlocked HD: not built](assets/badges/dlhd.svg)](docs/FEATURE-PARITY.md#ratchet-deadlocked-hd)
+
+*Each state is a measured run (last checked 2026-11-10, the Windows programs under Proton on Linux). "In game" means reached with scripted input, not played through by hand. The six states are defined in [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).*
+<!-- badges:end -->
+
 ## Try the launcher preview in 3 minutes
 
 The launcher preview lists the games and finds your files. It does not build or start a game yet: that part is

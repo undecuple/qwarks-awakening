@@ -6,6 +6,21 @@ finish at the game's own frame rate.** The first release that calls itself **pla
 second list. Starting the program, or reaching a menu, does not count. This list, not a date, is what a release is
 measured against.
 
+## Playability states
+
+The badges in the README show one of six states per game. Each is a measured run, dated in the catalogue, made with
+the Windows program under Proton on Linux. A state is only claimed when a run reached it, and a game keeps the
+highest state that was reached on the build in question.
+
+| State | Meaning |
+|---|---|
+| Not built | the game's program is not built yet |
+| Boots | the program starts and runs, but does not reach a menu or the first level in a usable form (black or white screen, or it stops) |
+| Menus | the menus draw and take input, but a new game does not reach its first level |
+| In game | a new game reaches a level and the player character moves, reached with scripted input (a script presses the pad's buttons at set times); not played through by hand |
+| Playable | played from start to end by hand, with the known bugs listed |
+| Completed | played to 100 % by hand |
+
 ## What v0.1.0 is
 
 The first preview. It is **source code only**: no installer and no ready-made game program, because the program is
