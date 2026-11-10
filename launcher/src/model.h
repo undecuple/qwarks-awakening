@@ -54,7 +54,9 @@ struct Locations {   // library.json "locations"; empty/absent = default (the en
 
 struct Library {
     std::string portVersion, generated, error;
+    bool empty = false;   // read fine but lists no game (the Library shows "No games added yet")
     Locations loc;
+    std::string theme;   // library.json "prefs.theme": "system" (or absent), "light", "dark" (written by the engine's set-pref)
     std::vector<Game> games;
 };
 
@@ -100,8 +102,9 @@ inline Library loadLibrary(const std::string& path) {
     for (auto& x : l["rpcs3_folders"].a) lib.loc.rpcs3Folders.push_back(x.str());
     lib.loc.rpcs3Auto = l["rpcs3_auto"].boolean(true);
     lib.loc.build = l["build"].str(); lib.loc.saves = l["saves"].str(); lib.loc.logs = l["logs"].str(); lib.loc.artCache = l["art_cache"].str();
+    lib.theme = root["prefs"]["theme"].str();
     for (auto& g : root["games"].a) lib.games.push_back(parseGame(g));
     std::stable_sort(lib.games.begin(), lib.games.end(), [](const Game& a, const Game& b) { return a.order < b.order; });
-    if (lib.games.empty()) lib.error = "library.json lists no games";
+    lib.empty = lib.games.empty();   // a valid library with no game: the launcher shows its empty state, not an error
     return lib;
 }

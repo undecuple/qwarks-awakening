@@ -13,6 +13,11 @@ With --library the file is read for build records (built games) and rewritten at
     catalog.py override --library FILE --game ID --slot disc|update|eboot|saves PATH
     catalog.py clear-override --library FILE --game ID --slot SLOT
     catalog.py set-location --library FILE KEY [VALUE] [--add|--remove|--reset]
+    catalog.py set-pref --library FILE KEY [VALUE|--reset]
+
+Launcher preferences live in library.json's top-level `prefs` block, kept across rescans like `locations`;
+`set-pref` changes one and rewrites the file without a rescan. Keys and values: PREFS below (theme: system, light or
+dark; absent = system).
 
 Locations (launcher-plan.md "Locations"): detection is the default, every location can be set by hand. library.json
 keeps per game `overrides` {disc, update, eboot, saves} and a top-level `locations` {library_folders, excluded,
@@ -51,6 +56,7 @@ OVERRIDE_SLOTS = ("disc", "update", "eboot", "saves")
 LOCATION_LISTS = ("library_folders", "excluded", "rpcs3_folders")
 LOCATION_PATHS = ("build", "saves", "logs", "art_cache")
 LOCATION_KEYS = LOCATION_LISTS + ("rpcs3_auto",) + LOCATION_PATHS
+PREFS = {"theme": ("system", "light", "dark")}   # launcher preferences: key -> allowed values (first = default)
 # PARAM.SFO categories a folder may be: disc game (DG), installed game (HG), game update (GD); None = no CATEGORY key.
 FOLDER_CATEGORIES = ("DG", "HG", "GD", None)
 
@@ -1050,13 +1056,15 @@ def read_library(path):
 
 
 def make_library(games, catalog=None, prior=None):
-    """`prior` (a library.json dict) lends its `locations` block, so a rescan never drops a location setting; the
-    games from scan() already carry their `overrides`."""
+    """`prior` (a library.json dict) lends its `locations` and `prefs` blocks, so a rescan never drops a location
+    setting or a launcher preference; the games from scan() already carry their `overrides`."""
     cat = catalog or load()
     lib = {"schema": 1, "port_version": cat.get("port_version", "0.1.0"),
            "generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "games": games}
     if isinstance((prior or {}).get("locations"), dict) and prior["locations"]:
         lib["locations"] = dict(prior["locations"])
+    if isinstance((prior or {}).get("prefs"), dict) and prior["prefs"]:
+        lib["prefs"] = dict(prior["prefs"])
     return lib
 
 
@@ -1144,7 +1152,33 @@ def main(argv=None):
     sl.add_argument("--add", action="store_true")
     sl.add_argument("--remove", action="store_true")
     sl.add_argument("--reset", action="store_true", help="back to the default (drops the key)")
+    sp = sub.add_parser("set-pref", help="set or reset a launcher preference (no rescan)")
+    sp.add_argument("--library", required=True)
+    sp.add_argument("key", choices=sorted(PREFS))
+    sp.add_argument("value", nargs="?")
+    sp.add_argument("--reset", action="store_true", help="back to the default (drops the key)")
     a = ap.parse_args(argv)
+
+    if a.cmd == "set-pref":
+        allowed = PREFS[a.key]
+        if not a.reset and a.value not in allowed:
+            print(f"set-pref {a.key}: give one of {', '.join(allowed)} (or --reset)", file=sys.stderr)
+            return 2
+        lib = read_library(a.library)
+        if lib is None:
+            lib = make_library(scan([], None, load()))
+        prefs = dict(lib.get("prefs") or {})
+        if a.reset:
+            prefs.pop(a.key, None)
+        else:
+            prefs[a.key] = a.value
+        if prefs:
+            lib["prefs"] = prefs
+        else:
+            lib.pop("prefs", None)
+        write_library(a.library, lib)
+        print(json.dumps(prefs, ensure_ascii=False))
+        return 0
 
     if a.cmd in ("override", "clear-override"):
         def edit(lib, cat):

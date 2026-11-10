@@ -810,6 +810,22 @@ def run_locations(tmp):
           "CLI: unknown game / slot / key, list key without --add, forbidden path -> exit 2 with a message")
     check(open(lf, "rb").read() == before, "CLI: a refused command leaves library.json untouched")
 
+    # --- launcher preferences: prefs block, no rescan, kept by rescans and other edits
+    gen = catalog.read_library(lf)["generated"]
+    rc, o, _ = cli("set-pref", "--library", lf, "theme", "dark")
+    lib = catalog.read_library(lf)
+    check(rc == 0 and lib["prefs"] == {"theme": "dark"} and lib["generated"] == gen, "CLI: set-pref theme dark is written without a rescan")
+    rc, o, _ = cli("set-location", "--library", lf, "build", os.path.join(root, "bld"))
+    rc2, _, _ = cli("scan", "--library", lf, found)
+    check(rc == 0 and rc2 == 0 and catalog.read_library(lf).get("prefs") == {"theme": "dark"}, "CLI: set-location and scan keep the prefs block")
+    before = open(lf, "rb").read()
+    rc1, _, e1 = cli("set-pref", "--library", lf, "theme", "purple")
+    rc2, _, e2 = cli("set-pref", "--library", lf, "theme")
+    check(rc1 == 2 and "system, light, dark" in e1 and rc2 == 2 and open(lf, "rb").read() == before,
+          "CLI: set-pref with a bad or no value -> exit 2, file untouched")
+    rc, o, _ = cli("set-pref", "--library", lf, "theme", "--reset")
+    check(rc == 0 and "prefs" not in catalog.read_library(lf), "CLI: set-pref --reset drops the key (and the empty block)")
+
 
 if __name__ == "__main__":
     sys.exit(main())

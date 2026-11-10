@@ -19,6 +19,7 @@
         capstone   # PPU disassembly in scripts
         numpy      # fast binary scans (branch xrefs, pattern search)
         pillow     # screenshots and texture dumps
+        fonttools  # static instances of the launcher's variable font (tools/release/font_instances.py)
         pyelftools # ELF / PRX parsing after decryption
         lz4
         zstandard

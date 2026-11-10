@@ -58,9 +58,9 @@ def write(path, data):
 def tree(tmp):
     root = os.path.join(tmp, "repo")
     write(os.path.join(root, "public", "LICENSE"), "MIT License\n")
-    for n in ("Barlow-Regular.ttf", "Rajdhani-Bold.ttf"):
+    for n in ("AdwaitaSans-Regular.ttf", "RussoOne-Regular.ttf"):
         write(os.path.join(root, "launcher", "fonts", n), b"\0\1\0\0font")
-    for n in ("OFL-barlow.txt", "OFL-rajdhani.txt"):
+    for n in ("OFL-adwaita.txt", "OFL-russo-one.txt"):
         write(os.path.join(root, "launcher", "fonts", n), "SIL Open Font License\n")
     write(os.path.join(root, "third_party", "imgui", "LICENSE.txt"), "The MIT License (MIT)\n")
     write(os.path.join(root, "tools", "release", "catalog.py"), "print('engine')\n")
@@ -100,10 +100,10 @@ def test_good(tmp, root):
         readme = zf.read(top + "README.txt").decode("utf-8")
         infos = zf.infolist()
     want = sorted(top + p for p in (
-        names.LAUNCHER_EXE, "SDL3.dll", "README.txt", "fonts/Barlow-Regular.ttf", "fonts/Rajdhani-Bold.ttf",
+        names.LAUNCHER_EXE, "SDL3.dll", "README.txt", "fonts/AdwaitaSans-Regular.ttf", "fonts/RussoOne-Regular.ttf",
         "tools/release/catalog.py", "data/titles/catalog.json", "data/titles/library.example.json",
         "licenses/LICENSE.txt", "licenses/SDL3-LICENSE.txt", "licenses/imgui-LICENSE.txt",
-        "licenses/OFL-barlow.txt", "licenses/OFL-rajdhani.txt", "licenses/Python-LICENSE.txt",
+        "licenses/OFL-adwaita.txt", "licenses/OFL-russo-one.txt", "licenses/Python-LICENSE.txt",
         "python/python.exe", "python/pythonw.exe", "python/python313.dll", "python/python313.zip",
         "python/python313._pth", "python/LICENSE.txt"))
     check(got == want, "exactly the expected entries under the version folder", (got, want))
