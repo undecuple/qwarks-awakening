@@ -22,6 +22,7 @@ import tarfile
 import sys
 import tempfile
 import zipfile
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -221,12 +222,185 @@ def test_fetch(tmp):
     check(rc == 2, "--only with an unknown name is a usage error", out)
 
 
+def tree_snapshot(root):
+    """Owned synthetic tree bytes/types/mtimes; reading does not compare atime."""
+    root = pathlib.Path(root)
+    return [(str(p.relative_to(root)), stat.S_IFMT(p.lstat().st_mode), p.lstat().st_mtime_ns,
+             p.read_bytes() if p.is_file() else None)
+            for p in sorted([root, *root.rglob("*")])]
+
+
+def test_publication(tmp):
+    """Actual extraction/publication with injected filesystem errors, never network."""
+    root = pathlib.Path(tmp) / "publication"
+    root.mkdir()
+    zip_path = root / "source.zip"
+    make_zip(str(zip_path), {"top/new.txt": b"NEW-TREE"})
+    tar_path = root / "source.tar"
+    if hasattr(tarfile, "data_filter"):
+        with tarfile.open(tar_path, "w") as archive:
+            item = tarfile.TarInfo("top/new.txt")
+            item.size = 8
+            archive.addfile(item, io.BytesIO(b"NEW-TREE"))
+    plain_path = root / "plain.txt"
+    plain_path.write_bytes(b"NEW-TREE")
+    formats = [("zip-strip", lambda dest: ft.unpack_zip(str(zip_path), str(dest), True), "new.txt"),
+               ("zip-full", lambda dest: ft.unpack_zip(str(zip_path), str(dest), False), "top/new.txt"),
+               ("file", lambda dest: ft.unpack_file(str(plain_path), str(dest), "new.txt"), "new.txt")]
+    if hasattr(tarfile, "data_filter"):
+        formats += [("tar-strip", lambda dest: ft.unpack_tar(str(tar_path), str(dest), True), "new.txt"),
+                    ("tar-full", lambda dest: ft.unpack_tar(str(tar_path), str(dest), False), "top/new.txt")]
+    else:
+        check(False, "publication tar controls incomplete: Python extraction filter unavailable")
+    real_replace = os.replace
+    for kind, extract, relative in formats:
+        for scenario in ("success", "publish-fails", "restore-fails", "backup-fails", "fresh-fails", "cleanup-fails"):
+            parent = root / kind / scenario
+            parent.mkdir(parents=True)
+            dest = parent / "tool"
+            if scenario != "fresh-fails":
+                (dest / "bin").mkdir(parents=True)
+                (dest / "bin/old.txt").write_bytes(b"OLD-VALID-TREE")
+                before = tree_snapshot(dest)
+            unowned = parent / "tool.partial"
+            unowned.mkdir()
+            (unowned / "owner.txt").write_bytes(b"UNRELATED-PREEXISTING")
+            def replace(source, target):
+                source, target = pathlib.Path(source), pathlib.Path(target)
+                if scenario == "backup-fails" and source == dest:
+                    raise OSError("injected backup move failure")
+                if target == dest and scenario in ("publish-fails", "restore-fails", "fresh-fails"):
+                    if source.name != "previous" or scenario == "restore-fails":
+                        raise OSError("injected restore failure" if source.name == "previous" else "injected publication failure")
+                return real_replace(source, target)
+            real_rmtree = shutil.rmtree
+            def rmtree(path, *args, **kwargs):
+                if scenario == "cleanup-fails" and ".backup-" in pathlib.Path(path).name:
+                    raise OSError("injected backup cleanup failure")
+                return real_rmtree(path, *args, **kwargs)
+            error = None
+            try:
+                with patch.object(ft.os, "replace", side_effect=replace), patch.object(ft.shutil, "rmtree", side_effect=rmtree):
+                    extract(dest)
+            except OSError as caught:
+                error = caught
+            label = kind + " " + scenario
+            backups = list(parent.glob(".tool.backup-*"))
+            stages = list(parent.glob(".tool.partial-*"))
+            check((unowned / "owner.txt").read_bytes() == b"UNRELATED-PREEXISTING", label + ": never deletes unowned .partial")
+            if scenario == "success":
+                check(error is None and (dest / relative).read_bytes() == b"NEW-TREE" and not (dest / "bin/old.txt").exists(),
+                      label + ": actual replacement succeeds", error)
+                check(not backups and not stages, label + ": owned temporaries cleaned")
+            elif scenario in ("publish-fails", "backup-fails"):
+                check(error is not None and dest.is_dir() and tree_snapshot(dest) == before,
+                      label + ": previous tree preserved exactly", error)
+                check(not backups and not stages, label + ": rollback/failed backup cleans only owned temporaries")
+                if scenario == "publish-fails":
+                    check("previous tree restored" in str(error), label + ": failure truthfully reports restore")
+            elif scenario == "restore-fails":
+                check(isinstance(error, ft.PublicationError) and error.preserve_temporary and not dest.exists(),
+                      label + ": restore failure stays failure, no success assertion", error)
+                check(len(backups) == 1 and tree_snapshot(backups[0] / "previous") == before,
+                      label + ": old tree recovery data retained")
+                prepared = list(parent.glob(".tool.partial-*/**/new.txt"))
+                check(len(stages) == 1 and len(prepared) == 1 and prepared[0].read_bytes() == b"NEW-TREE",
+                      label + ": prepared replacement retained")
+                check(str(backups[0] / "previous") in str(error) and "prepared replacement retained at" in str(error),
+                      label + ": both recovery locations disclosed", error)
+            elif scenario == "fresh-fails":
+                check(error is not None and not dest.exists() and not backups and not stages,
+                      label + ": failed first install leaves no partial published tree", error)
+            else:
+                check(error is not None and "new cache tree published" in str(error) and
+                      (dest / relative).read_bytes() == b"NEW-TREE" and len(backups) == 1 and not stages,
+                      label + ": backup cleanup failure truthfully reports published state", error)
+
+    # Extraction rejection/failure must also preserve the existing cache.
+    dest = root / "invalid/tool"
+    dest.mkdir(parents=True)
+    (dest / "old.txt").write_bytes(b"OLD")
+    before = tree_snapshot(dest)
+    bad_zip = root / "bad.zip"
+    make_zip(str(bad_zip), {"top/../../escape": b"BAD"})
+    try:
+        ft.unpack_zip(str(bad_zip), str(dest), True)
+    except ValueError:
+        pass
+    else:
+        check(False, "publication: unsafe ZIP was not rejected")
+    check(tree_snapshot(dest) == before, "publication: unsafe archive preserves existing tree")
+    malformed = root / "malformed.archive"
+    malformed.write_bytes(b"not a ZIP or tar archive")
+    for kind in ("zip", "tar"):
+        try:
+            getattr(ft, "unpack_" + kind)(str(malformed), str(dest), True)
+        except (ValueError, zipfile.BadZipFile, tarfile.TarError):
+            pass
+        else:
+            check(False, "publication: malformed " + kind + " was not rejected")
+        check(tree_snapshot(dest) == before, "publication: malformed " + kind + " preserves old tree")
+    with patch.object(ft.shutil, "copyfileobj", side_effect=OSError("injected extraction IO failure")):
+        try:
+            ft.unpack_zip(str(zip_path), str(dest), True)
+        except OSError:
+            pass
+        else:
+            check(False, "publication: ZIP extraction IO failure not raised")
+    check(tree_snapshot(dest) == before and not list(dest.parent.glob(".tool.partial-*")),
+          "publication: failed extraction preserves old cache and cleans owned staging")
+    with patch.object(ft.shutil, "copyfile", side_effect=OSError("injected plain-file copy failure")):
+        try:
+            ft.unpack_file(str(plain_path), str(dest), "new.txt")
+        except OSError:
+            pass
+        else:
+            check(False, "publication: plain-file copy failure not raised")
+    check(tree_snapshot(dest) == before and not list(dest.parent.glob(".tool.partial-*")),
+          "publication: failed plain-file preparation preserves old cache")
+    if hasattr(os, "symlink"):
+        alias = root / "alias"
+        try:
+            alias.symlink_to(dest, target_is_directory=True)
+        except OSError as error:
+            check(False, "publication symlink-destination control incomplete", error)
+        else:
+            try:
+                ft.unpack_zip(str(zip_path), str(alias), True)
+            except OSError:
+                pass
+            else:
+                check(False, "publication: destination symlink was accepted")
+            check(alias.is_symlink() and tree_snapshot(dest) == before,
+                  "publication: destination symlink refused without mutating target")
+
+    # The public fetch path must return failure and leave fetched metadata old.
+    cache = root / "fetch-cache"
+    old = cache / "trees/tool"
+    old.mkdir(parents=True)
+    (old / "old.txt").write_bytes(b"OLD-FETCH")
+    ft.write_fetched(str(cache), {"tool": {"version": "old"}})
+    metadata = (cache / "fetched.json").read_bytes()
+    def fail_fetch_publication(source, target):
+        if pathlib.Path(target) == old and pathlib.Path(source).name != "previous":
+            raise OSError("injected fetch publication failure")
+        return real_replace(source, target)
+    output = io.StringIO()
+    with patch.object(ft.os, "replace", side_effect=fail_fetch_publication):
+        ok = ft.fetch_one(comp("tool", url(str(zip_path)), sha256=sha(zip_path)), str(cache), False, "unused",
+                          opener=file_opener, out=output)
+    check(not ok and "previous tree restored" in output.getvalue() and (old / "old.txt").read_bytes() == b"OLD-FETCH",
+          "fetch reports publication failure while restoring previous tree", output.getvalue())
+    check((cache / "fetched.json").read_bytes() == metadata, "failed publication leaves fetched metadata unchanged")
+
+
 def main():
     test_real_manifest()
     test_validate()
     tmp = tempfile.mkdtemp()
     try:
         test_fetch(tmp)
+        test_publication(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("test_fetch_toolchain:", "FAIL" if FAILS else "PASS")

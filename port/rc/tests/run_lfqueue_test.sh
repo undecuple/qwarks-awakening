@@ -12,5 +12,6 @@ tmp="${TMPDIR:-/tmp}/rclfq_$$"; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
 cc="${CC:-gcc}"
 echo "== test_lfqueue.c"
 "$cc" -std=gnu11 -O1 -w -pthread -I"$tree/include" -I"$tree" -I"$tree/runtime/spu" -I"$here" ${RC_TEST_CFLAGS:-} \
-   -Wl,--unresolved-symbols=ignore-all -o "$tmp/test_lfqueue" "$here/test_lfqueue.c"
+   -ffunction-sections -fdata-sections -Wl,--gc-sections \
+   -o "$tmp/test_lfqueue" "$here/test_lfqueue.c" "$here/rc_spurs_host_support.c"
 "$tmp/test_lfqueue"

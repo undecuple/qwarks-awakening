@@ -1,6 +1,6 @@
 /* Host test for patch 7021 (cellSpursSetGlobalExceptionEventHandler): unity build of the patched libs/spurs/cellSpurs.c.
  * Argument checks (NULL spurs/handler, 128-byte alignment), the repeat-registration BUSY rule, the eight-instance table limit
- * and the read-back accessor. Run with tests/run_imports_test.sh. RC_LINK_LENIENT */
+ * and the read-back accessor. Run with tests/run_imports_test.sh. */
 #include "libs/spurs/cellSpurs.c"
 #include "rc_vm_stubs.h"
 /* cellSpurs.c's two constructors store into these hooks; everything else it references is never called here. */

@@ -90,6 +90,7 @@ jobs:
           else
             v="$want"
           fi
+          python3 tools/release/bump_version.py --agree
           # the version's mirrors (tools/release/bump_version.py writes them together); ve is $v with its dots escaped,
           # so 0.2.0 cannot match 0x2y0 in these regular expressions
           ve=$(printf '%s' "$v" | sed 's/[.]/\\./g')

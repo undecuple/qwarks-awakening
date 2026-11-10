@@ -345,7 +345,7 @@ def run(tmp):
     exe = os.path.join(tmp, "games", "tods.exe")
     wr(exe, b"MZ")
     prior = {"schema": 1, "games": [{"id": "tods", "state": "built", "files": {"disc": None, "update": None, "eboot": None},
-                                      "build": {"exe": exe, "port_version": "0.1.0", "exe_sha256": "0" * 64, "built_at": "x"}}]}
+                                      "build": {"exe": exe, "port_version": cat["port_version"], "exe_sha256": "0" * 64, "built_at": "x"}}]}
     t = by_id(catalog.scan([lib], prior), "tods")
     check(t["state"] == "built" and t["build"]["exe"] == exe, "state: recorded build with its exe -> built")
     prior["games"][0]["build"]["port_version"] = "0.0.9"

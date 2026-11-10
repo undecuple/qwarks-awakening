@@ -3,7 +3,7 @@
  * libs/spurs/cellSpurs.c over a calloc'd guest window. A model consumer pops by the rules of the SPU consumer lift
  * (work/reports/lfqueue-layout-acit.md section 2): available when (push-completed +0x08 - pop-in-flight +0x06) mod 2*depth > 0,
  * advance +0x06, read the element at buffer + size*(idx>=depth ? idx-depth : idx), then advance pop-completed +0x00.
- * Run with run_lfqueue_test.sh. RC_LINK_LENIENT */
+ * Run with run_lfqueue_test.sh. */
 #include "libs/spurs/cellSpurs.c"
 #ifndef RC_LFQ_NO_7031
 #include "libs/spurs/spurs_pm.c"        /* spurs_pm_build_context: LS 0x1DC */

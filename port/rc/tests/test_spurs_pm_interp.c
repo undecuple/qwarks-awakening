@@ -98,6 +98,14 @@ int main(int argc, char** argv)
         printf("PASS unlifted policy module -> interpreter from LS 0xA00, image -1\n");
         if (noblock) { assert(g_block_at_interp == 0); printf("PASS noblock: channel reads left non-blocking\n"); }
         else { assert(g_block_at_interp == 1); printf("PASS 7037: blocking channel reads on before the first instruction\n"); }
+        /* A stopped interpreter needs no handoff. Patch 7039 schedules the
+         * dispatcher only when it returns while still running (resident lift
+         * reached). Verify the pointer, without executing a lifted image. */
+        assert(c->status == SPU_STATUS_STOPPED && c->tramp_fn == NULL);
+        c->status = SPU_STATUS_RUNNING;
+        r->fn(c);
+        assert(g_interp_calls == 2 && c->tramp_fn == spu_indirect_branch);
+        printf("PASS 7039: running interpreter schedules dispatcher handoff\n");
     }
     return 0;
 }

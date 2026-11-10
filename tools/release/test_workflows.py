@@ -26,6 +26,7 @@ ports' tools/release/test_workflows.py (same author, MIT).
     python3 tools/release/test_workflows.py
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -158,6 +159,7 @@ def test_release():
     check("sha256sum -c" in lj, "release.yml: the build verifies the zip's .sha256")
     # toolchain and inputs
     check("fetch_toolchain.py --check --strict" in lj, "release.yml: the toolchain manifest is checked --strict")
+    check("bump_version.py --agree" in lj, "release.yml: shared version checker covers the catalog mirror")
     check("git submodule update --init --depth 1 third_party/imgui" in lj and "submodules:" not in code(lj)
           and "ps3recomp-patched.sh" not in c, "release.yml: only the imgui submodule; no ps3recomp toolkit")
     check(not re.search(r"EBOOT|\.elf\b|\.self\b|\.psarc|library/", c), "release.yml: no game file named")
@@ -192,15 +194,20 @@ def test_version_step(lj):
     script = textwrap.dedent(m.group(1))
     names_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "names.py")
 
-    def run(cmake_ver, tag):
+    def run(cmake_ver, tag, catalog_ver=lambda v: v):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "tools", "release"))
             os.makedirs(os.path.join(d, "launcher"))
             os.makedirs(os.path.join(d, "port", "rc"))
+            os.makedirs(os.path.join(d, "data", "titles"))
             shutil.copy(names_py, os.path.join(d, "tools", "release", "names.py"))
+            shutil.copy(os.path.join(os.path.dirname(names_py), "bump_version.py"),
+                        os.path.join(d, "tools", "release", "bump_version.py"))
             sys.path.insert(0, os.path.dirname(names_py))
             import names
             v = names.VERSION
+            with open(os.path.join(d, "data", "titles", "catalog.json"), "w") as f:
+                json.dump({"port_version": catalog_ver(v)}, f)
             with open(os.path.join(d, "launcher", "CMakeLists.txt"), "w") as f:
                 f.write(f"project(qwark_launcher VERSION {cmake_ver(v)} LANGUAGES CXX)\n")
             with open(os.path.join(d, "port", "rc", "CMakeLists.txt"), "w") as f:
@@ -223,6 +230,8 @@ def test_version_step(lj):
     check(rc != 0 and "launcher/CMakeLists.txt" in out, "release.yml version step: 0x2x0 is not 0.2.0 (dots escaped)", out)
     rc, out = run(lambda v: v, lambda v: "v9" + v)
     check(rc != 0, "release.yml version step: a tag that is not names.VERSION fails", out)
+    rc, out = run(lambda v: v, lambda v: "v" + v, lambda v: "0.0.0")
+    check(rc != 0 and "catalog.json" in out, "release.yml version step: stale catalog mirror refused", out)
 
 
 def test_ci():

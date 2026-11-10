@@ -14,7 +14,8 @@ tmp="${TMPDIR:-/tmp}/rcpmi_$$"; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
 cc="${CC:-gcc}"
 echo "== test_spurs_pm_interp.c"
 "$cc" -std=gnu11 -O1 -w -pthread -I"$tree/include" -I"$tree" -I"$tree/runtime/spu" -I"$here" ${RC_TEST_CFLAGS:-} \
-   -Wl,--unresolved-symbols=ignore-all -o "$tmp/t" "$here/test_spurs_pm_interp.c"
+   -ffunction-sections -fdata-sections -Wl,--gc-sections \
+   -o "$tmp/t" "$here/test_spurs_pm_interp.c" "$here/rc_spurs_host_support.c"
 "$tmp/t"
 RC_SPURS_PM_INTERP=0 "$tmp/t" off
 if grep -q "R&C patch 7037" "$tree/runtime/spu/spurs_policy.c"; then RC_SPURS_PM_NOBLOCK=1 "$tmp/t" noblock; fi
