@@ -1,27 +1,32 @@
 # Building the port
 
-The port's program is generated from **your own copy** of the game: the game's code is lifted to C from your
+The port's program is generated from **your own copy** of the game. The game's code is lifted to C from your
 decrypted EBOOT and compiled on your machine. Nothing of the game is in this repository, and nothing is downloaded.
-The steps below are written for the first target, *Ratchet & Clank Future: Tools of Destruction*; how far each other
+The steps below are written for the first target, *Ratchet & Clank Future: Tools of Destruction*. How far each other
 game gets is in the README's status table.
 
-**Status: early work.** The game starts and can be played by hand from its first level, with known bugs; it has not
-been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux. The
-releases carry no game program and there is no installer. Since v0.3.0 the launcher can build a game from your own copy
-(checked on Linux only, not tried on Windows); the developer build from source with [Nix](https://nixos.org/),
-described below, is the way every test build was made.
+Status: early work. The game starts and can be played by hand from its first level, with known bugs. It has not
+been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux.
+
+| Way to build | Who it is for | State |
+|---|---|---|
+| The launcher (installer or zip from the releases) | Players | Builds a game from your own copy since v0.3.0; checked on Linux only, not tried on Windows. See the README's Install part. |
+| From source with [Nix](https://nixos.org/), below | Developers | The way every test build was made |
+
+The releases carry no game program.
 
 ## What you need
 
-From your own copy of the game:
+You need two things from your own copy of the game.
 
 | Item | Notes |
 |---|---|
 | Ratchet & Clank Future: Tools of Destruction, US disc **BCUS98127**, as a decrypted folder | The folder that holds `PS3_GAME/`. Other regions are untested. |
 | The **decrypted EBOOT** | `EBOOT.elf`, made from your own copy of the game. This project provides no decryption tools or instructions; [RPCS3](https://rpcs3.net) and its documentation are the place to start for dumping questions. |
 
-To build: Linux with Nix (flakes enabled), 16 GB of memory or more and plenty of free disk. To run: a GPU with
-Direct3D 12 support. The only tested way to run it is the Windows program under Proton on Linux.
+| To build | To run |
+|---|---|
+| Linux with Nix (flakes enabled), 16 GB of memory or more, plenty of free disk | A GPU with Direct3D 12 support; the only tested way is the Windows program under Proton on Linux |
 
 ## Toolchain
 
@@ -38,8 +43,8 @@ nix develop          # everything, plus Xvfb and steam-run for test runs under P
 
 ## Steps
 
-**Status on Linux (2026-11-03, ps3recomp v0.18.0):** steps 1 to 3b were run on NixOS in a fresh clone and gave the
-same lifted code as the developer's checkout, whose build (steps 4 and 5) was run under Proton (step 6).
+**Status on Linux (2026-11-03, ps3recomp v0.18.0).** Steps 1 to 3b were run on NixOS in a fresh clone. They gave the
+same lifted code as the developer's checkout. That checkout's build (steps 4 and 5) was run under Proton (step 6).
 
 ```sh
 git clone --recursive https://github.com/undecuple/qwarks-awakening
@@ -67,34 +72,33 @@ nix develop .#win --command tools/sandbox.sh -- tools/build-rc.sh build/rc-tods-
 nix develop --command tools/proton-test.sh --seconds 60 --name boot work/stage/tods/tods.exe /path/to/PS3_GAME/USRDIR/EBOOT.elf
 ```
 
-The program takes the decrypted EBOOT as its only argument and finds the game's files from that path, which
-must look like `<root>/PS3_GAME/USRDIR/EBOOT.elf`.
+The program takes the decrypted EBOOT as its only argument. It finds the game's files from that path, which must
+look like `<root>/PS3_GAME/USRDIR/EBOOT.elf`.
 
-The lift and the build are the slow parts: each lifted source chunk can take 1 to 2 GB of memory to compile, and
-`build-rc.sh` picks the number of compiler jobs from the free memory (override with `RC_BUILD_JOBS_MAX`).
-On the developer machine the lift takes about half a minute and a warm build about twelve minutes.
-Without a shared build-slot helper, `lift.sh` prints a warning about it; that warning is harmless on a machine
-that runs nothing else.
+The lift and the build are the slow parts. Each lifted source chunk can take 1 to 2 GB of memory to compile.
+`build-rc.sh` picks the number of compiler jobs from the free memory (override with `RC_BUILD_JOBS_MAX`). On the
+developer machine the lift takes about half a minute and a warm build about twelve minutes. Without a shared
+build-slot helper, `lift.sh` prints a warning about it. That warning is harmless on a machine that runs nothing else.
 
 `tools/proton-test.sh` uses GE-Proton from Steam's `compatibilitytools.d` by default (`--proton DIR` picks another).
 The program's output is in `work/proton/NAME/app/app_stdout.txt` and a screenshot in `work/shots/NAME.png`.
 
 ## Building on macOS
 
-**Status: not run.** Nobody has built or run the port on a Mac, and the macOS Nix shells of this flake have not been
+**Status: not run.** Nobody has built or run the port on a Mac. The macOS Nix shells of this flake have not been
 tested. Reports are welcome (open an issue).
 
-- **What you would need:** a Mac with Apple silicon, 16 GB of memory or more, and Nix with flakes enabled
+- What you would need: a Mac with Apple silicon, 16 GB of memory or more, and Nix with flakes enabled
   (`experimental-features = nix-command flakes` in `~/.config/nix/nix.conf`).
-- **Steps:** the same as [Steps](#steps) 1 to 5. `tools/sandbox.sh` relies on bubblewrap, which is Linux-only, so
-  on macOS run the commands without it (untested).
-- **Running:** `tods.exe` is a Windows program and Proton does not run on macOS. The untested option is to copy
+- Steps: the same as [Steps](#steps) 1 to 5. `tools/sandbox.sh` relies on bubblewrap, which is Linux-only. On
+  macOS, run the commands without it (untested).
+- Running: `tods.exe` is a Windows program, and Proton does not run on macOS. The untested option is to copy
   `work/stage/tods/` to a Windows PC and run it there.
 
 ## Building on Windows
 
-**Status: not run.** The port has not been built on Windows or WSL2, and it has not been run on real Windows; it is
-tested under Proton on Linux only.
+**Status: not run.** The port has not been built on Windows or WSL2. It has not been run on real Windows either; it
+is tested under Proton on Linux only.
 
 Nix does not run on Windows itself, so the build would run inside **WSL2** (untested):
 
@@ -102,5 +106,5 @@ Nix does not run on Windows itself, so the build would run inside **WSL2** (unte
 2. Give WSL2 enough memory: `%UserProfile%\.wslconfig` with `[wsl2]` and `memory=24GB`, then `wsl --shutdown`.
 3. Keep the repository inside the Linux file system (not under `/mnt/c`); the build reads and writes many files.
 4. Run [Steps](#steps) 1 to 5 unchanged. Skip step 6.
-5. Copy `work/stage/tods/` to a Windows folder and start `tods.exe` there with the path of your decrypted EBOOT as
-   the argument. You need a GPU with Direct3D 12 and a current driver.
+5. Copy `work/stage/tods/` to a Windows folder. Start `tods.exe` there with the path of your decrypted EBOOT as the
+   argument. You need a GPU with Direct3D 12 and a current driver.

@@ -33,7 +33,7 @@ LAUNCHER_EXE = "Qwarks-Awakening-launcher.exe"      # the launcher's name inside
 
 
 def launcher_zip_name(version):
-    """The launcher's release asset: Qwarks-Awakening-<version>-launcher-windows-x64.zip (+ .sha256 beside it)."""
+    """The launcher's release asset: Qwarks-Awakening-<version>-launcher-windows-x64.zip (listed in SHA256SUMS)."""
     return f"{ASSET_STEM}-{version}-launcher-windows-x64.zip"
 
 
@@ -51,7 +51,7 @@ REPO_API = f"https://api.github.com/repos/{OWNER}/{REPO_SLUG}"   # the opt-in "c
 
 
 def build_zip_name(version):
-    """The full build download: Qwarks-Awakening-<version>-build-windows-x64.zip (+ .sha256 beside it)."""
+    """The full build download: Qwarks-Awakening-<version>-build-windows-x64.zip (listed in SHA256SUMS)."""
     return f"{ASSET_STEM}-{version}-build-windows-x64.zip"
 
 
@@ -63,6 +63,12 @@ def build_zip_top(version):
 def symbols_zip_name(version):
     """the launcher's own debug information (split from the release exe), an optional asset fetched on request."""
     return f"{ASSET_STEM}-{version}-launcher-symbols.zip"
+
+
+def setup_exe_name(version):
+    """0.3.1: the installer, the main download: Qwarks-Awakening-<version>-setup-windows-x64.exe. installer/rc.iss
+    builds it from the full build zip's folder (OutputBaseFilename = this name without .exe; test_rc_iss.py)."""
+    return f"{ASSET_STEM}-{version}-setup-windows-x64.exe"
 
 
 def release_tag(version):

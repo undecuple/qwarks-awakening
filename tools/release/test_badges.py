@@ -110,8 +110,8 @@ def main():
     readme = badges.read(badges.README)
     a, b = readme.find(badges.START), readme.find(badges.END)
     blk = readme[a:b] if 0 <= a < b else ""
-    check(0 <= a < b and readme.find("## Try the launcher preview") > b and a > readme.find("# Qwark's Awakening"),
-          "README: block sits after the title and before 'Try the launcher preview'")
+    check(0 <= a < b and readme.find("## Install") > b and a > readme.find("# Qwark's Awakening"),
+          "README: block sits after the title and before 'Install'")
     imgs = re.findall(r"\[!\[([^\]]*)\]\(([^)]*)\)\]\(([^)]*)\)", blk)
     check(len(imgs) == len(leaves) and all(alt.strip() for alt, _, _ in imgs), "README: one image with alt text per game")
     check(len(imgs) == len(leaves) and all(alt == f'{g["badge_name"]}: {badges.LABEL[g["playability"]]}'

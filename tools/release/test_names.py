@@ -61,10 +61,15 @@ def main():
     check(names.LAUNCHER_EXE.lower().endswith(".exe") and names.LAUNCHER_EXE.startswith(names.ASSET_STEM),
           "LAUNCHER_EXE starts with ASSET_STEM and ends in .exe")
     check(names.launcher_zip_top("1.2.3").startswith(names.ASSET_STEM + "-1.2.3"), "zip top folder names the version")
+    s = names.setup_exe_name("1.2.3")
+    check(s == "Qwarks-Awakening-1.2.3-setup-windows-x64.exe", "setup_exe_name shape (the installer)")
+    check(all(c.isalnum() or c in "-._" for c in s), "setup exe name is plain ASCII (no spaces or quotes)")
+    check(s not in (z, names.build_zip_name("1.2.3"), names.symbols_zip_name("1.2.3")), "setup exe name differs from the zips")
     check(re.fullmatch(r"\d+\.\d+\.\d+", names.VERSION) is not None, "VERSION is X.Y.Z")
     rel = read(PUB / ".github" / "workflows" / "release.yml")
     check(rel is not None and "names.launcher_zip_name" in rel and "names.ASSET_STEM" in rel,
           "release.yml takes the asset names from names.py")
+    check(rel is not None and "names.setup_exe_name" in rel, "release.yml takes the setup exe name from names.py")
     pz = read(HERE / "pack_zip.py") or ""
     check("names.launcher_zip_name" in pz and "names.LAUNCHER_EXE" in pz, "pack_zip.py takes its names from names.py")
     print("test_names:", "FAIL" if FAILS else "PASS")

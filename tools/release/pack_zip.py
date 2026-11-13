@@ -13,7 +13,7 @@ and size, the release, the full zip's URL and an estimate of its size); (2) the 
 (CMake -DLAUNCHER_KIT_MANIFEST=KIT.json compiles its SHA-256, release, URL and sizes in); (3) the zips. Without
 --kit-manifest only the bare launcher zip is written (a launcher built without a kit list never downloads one).
 
-From the Killzone 3 port's tools/release/pack_zip.py (same author, MIT): the same deterministic zip and .sha256 file.
+From the Killzone 3 port's tools/release/pack_zip.py (same author, MIT): the same deterministic zip.
 
 The bare launcher zip (names.launcher_zip_name(version), every entry under names.launcher_zip_top(version)/):
   names.LAUNCHER_EXE                      the launcher (--exe; must be a 64-bit Windows program, not a DLL)
@@ -48,7 +48,8 @@ extension, two entries whose paths differ only by letter case (one file on NTFS)
 --kit-manifest also a kit file that differs from the list, a list of another version, and an exe that does not carry
 the list's SHA-256 (built for another kit). Deterministic: entries sorted by path, fixed 1980-01-01 dates, MS-DOS
 attributes, Deflate level 9, no extra fields or comment, so the same inputs give the same bytes with the same
-Python/zlib. `<zip>.sha256` ("HASH  NAME", LF, no BOM; sha256sum -c reads it) is written beside each zip.
+Python/zlib. Each zip's SHA-256 is printed; no per-zip .sha256 file is written (0.3.1: the release's SHA256SUMS lists
+the setup exe and the three zips).
 Exit 0 = written, 1 = refused, 2 = usage.
 """
 import argparse
@@ -394,10 +395,7 @@ def write_zip(out, top, files):
                     data = f.read()
             z.writestr(zi, data, compresslevel=9)
     os.replace(part, out)
-    digest = sha256_file(out)
-    with open(out + ".sha256", "w", encoding="utf-8", newline="\n") as f:
-        f.write(f"{digest}  {os.path.basename(out)}\n")
-    return digest
+    return sha256_file(out)
 
 
 def main(argv=None, out=sys.stdout):
@@ -406,7 +404,7 @@ def main(argv=None, out=sys.stdout):
     ap.add_argument("--sdl3", help="folder with SDL3.dll and LICENSE.txt (stage_sdl3.py --out)")
     ap.add_argument("--python", help="the unpacked Python embeddable package (fetch_toolchain.py trees/python)")
     ap.add_argument("--version", required=True)
-    ap.add_argument("--out", help="folder for the zips and their .sha256")
+    ap.add_argument("--out", help="folder for the zips")
     ap.add_argument("--root", default=ROOT)
     ap.add_argument("--replace", action="store_true")
     ap.add_argument("--make-kit-manifest", metavar="FILE", help="write the build kit's list (kit.json) and stop")

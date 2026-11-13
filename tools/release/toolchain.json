@@ -1,6 +1,16 @@
 {
  "format": 1,
  "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships.",
+ "build_tools": [
+  {
+   "name": "innosetup",
+   "version": "6.7.3",
+   "url": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-{version}.exe",
+   "sha256": "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732",
+   "license": "Inno Setup License (setups built with it may be distributed, also commercially)",
+   "about": "Build-time only (never shipped, never in the payload): the official Inno Setup installer from the jrsoftware/issrc GitHub releases, hash-checked by .github/workflows/release.yml (installer job) and the local wizard test before a silent per-user install; ISCC compiles installer/rc.iss. Hash from a download on 2026-11-13, equal to the Killzone 3 port's pin of the same file. Not a fetch_toolchain.py component."
+  }
+ ],
  "components": [
   {
    "name": "llvm-mingw",

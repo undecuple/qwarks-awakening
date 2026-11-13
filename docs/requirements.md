@@ -31,7 +31,7 @@ playing are not measured; they will be listed here once the game is playable.
 
 ## Distribution
 
-Releases are pre-releases on this repository's
+Launcher releases are full releases and game releases are pre-releases on this repository's
 [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases) page; since v0.2.0 they have a launcher
 preview for Windows (since 0.3.0 in its own release, `launcher-v0.3.0`, beside notes-only releases per game), and since
 0.3.0 it builds a game from your own copy (checked on Linux only, not tried on

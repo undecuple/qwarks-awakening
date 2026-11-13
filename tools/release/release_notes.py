@@ -44,12 +44,24 @@ import names  # noqa: E402
 
 AI_LINE = "AI tools were used in making this port; the README section \"How AI was used\" says how."
 PARA2 = (f"You need your own copy of the game (the US disc, {names.SERIAL}) and the decrypted EBOOT made from it; "
-         "neither is included or downloaded. SHA-256 sums: SHA256SUMS (and the .sha256 files). See the README for "
+         "neither is included or downloaded. SHA-256 sums of the four files: SHA256SUMS. See the README for "
          "what it does and what goes online.")
 PARA2_GAME = ("You need your own copy of the game and the decrypted EBOOT made from it; neither is included or "
               "downloaded. This release has no download: the game is built on your PC from your copy by the launcher "
               "of the same version. See the README for what it does and what goes online.")
 LAUNCHER_GROUPS = ("[All games]", "[Launcher]")
+
+
+def downloads(version):
+    """The launcher release's download list (0.3.1): the installer first, the zips as the portable option."""
+    return ["**Downloads**", "",
+            f"- **Installer (recommended):** `{names.setup_exe_name(version)}`. It installs the launcher and the build "
+            "kit for your Windows user (no administrator rights) and adds Start-menu and desktop shortcuts. The program "
+            "is not signed: if Windows shows \"Windows protected your PC\", choose \"More info\", then \"Run anyway\".",
+            f"- **Portable (no install):** `{names.build_zip_name(version)}` holds the launcher and the build kit. "
+            f"`{names.launcher_zip_name(version)}` holds the launcher only; it asks before it downloads the build kit "
+            f"on your first Build. Unpack the whole folder, then start `{names.LAUNCHER_EXE}`.",
+            f"- `{names.symbols_zip_name(version)}`: the launcher's debug information, only for bug reports.", ""]
 SETUP_GROUP = "Test setup"
 STATE = {"not_built": "not built", "boots": "boots", "menus": "menus", "in_game": "in game",
          "playable": "playable", "completed": "completed"}          # badges.py's labels
@@ -165,8 +177,13 @@ def build(text, tag, status=None, known_issues=False, games=None):
     if who == "launcher":
         title = f"Launcher v{version}"
         picked = [g for g in groups if g[0].startswith(LAUNCHER_GROUPS)]
-        first = [f"{names.PRODUCT} launcher {version}{pre_txt}. It builds the games on your PC from your own copy; "
-                 "the release notes of each game are its own release of the same version.", ""]
+        # the launcher release is a full release marked Latest, so its first line never says "pre-release"; the
+        # README's state stays (the v0.3.0 published form). Game bodies keep the pre-release wording.
+        word = (status or "").split(",")[0].strip()
+        state = f"{word}: no game is playable start to finish yet" if "not playable" in (status or "") else word
+        launcher_txt = f" ({state}), see {link('docs/RELEASE-CRITERIA.md')}" if pre else ""
+        first = [f"{names.PRODUCT} launcher {version}{launcher_txt}. It builds the games on your PC from your own copy; "
+                 "the release notes of each game are its own release of the same version.", ""] + downloads(version)
         last = PARA2
     else:
         game = (games or {}).get(who)

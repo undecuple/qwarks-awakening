@@ -1,7 +1,8 @@
 # Release criteria
 
-Qwark's Awakening has no release date. Versions below 1.0.0 are previews: **v0.x = preview**, published as GitHub
-pre-releases, each saying what is missing. **v1.0.0 = Ratchet & Clank Future: Tools of Destruction playable start to
+Qwark's Awakening has no release date. Versions below 1.0.0 are previews: **v0.x = preview**, each release saying what
+is missing. Launcher releases are full GitHub releases marked Latest; a game's release stays a pre-release while that
+game is not playable start to finish. **v1.0.0 = Ratchet & Clank Future: Tools of Destruction playable start to
 finish at the game's own frame rate.** The first release that calls itself **playable** waits for every point of the
 second list. Starting the program, or reaching a menu, does not count. This list, not a date, is what a release is
 measured against.
@@ -61,7 +62,9 @@ game is playable yet: how far each one gets is in the README and in [CHANGELOG.m
    tagged commit, never uploaded by hand, and started once on Windows or under Proton before the draft is published.
 7. **Tags are never moved**; a fix is a new tag (`launcher-v0.3.1`), a feature a new minor version
    (`launcher-v0.4.0`). A game's tag uses the version of the launcher release that builds it.
-8. **Published as a pre-release** while the version is 0.x.
+8. **Launcher releases are full releases**, marked Latest, at every version; their notes say no game is playable
+   start to finish yet while that holds. **A game's release is a pre-release** until that game meets the v1.0.0 list
+   below.
 
 ## Release criteria for v1.0.0 (playable)
 

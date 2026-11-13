@@ -17,6 +17,7 @@
 | [Adwaita Sans and Adwaita Mono](https://gitlab.gnome.org/GNOME/adwaita-fonts) (The Inter Project Authors, Renzhi Li, Jamie Gravendeel, Florian Müllner) | the launcher's text and headings (Sans) and its paths and versions (Mono), from the GNOME release adwaita-fonts 51.0: Adwaita Mono Regular unmodified; Adwaita Sans Regular, SemiBold and Bold are static instances cut from its variable font by `tools/release/font_instances.py` (a Modified Version under the OFL; no Reserved Font Name); the TTF files ship in `launcher/fonts/` with `OFL-adwaita.txt` | SIL OFL 1.1 |
 | [Russo One](https://github.com/google/fonts/tree/main/ofl/russoone) (Jovanny Lemonad) | the launcher's wordmark on its About section; the TTF file ships in `launcher/fonts/` with its licence text | SIL OFL 1.1 |
 | [Adwaita Sans and Adwaita Mono](https://gitlab.gnome.org/GNOME/adwaita-fonts) (The Inter Project Authors, Renzhi Li, Jamie Gravendeel, Florian Müllner) | the project page's text and headings (Sans Regular, SemiBold and Bold) and code (Mono Regular): WOFF2 files made from the launcher's Adwaita fonts above by `tools/release/site_fonts.py`, subset to Latin (Modified Versions under the OFL; no Reserved Font Name); they ship in `site/fonts/` with `OFL-adwaita.txt` | SIL OFL 1.1 |
+| [Inno Setup](https://jrsoftware.org/isinfo.php) (Jordan Russell and Martijn Laan) | builds the installer (`installer/rc.iss`) in the release workflow: version 6.7.3, the official installer pinned by SHA-256 in `tools/release/toolchain.json`; a build tool, never in a download or the repository. The setup exe carries Inno Setup's setup and uninstaller program, which its licence allows to be distributed with the installers built with it | Inno Setup License |
 | [IGDB](https://www.igdb.com/) | cover art, only when the player turns "Fetch cover art from the internet" on (not active yet) | their terms |
 
 ## Upstream contributors and sister ports
@@ -43,6 +44,9 @@ author's sister ports. Each patch header names its source.
   surfaces share the address), 2152 (the present paths skip a back buffer GetBuffer could not return) and 2154 (the
   draw state memo is invalidated after the helper blits); and, directly, the in-play rule of its patch 6046 (the pointer held in the window while a
   look update took mouse counts in the last 300 ms, free otherwise), used by the R&C cursor rule in `port/rc/main.cpp`.
+- **Project Helghast**, the installer: `installer/rc.iss` is adapted from its `installer/kz3.iss` (the per-user
+  install, the install-folder rules, the shortcuts and the uninstaller that asks before it removes the player's data),
+  and the release workflow's Inno Setup steps from its `release.yml` (MIT; the header blocks name the source).
 - **J-Stars Victory VS+ port** (MIT): its patch 0004, carried as patch 1145: the HLE fast path stores the caller's
   TOC in the ABI slot as the full path does.
 - **Toro Lets Party port** (same author): [PR #387](https://github.com/sp00nznet/ps3recomp/pull/387), the PPU

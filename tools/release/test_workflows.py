@@ -10,15 +10,18 @@ ports' tools/release/test_workflows.py (same author, MIT).
     permissions; only the publish job can write, it runs on tag pushes only and checks out no code; concurrency per
     ref without cancel-in-progress; the tag must be v + names.VERSION in the build and in publish; the notes come from
     the CHANGELOG (release_notes.py) before the toolchain is fetched and travel in the artifact as release-body.md;
-    every file publish uses is in the artifact the launcher job uploads; `gh release create TAG --draft $pre
-    --verify-tag --title TAG --notes-file release-body.md`, 0.* gets --prerelease; an existing release is refused;
-    no --clobber, upload, edit or delete, no tag or push; sha256sum -c on the .sha256 and SHA256SUMS before the
-    release is created; the gh CLI runs outside a checkout with GH_REPO set; the zip bundles the pinned Python
+    every file publish uses is in the artifact the launcher job uploads; `gh release create TAG --draft --latest
+    --verify-tag --title TAG --notes-file release-body.md`, never --prerelease; an existing release is refused;
+    no --clobber, upload, edit or delete, no tag or push; SHA256SUMS (setup exe + three zips, no per-file .sha256
+    since 0.3.1) checked before the release is created; the gh CLI runs outside a checkout with GH_REPO set; the zip bundles the pinned Python
     embeddable package (PSF credited in the header); the toolchain manifest is checked
     --strict; only the imgui submodule is fetched and ps3recomp-patched.sh is not run; no game file is named;
   - release.yml (2026-11-03 review): the version mirrors are grepped with the dots escaped (the step is run in a temp
     tree: 0x2x0 must not pass for 0.2.0); the built exe's imports are checked (pe_imports.py --allow SDL3.dll);
     the Windows-host toolchain only; the 14-day artifact retention is explained;
+  - release.yml installer job (0.3.1): after the launcher job, read-only plus actions: read, no rebuild (the
+    full build zip from the launcher artifact), Inno Setup pinned by version and SHA-256 from toolchain.json build_tools,
+    ISCC on installer/rc.iss with the payload and version, the setup exe (names.setup_exe_name) uploaded and published;
   - ci.yml: runs the release tools' host tests (every tools/release/test_*.py) and fetch_toolchain.py --check --strict,
     and cross-compiles the launcher (launcher-build) with the pinned Linux llvm-mingw and checks its imports;
   - dependabot.yml: github-actions updates, weekly, grouped.
@@ -96,6 +99,44 @@ def upload_paths(job):
     return [ln.strip() for ln in m.group(1).splitlines()] if m else []
 
 
+def test_installer_job(ij, pub):
+    """The installer job (0.3.1)."""
+    check("needs: launcher" in ij and "if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')" in ij,
+          "release.yml: installer runs after the launcher job, on launcher tags and the dry run")
+    perms = re.search(r"^    permissions:\n((?:      [^\n]*\n)+)", ij, re.M)
+    pl = re.findall(r"^      (\w[\w-]*):\s*(\w+)", perms.group(1), re.M) if perms else []
+    check(sorted(pl) == [("actions", "read"), ("contents", "read")],
+          "release.yml: installer is read-only (contents: read, actions: read for gh run download)", pl)
+    check("runs-on: windows-2022" in ij and "core.autocrlf false" in ij and ij.index("core.autocrlf") < ij.index("actions/checkout"),
+          "release.yml: installer on windows-2022, LF kept before checkout")
+    check('gh run download "$GITHUB_RUN_ID" --name "$ARTIFACT"' in ij and "ARTIFACT: ${{ needs.launcher.outputs.artifact }}" in ij
+          and "BUILD_ZIP: ${{ needs.launcher.outputs.build_zip }}" in ij and "-m zipfile -e" in ij
+          and "build_launcher.sh" not in ij and "pack_zip.py" not in ij and "fetch_toolchain.py" not in ij,
+          "release.yml: installer unpacks the launcher job's full build zip, no rebuild")
+    with open(os.path.join(ROOT, "tools", "release", "toolchain.json"), encoding="utf-8") as f:
+        pin = [b for b in json.load(f).get("build_tools", []) if b["name"] == "innosetup"]
+    ver = re.search(r'INNO_VERSION: "([\d.]+)"', ij)
+    check(len(pin) == 1 and re.fullmatch(r"[0-9a-f]{64}", pin[0]["sha256"]) and ver and ver.group(1) == pin[0]["version"]
+          and pin[0]["url"].startswith("https://github.com/jrsoftware/issrc/releases/download/"),
+          "release.yml: INNO_VERSION equals the toolchain.json build_tools pin (official jrsoftware/issrc release, SHA-256)",
+          (pin, ver and ver.group(1)))
+    check("ConvertFrom-Json).build_tools" in ij and "Get-FileHash $exe -Algorithm SHA256" in ij
+          and "if ($got -ne $pin.sha256)" in ij and ij.index("if ($got -ne $pin.sha256)") < ij.index("Start-Process $exe"),
+          "release.yml: the Inno Setup download is hash-checked before it runs")
+    check('"/DAppVersion=$env:VERSION" "/DPayload=$env:PAYLOAD"' in ij and "installer\\rc.iss" in ij
+          and "SETUP_EXE: ${{ needs.launcher.outputs.setup_exe }}" in ij and "names.setup_exe_name(sys.argv[1])" in js_launcher_text(),
+          "release.yml: ISCC compiles installer/rc.iss with the version and payload; the setup name comes from names.py")
+    check("python3 tools/release/test_rc_iss.py" in ij, "release.yml: installer runs the rc.iss checks first")
+    check("path: build/release-out/${{ needs.launcher.outputs.setup_exe }}" in ij and "name: ${{ steps.names.outputs.artifact }}" in ij
+          and "artifact: ${{ steps.names.outputs.artifact }}" in ij and "SETUP_ARTIFACT: ${{ needs.installer.outputs.artifact }}" in pub
+          and 'gh run download "$GITHUB_RUN_ID" --name "$SETUP_ARTIFACT"' in pub,
+          "release.yml: the setup exe travels in its own artifact to publish")
+
+
+def js_launcher_text():
+    return jobs(read(os.path.join(WF, "release.yml"))).get("launcher", "")
+
+
 def test_release():
     t = read(os.path.join(WF, "release.yml"))
     c = code(t)
@@ -115,8 +156,8 @@ def test_release():
     check(re.search(r"^concurrency:\n  group: release-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false", t, re.M)
           is not None, "release.yml: one run per ref, never cancelled half-way")
     js = jobs(t)
-    check(set(js) == {"launcher", "publish", "game-notes", "game-publish"},
-          "release.yml: launcher, publish, game-notes and game-publish jobs", list(js))
+    check(set(js) == {"launcher", "installer", "publish", "game-notes", "game-publish"},
+          "release.yml: launcher, installer, publish, game-notes and game-publish jobs", list(js))
     for job, body in js.items():
         check(re.search(r"^    permissions:", body, re.M) is not None, f"release.yml: job {job} sets its own permissions")
     writers = [j for j, b in js.items() if re.search(r"contents:\s*write", b)]
@@ -124,11 +165,12 @@ def test_release():
     lj, pub = js.get("launcher", ""), js.get("publish", "")
     check("contents: write" not in lj and "actions: write" not in lj, "release.yml: the build job is read-only")
     check("if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'launcher-v')" in pub
-          and "actions/checkout" not in pub and "needs: launcher" in pub,
+          and "actions/checkout" not in pub and "needs: [launcher, installer]" in pub,
           "release.yml: publish runs on launcher tag pushes only, after the build, with no checkout")
     check("if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')" in lj,
           "release.yml: the launcher builds on a launcher tag or the dry run only (a game tag builds nothing)")
     test_game_jobs(js.get("game-notes", ""), js.get("game-publish", ""))
+    test_installer_job(js.get("installer", ""), pub)
     check("runs-on: windows-latest" in lj and "git config --global core.autocrlf false" in lj
           and lj.index("core.autocrlf") < lj.index("actions/checkout"), "release.yml: Windows runner, LF kept before checkout")
     # version: tag == names.VERSION in both jobs
@@ -142,11 +184,8 @@ def test_release():
     paths = upload_paths(lj)
     check(paths != [], "release.yml: the build uploads an artifact with a path list", paths)
     need = {"release-body.md": "release-body.md", '"$ZIP"': "${{ steps.ver.outputs.zip }}",
-            '"$ZIP.sha256"': "${{ steps.ver.outputs.zip }}.sha256",
             '"$BUILD_ZIP"': "${{ steps.ver.outputs.build_zip }}",
-            '"$BUILD_ZIP.sha256"': "${{ steps.ver.outputs.build_zip }}.sha256",
-            '"$SYMBOLS_ZIP"': "${{ steps.ver.outputs.symbols_zip }}",
-            '"$SYMBOLS_ZIP.sha256"': "${{ steps.ver.outputs.symbols_zip }}.sha256"}
+            '"$SYMBOLS_ZIP"': "${{ steps.ver.outputs.symbols_zip }}"}
     for used, path in need.items():
         check(used in pub and any(p.endswith(path) for p in paths),
               f"release.yml: publish uses {used}, and the artifact carries it", paths)
@@ -161,28 +200,25 @@ def test_release():
     # the release command
     cmd = re.search(r"gh release create ((?:[^\n]*\\\n)*[^\n]*)", c)
     rc = cmd.group(1) if cmd else ""
-    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft \$pre \$latest --verify-tag --title "Launcher v\$VERSION" '
+    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft --latest --verify-tag --title "Launcher v\$VERSION" '
                                        r"--notes-file release-body\.md", rc) is not None,
-          "release.yml: gh release create TAG --draft $pre $latest --verify-tag --title 'Launcher vX.Y.Z' --notes-file release-body.md", rc)
-    check('pre=""; latest="--latest"; case "$VERSION" in 0.*) pre="--prerelease"; latest="" ;; esac' in pub,
-          "release.yml: the launcher release is latest from 1.0.0 on; a 0.x one is a pre-release (never latest on GitHub)")
-    check(re.search(r'"\$ZIP" "\$ZIP\.sha256" "\$BUILD_ZIP" "\$BUILD_ZIP\.sha256" "\$SYMBOLS_ZIP" "\$SYMBOLS_ZIP\.sha256" '
-                    r"SHA256SUMS\s*$", rc) is not None,
-          "release.yml: assets are the launcher, build and symbols zips, their .sha256 and SHA256SUMS", rc)
-    check('0.*) pre="--prerelease"' in pub, "release.yml: a 0.x version is a pre-release")
+          "release.yml: gh release create TAG --draft --latest --verify-tag --title 'Launcher vX.Y.Z' --notes-file release-body.md", rc)
+    check("--prerelease" not in pub and "$pre" not in pub,
+          "release.yml: the launcher release is a full release at every version, never a pre-release")
+    check(re.search(r'"\$SETUP_EXE" "\$ZIP" "\$BUILD_ZIP" "\$SYMBOLS_ZIP" SHA256SUMS\s*$', rc) is not None,
+          "release.yml: assets are the setup exe, the launcher, build and symbols zips and SHA256SUMS", rc)
+    check(not re.search(r"(?<!pin)\.sha256\b", code(t)), "release.yml: no per-file .sha256 is made, uploaded or published (0.3.1)")
     check(not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)|git push", c),
           "release.yml: no clobber, upload, edit or delete; no tag or push")
     check("gh release view" in pub and pub.index("gh release view") < pub.rindex("gh release create"),
           "release.yml: an existing release is refused before anything is created")
-    check('sha256sum -c "$ZIP.sha256"' in pub and 'sha256sum -c "$BUILD_ZIP.sha256"' in pub
-          and 'sha256sum -c "$SYMBOLS_ZIP.sha256"' in pub
-          and 'sha256sum "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS' in pub and "sha256sum -c SHA256SUMS" in pub
+    check('sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS' in pub and "sha256sum -c SHA256SUMS" in pub
           and pub.index("sha256sum -c SHA256SUMS") < pub.rindex("gh release create"),
-          "release.yml: the .sha256 and SHA256SUMS are verified before the release")
+          "release.yml: SHA256SUMS lists the setup exe and the three zips and is verified before the release")
     check("> SHA256SUMS" in pub, "release.yml: SHA256SUMS written beside the assets")
     check('"$RUNNER_TEMP/release-assets"' in pub and "GH_REPO: ${{ github.repository }}" in pub,
           "release.yml: assets downloaded outside any checkout, gh told the repository")
-    check("sha256sum -c" in lj, "release.yml: the build verifies the zip's .sha256")
+    check("sha256sum ./*.zip" in lj, "release.yml: the build prints each zip's SHA-256")
     # toolchain and inputs
     check("fetch_toolchain.py --check --strict" in lj, "release.yml: the toolchain manifest is checked --strict")
     check("bump_version.py --agree" in lj, "release.yml: shared version checker covers the catalog mirror")

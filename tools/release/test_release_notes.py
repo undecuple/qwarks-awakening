@@ -120,8 +120,10 @@ for public in (True, False):
         rc, out, _ = run(root, "--tag", "launcher-v0.3.0", "--out", str(f), "--title-out", str(t))
         body = f.read_text() if f.exists() else ""
         check(rc == 0 and out == "" and t.read_text() == "Launcher v0.3.0\n", f"{lay}: launcher title, --out and --title-out")
-        check(body.startswith(f"{P} launcher 0.3.0, a pre-release (early work), see [docs/RELEASE-CRITERIA.md]"
-                              f"({B}docs/RELEASE-CRITERIA.md)."), f"{lay}: launcher first line, pre-release wording")
+        check(body.startswith(f"{P} launcher 0.3.0 (early work), see "
+                              f"[docs/RELEASE-CRITERIA.md]({B}docs/RELEASE-CRITERIA.md).")
+              and "pre-release" not in body.split("\n")[0],
+              f"{lay}: launcher first line gives the state and never says pre-release")
         check("**[All games]**" in body and "**[Launcher]**" in body and "**Test setup**" in body
               and "ToD item" not in body and "Collection item" not in body and "DLHD item" not in body,
               f"{lay}: launcher body = [All games] + [Launcher] + Test setup, no game group")
@@ -140,6 +142,12 @@ for public in (True, False):
               and body.rstrip().endswith(release_notes.PARA2) and release_notes.AI_LINE in body
               and "Not yet" not in body and "Old." not in body and "Final" not in body,
               f"{lay}: CHANGELOG link, AI line, launcher last paragraph, no neighbouring section leaks in")
+
+        s, bz, lz = (names.setup_exe_name("0.3.0"), names.build_zip_name("0.3.0"), names.launcher_zip_name("0.3.0"))
+        check(s in body and bz in body and lz in body and body.index(s) < body.index("Portable (no install)")
+              < body.index(bz) < body.index("New in 0.3.0:") and "More info" in body and "Run anyway" in body
+              and ".sha256" not in body,
+              f"{lay}: launcher body lists the installer first, the zips as portable, the SmartScreen step, no .sha256")
 
         G = f"{R}/blob/tods-v0.3.0/"
         rc, body, _ = run(root, "--tag", "tods-v0.3.0", "--title-out", str(t))
@@ -163,6 +171,21 @@ for public in (True, False):
         rc, body, _ = run(root, "--tag", "dlhd-v0.3.0", "--title-out", str(t))
         check(rc == 0 and t.read_text() == "Deadlocked HD v0.3.0\n" and "DLHD item" in body
               and "State in this release: **menus**." in body, f"{lay}: a group named by the id (DLHD) is found")
+
+# with the README's real status line: the launcher's first line is the v0.3.0 published form (no "pre-release"),
+# a game's first line keeps the pre-release wording
+with tempfile.TemporaryDirectory() as d:
+    root = layout(d, CL, True, readme="**Status: early work, not playable yet.** x\n")
+    B = f"{R}/blob/launcher-v0.3.0/"
+    rc, body, _ = run(root, "--tag", "launcher-v0.3.0")
+    first = body.split("\n")[0]
+    check(rc == 0 and first.startswith(f"{P} launcher 0.3.0 (early work: no game is playable start to finish yet), see "
+                                       f"[docs/RELEASE-CRITERIA.md]({B}docs/RELEASE-CRITERIA.md). It builds")
+          and "pre-release" not in first, f"launcher line 1 = the published form, no 'pre-release' ({first[:90]})")
+    rc, body, _ = run(root, "--tag", "tods-v0.3.0")
+    first = body.split("\n")[0]
+    check(rc == 0 and ", a pre-release (early work, not playable yet), see" in first,
+          f"a game's line 1 keeps the pre-release wording ({first[:90]})")
 
 with tempfile.TemporaryDirectory() as d:
     root = layout(d, CL, True)

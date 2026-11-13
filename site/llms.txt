@@ -1,14 +1,12 @@
 # Qwark's Awakening
 
-> Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): the PS3 games recompiled into native Windows programs from your own copy.
+> Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): an unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.
 
-Status: early work, not playable yet. Version 0.3.0, a pre-release of
-2026-11-13: the source, and a launcher that builds the games from your own copy (Windows, not tried there yet).
-Tools of Destruction starts and can be played by hand from its first level, with known bugs, and has not been played
-through. In scripted runs of the source of 2026-11-10 it plays about 11 minutes of its first level without a crash,
-Quest for Booty reaches its ship deck, and Ratchet & Clank 1, 2 and 3 from the Collection reach their first
-levels, and A Crack in Time reaches its first level. Deadlocked HD builds, and a scripted new game plays its intro.
-No game is online yet (ONLINE.md).
+Status: early work, not playable yet. Version 0.3.0. The launcher builds the
+games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; nothing was
+tested on Windows itself. The first target, Tools of Destruction, can be played by hand from its first level, with known bugs. Nobody
+has played it through. How far each other game gets in scripted runs is in the status table. No game is
+online yet (ONLINE.md).
 
 Qwark's Awakening is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.

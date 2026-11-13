@@ -11,20 +11,21 @@
 # Release rules: the version comes from the tag and must equal tools/release/names.py VERSION, for a launcher tag (in
 # the build and the publish job; bump_version.py keeps the same string in the launcher, the port's CMakeLists.txt and
 # CITATION.cff) and for a game tag too: a game's release names the release whose build kit builds it, so a game tag is
-# only made together with the launcher tag of the same version, from the same commit. A release is a pre-release while
-# the major version is 0; the launcher release is marked latest from 1.0.0 on (GitHub never marks a pre-release as
-# latest). The notes are written from the version's CHANGELOG.md section (tools/release/release_notes.py --tag, which
-# refuses a version without a section, an unknown game and a tag with no item) before anything is built; SHA256SUMS and
-# one .sha256 per zip sit beside the launcher's assets; an existing release is never touched, no tag is created, moved
-# or deleted, and no asset is overwritten. The maintainer reads each draft and publishes it.
+# only made together with the launcher tag of the same version, from the same commit. The launcher release is a full
+# release marked latest at every version (one clear download); a game release stays a pre-release
+# while its game is not playable start to finish. The notes are written from the version's CHANGELOG.md section (tools/release/release_notes.py --tag, which
+# refuses a version without a section, an unknown game and a tag with no item) before anything is built; SHA256SUMS
+# (the setup exe and the three zips, no per-file .sha256 since 0.3.1) sits beside the launcher's assets; an existing
+# release is never touched, no tag is created, moved or deleted, and no asset is overwritten. The maintainer reads each draft and publishes it.
 #
 # What is built: the launcher (launcher/, SDL3 + Dear ImGui) and two zips from one file list: the bare launcher,
 # which asks before it fetches the build kit on a player's first Build, and the full build zip, which holds the same
 # files plus the build kit (the release's port/ sources, the patched ps3recomp, llvm-mingw, CMake, Ninja and their
 # licences; kit.json lists every kit file with its SHA-256, and the launcher carries that list's hash, compiled in).
 # Never a game program: a game is built on the player's own computer from their own copy of it. No game file is read,
-# used or produced here. No installer yet (the Killzone 3 workflow's Inno Setup steps are left out until the port has
-# one).
+# used or produced here. The installer (since 0.3.1): the installer job compiles installer/rc.iss with Inno Setup from the
+# full build zip's unpacked folder, taken from the launcher job's artifact (no rebuild: the installed files are the zip's
+# bytes); its steps are adapted from the Killzone 3 workflow's.
 #
 # Third-party pieces: actions/checkout and actions/upload-artifact (GitHub, MIT), the gh CLI (MIT, on the image),
 # Dear ImGui (MIT, the third_party/imgui submodule), ps3recomp (MIT, the third_party/ps3recomp submodule, with this
@@ -32,12 +33,15 @@
 # tools/release/toolchain.json: llvm-mingw (Apache-2.0 WITH LLVM-exception; MinGW-w64 and winpthreads licences),
 # SDL3's MinGW development package (zlib; its SDL3.dll ships in the zip), CMake (BSD-3-Clause), Ninja (Apache-2.0),
 # and the Python embeddable package for Windows x64 (Python Software Foundation, PSF-2.0; it ships unmodified in the
-# zip's python\ folder and runs the launcher's setup engine, so a player needs no Python of their own).
+# zip's python\ folder and runs the launcher's setup engine, so a player needs no Python of their own). Build tool of
+# the installer job: Inno Setup 6.7.3 (Inno Setup License; its setup stub is in the setup exe), the official installer
+# pinned by version and SHA-256 in tools/release/toolchain.json build_tools.
 #
 # Published files (names from tools/release/names.py, checked by tools/release/test_names.py):
 #   Qwarks-Awakening-<version>-launcher-windows-x64.zip, Qwarks-Awakening-<version>-build-windows-x64.zip, the
 #   Qwarks-Awakening-<version>-launcher-symbols.zip (the launcher's split debug file: the "Get launcher symbols"
-#   button fetches it), the .sha256 of each, and SHA256SUMS (all three zips)
+#   button fetches it), Qwarks-Awakening-<version>-setup-windows-x64.exe (the installer), and SHA256SUMS (the setup exe
+#   and the three zips)
 name: release
 
 on:
@@ -75,6 +79,7 @@ jobs:
       zip: ${{ steps.ver.outputs.zip }}
       build_zip: ${{ steps.ver.outputs.build_zip }}
       symbols_zip: ${{ steps.ver.outputs.symbols_zip }}
+      setup_exe: ${{ steps.ver.outputs.setup_exe }}
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -135,14 +140,15 @@ jobs:
           grep -qE "^version: \"?$ve\"?\s*$" CITATION.cff \
             || { echo "::error::CITATION.cff version is not $v"; exit 1; }
           # shellcheck disable=SC2046  # two words: the asset stem and the zip name (no spaces in either)
-          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.launcher_zip_name(sys.argv[1]), names.build_zip_name(sys.argv[1]), names.symbols_zip_name(sys.argv[1]))' "$v")
-          stem="$1"; zip="$2"; bzip="$3"; szip="$4"
+          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.launcher_zip_name(sys.argv[1]), names.build_zip_name(sys.argv[1]), names.symbols_zip_name(sys.argv[1]), names.setup_exe_name(sys.argv[1]))' "$v")
+          stem="$1"; zip="$2"; bzip="$3"; szip="$4"; setup="$5"
           {
             echo "version=$v"
             echo "artifact=$stem-$v-release"
             echo "zip=$zip"
             echo "build_zip=$bzip"
             echo "symbols_zip=$szip"
+            echo "setup_exe=$setup"
           } >> "$GITHUB_OUTPUT"
 
       # The notes first, so a missing or empty CHANGELOG section fails before the build. A dry run of a version
@@ -166,7 +172,7 @@ jobs:
         run: |
           failed=""
           for t in test_names test_release_notes test_fetch_toolchain test_pack_zip test_kit test_stage_sdl3 \
-                   test_workflows test_pe_imports test_launcher_src; do
+                   test_workflows test_pe_imports test_launcher_src test_rc_iss; do
             python3 "tools/release/$t.py" || failed="$failed $t"
           done
           if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
@@ -213,7 +219,7 @@ jobs:
           python3 tools/release/stage_sdl3.py --dll "$T/x86_64-w64-mingw32/bin/SDL3.dll" --license "$T/LICENSE.txt" \
             --out work/release/sdl3
 
-      - name: Bare launcher zip, full build zip and launcher symbols zip (and their .sha256)
+      - name: Bare launcher zip, full build zip and launcher symbols zip
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
@@ -222,7 +228,7 @@ jobs:
             --kit-manifest build/kit/kit.json --toolkit work/ps3recomp-patched \
             --toolchain work/release/toolchain-cache/trees --symbols build/launcher-release/launcher.exe.debug
           cd build/release-out
-          sha256sum -c ./*.sha256
+          sha256sum ./*.zip
           ls -l
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -230,24 +236,131 @@ jobs:
           name: ${{ steps.ver.outputs.artifact }}
           path: |
             build/release-out/${{ steps.ver.outputs.zip }}
-            build/release-out/${{ steps.ver.outputs.zip }}.sha256
             build/release-out/${{ steps.ver.outputs.build_zip }}
-            build/release-out/${{ steps.ver.outputs.build_zip }}.sha256
             build/release-out/${{ steps.ver.outputs.symbols_zip }}
-            build/release-out/${{ steps.ver.outputs.symbols_zip }}.sha256
             build/release-out/release-body.md
           if-no-files-found: error
           # The artifact is kept 14 days: publish downloads it from this run, so re-running the publish job of a run
           # older than that fails at the download; a later release needs a new tag push (a new build).
           retention-days: 14
 
-  # Launcher tag pushes only; a dispatch never publishes (the job is skipped). One of the two jobs with write access
-  # (the other is game-publish); it checks out no code. A draft, a pre-release while the major version is 0, titled
-  # "Launcher vX.Y.Z", marked latest from 1.0.0 on. If a release for the tag already exists the job
-  # fails: nothing is edited, re-uploaded or clobbered, and no tag is touched (--verify-tag refuses to create one).
-  # The assets and the notes are the launcher job's artifact (gh run download of this run needs actions: read).
-  publish:
+  # The installer (since 0.3.1): installer/rc.iss compiled with the pinned Inno Setup from the full build zip of the
+  # launcher job's artifact, unpacked here (no rebuild). Launcher tags and the dry run, like the launcher job.
+  # Runner: Windows, because ISCC is a Windows program; the vendor installer runs natively there, where Wine on Ubuntu
+  # would add an unpinned Wine and its 32-bit side to the build. windows-2022 rather than windows-latest so an image
+  # change does not move the build; Inno Setup itself is always the pinned copy, never the image's.
+  installer:
     needs: launcher
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')
+    permissions:
+      contents: read    # the checkout (installer/rc.iss, its art, names.py, toolchain.json)
+      actions: read     # gh run download of the launcher job's artifact from this run
+    outputs:
+      artifact: ${{ steps.names.outputs.artifact }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      INNO_VERSION: "6.7.3"   # WizardStyle dark needs 6.6.0+; 6.7.3 is the version pinned in toolchain.json build_tools
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Line endings as committed
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: python3 on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/bin/python3"
+          chmod +x "$RUNNER_TEMP/bin/python3"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Script checks (rc.iss against the zip file list and names.py)
+        run: python3 tools/release/test_rc_iss.py
+
+      - name: Names (from the launcher job)
+        id: names
+        env:
+          VERSION: ${{ needs.launcher.outputs.version }}
+          ARTIFACT: ${{ needs.launcher.outputs.artifact }}
+        run: |
+          top=$(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.build_zip_top(sys.argv[1]))' "$VERSION")
+          { echo "top=$top"; echo "artifact=$ARTIFACT-setup"; } >> "$GITHUB_OUTPUT"
+
+      # The full build zip from this run's launcher artifact, unpacked outside the checkout
+      - name: Payload (the full build zip, unpacked)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ needs.launcher.outputs.artifact }}
+          BUILD_ZIP: ${{ needs.launcher.outputs.build_zip }}
+          TOP: ${{ steps.names.outputs.top }}
+        run: |
+          set -euo pipefail
+          dl="$RUNNER_TEMP/launcher-artifact"; pay="$RUNNER_TEMP/payload"
+          mkdir "$dl" "$pay"
+          gh run download "$GITHUB_RUN_ID" --name "$ARTIFACT" --dir "$dl"
+          sha256sum "$dl/$BUILD_ZIP"
+          python3 -I -m zipfile -e "$dl/$BUILD_ZIP" "$pay"
+          test -f "$pay/$TOP/kit.json"
+          echo "PAYLOAD=$(cygpath -w "$pay/$TOP")" >> "$GITHUB_ENV"
+
+      - name: Inno Setup (the pinned installer, SHA-256 checked)
+        shell: pwsh
+        run: |
+          # Official installer from the jrsoftware/issrc GitHub releases, checked against the SHA-256 pinned in
+          # tools/release/toolchain.json (build_tools); a mismatch fails the job before anything runs.
+          $pin = (Get-Content tools/release/toolchain.json -Raw | ConvertFrom-Json).build_tools | Where-Object name -eq innosetup
+          if ($pin.version -ne $env:INNO_VERSION) { Write-Error "INNO_VERSION $env:INNO_VERSION != pinned $($pin.version)"; exit 1 }
+          $exe = Join-Path $env:RUNNER_TEMP "innosetup-$($pin.version).exe"
+          Invoke-WebRequest -Uri $pin.url.Replace("{version}", $pin.version) -OutFile $exe
+          $got = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $pin.sha256) { Write-Error "Inno Setup SHA-256 mismatch: got $got, pinned $($pin.sha256)"; exit 1 }
+          # per-user into a folder of our own, so an Inno Setup on the image is never the one used
+          $dir = Join-Path $env:RUNNER_TEMP "inno"
+          $p = Start-Process $exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode) { Write-Error "Inno Setup install exit $($p.ExitCode)"; exit 1 }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Error "ISCC not found in $dir"; exit 1 }
+          # ISCC.exe carries no ProductVersion; the uninstaller next to it does
+          $have = (Get-Item (Join-Path $dir "unins000.exe")).VersionInfo.ProductVersion
+          if (-not "$have".StartsWith($env:INNO_VERSION)) { Write-Error "installed Inno Setup is '$have', not $env:INNO_VERSION"; exit 1 }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Setup exe (ISCC)
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.launcher.outputs.version }}
+          SETUP_EXE: ${{ needs.launcher.outputs.setup_exe }}
+        run: |
+          $out = Join-Path $PWD "build\release-out"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          & $env:ISCC "/DAppVersion=$env:VERSION" "/DPayload=$env:PAYLOAD" "/O$out" installer\rc.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = Join-Path $out $env:SETUP_EXE
+          if (-not (Test-Path $exe)) { Write-Error "ISCC wrote no $env:SETUP_EXE"; exit 1 }
+          Get-FileHash $exe -Algorithm SHA256 | Format-List
+          Get-ChildItem $out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ${{ steps.names.outputs.artifact }}
+          path: build/release-out/${{ needs.launcher.outputs.setup_exe }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # Launcher tag pushes only; a dispatch never publishes (the job is skipped). One of the two jobs with write access
+  # (the other is game-publish); it checks out no code. A draft full release (not a pre-release), titled
+  # "Launcher vX.Y.Z", marked latest. If a release for the tag already exists the job
+  # fails: nothing is edited, re-uploaded or clobbered, and no tag is touched (--verify-tag refuses to create one).
+  # The assets and the notes are the launcher and installer jobs' artifacts (gh run download of this run needs actions:
+  # read).
+  publish:
+    needs: [launcher, installer]
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'launcher-v')
     permissions:
       contents: write   # gh release create; nothing else is written
@@ -264,6 +377,8 @@ jobs:
           ZIP: ${{ needs.launcher.outputs.zip }}
           BUILD_ZIP: ${{ needs.launcher.outputs.build_zip }}
           SYMBOLS_ZIP: ${{ needs.launcher.outputs.symbols_zip }}
+          SETUP_ARTIFACT: ${{ needs.installer.outputs.artifact }}
+          SETUP_EXE: ${{ needs.launcher.outputs.setup_exe }}
         run: |
           set -euo pipefail
           [ "$GITHUB_REF_NAME" = "launcher-v$VERSION" ] \
@@ -272,21 +387,18 @@ jobs:
           out="$RUNNER_TEMP/release-assets"
           mkdir "$out"
           gh run download "$GITHUB_RUN_ID" --name "$ARTIFACT" --dir "$out"
+          gh run download "$GITHUB_RUN_ID" --name "$SETUP_ARTIFACT" --dir "$out"
           cd "$out"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "::error::a release for $GITHUB_REF_NAME already exists; refusing to touch it"; exit 1
           fi
           test -s release-body.md
-          sha256sum -c "$ZIP.sha256"
-          sha256sum -c "$BUILD_ZIP.sha256"
-          sha256sum -c "$SYMBOLS_ZIP.sha256"
-          sha256sum "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS
+          sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
-          # GitHub never marks a pre-release as latest: --latest only from 1.0.0 on
-          pre=""; latest="--latest"; case "$VERSION" in 0.*) pre="--prerelease"; latest="" ;; esac
-          gh release create "$GITHUB_REF_NAME" --draft $pre $latest --verify-tag --title "Launcher v$VERSION" --notes-file release-body.md \
-            "$ZIP" "$ZIP.sha256" "$BUILD_ZIP" "$BUILD_ZIP.sha256" "$SYMBOLS_ZIP" "$SYMBOLS_ZIP.sha256" SHA256SUMS
+          # The launcher release is a full release marked latest at every version; game releases stay pre-releases
+          gh release create "$GITHUB_REF_NAME" --draft --latest --verify-tag --title "Launcher v$VERSION" --notes-file release-body.md \
+            "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" SHA256SUMS
 
   # Game tags (<id>-vX.Y.Z): the notes only, written from the CHANGELOG on a read-only job; nothing is built.
   game-notes:

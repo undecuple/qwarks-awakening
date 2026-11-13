@@ -8,7 +8,8 @@ Exit 0 = PASS.
 Cases: the bare zip holds exactly the expected entries under names.launcher_zip_top(version) (exe, SDL3.dll, fonts,
 engine and downloader, catalogue, example library, the Python embeddable package under python/, licenses/ with the
 port's LICENSE, SDL3, Dear ImGui, Python and every OFL text, README.txt) and its README says what goes online; same
-inputs give the same bytes; the .sha256 is "HASH  NAME" + LF with no BOM and matches; refusals write nothing: a DLL as
+inputs give the same bytes; no per-zip .sha256 is written (SHA256SUMS on the release lists every asset) and the printed
+SHA-256 matches; refusals write nothing: a DLL as
 the exe, a 32-bit exe, a missing font folder, a non-SDL licence, a game-data header, an NTFS case clash, an existing
 zip without --replace, a bad --version, a Python folder without pythonw.exe or its zipped stdlib, a 32-bit pythonw.exe.
 Phase 4: --make-kit-manifest lists the kit (source subset, ps3recomp, toolchain minus its prune patterns, licence
@@ -149,6 +150,7 @@ BARE = (names.LAUNCHER_EXE, "SDL3.dll", "README.txt", "fonts/AdwaitaSans-Regular
 
 def test_good(tmp, root):
     rc, out = run(tmp, root)
+    out0 = out
     z = os.path.join(tmp, "out", names.launcher_zip_name("1.2.3"))
     check(rc == 0 and os.path.isfile(z), "packs the zip", out)
     if rc != 0:
@@ -169,11 +171,10 @@ def test_good(tmp, root):
                    "off by default", "Game updates are never downloaded"):
         check(needle in readme, f"README.txt says {needle[:40]!r}")
     check("\r\n" in readme, "README.txt has Windows line ends")
-    with open(z + ".sha256", "rb") as f:
-        side = f.read()
     with open(z, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
-    check(side == f"{digest}  {os.path.basename(z)}\n".encode("ascii"), ".sha256 is 'HASH  NAME' + LF, no BOM", side)
+    check(not os.path.exists(z + ".sha256"), "no per-zip .sha256 (SHA256SUMS lists the release files)")
+    check(f"sha256 {digest}" in out0, "the printed SHA-256 is the zip's", out0)
     first = open(z, "rb").read()
     rc, out = run(tmp, root, "--replace")
     check(rc == 0 and open(z, "rb").read() == first, "same inputs, same bytes", out)
@@ -258,7 +259,7 @@ def test_kit(tmp, root):
     rc, out = run(tmp, root, *kargs, out="full", exe=good)
     full = os.path.join(tmp, "full", names.build_zip_name("1.2.3"))
     bare = os.path.join(tmp, "full", names.launcher_zip_name("1.2.3"))
-    check(rc == 0 and os.path.isfile(full) and os.path.isfile(bare) and os.path.isfile(full + ".sha256"),
+    check(rc == 0 and os.path.isfile(full) and os.path.isfile(bare) and not os.path.exists(full + ".sha256"),
           "--kit-manifest writes both zips", out)
     if rc != 0:
         return
@@ -325,7 +326,7 @@ def test_symbols(tmp, root):
     write(dbg, data)
     rc, out = run(tmp, root, "--symbols", dbg, out="symout", exe=exe)
     z = os.path.join(tmp, "symout", names.symbols_zip_name("1.2.3"))
-    check(rc == 0 and os.path.isfile(z) and os.path.isfile(z + ".sha256"), "--symbols writes the symbols zip and its .sha256", out)
+    check(rc == 0 and os.path.isfile(z) and not os.path.exists(z + ".sha256"), "--symbols writes the symbols zip (no .sha256)", out)
     if rc == 0:
         with zipfile.ZipFile(z) as zf:
             hit = [i.filename for i in zf.infolist() if i.filename.rsplit("/", 1)[-1] == "launcher.exe.debug"]
