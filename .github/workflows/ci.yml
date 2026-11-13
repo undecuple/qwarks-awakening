@@ -27,8 +27,10 @@ jobs:
         run: nix develop .#ci --command bash tools/ps3recomp-patched.sh
       - name: Host tests (no game data, no GPU; a SKIP counts as a failure)
         # tools/run-host-tests.sh runs the tests in tools/host-tests.txt against the patched tree built above and prints one
-        # ok/FAIL/SKIP line per test; it fails at the end when any test failed
-        run: RC_HOST_TESTS_STRICT=1 nix develop .#ci --command bash tools/run-host-tests.sh -v
+        # ok/FAIL/SKIP line per test; it fails at the end when any test failed. RC_TEST_CC=gcc: the shell's own compiler
+        # only; nix develop keeps the runner's PATH, so the runner's system clang would be found by the logger test and
+        # link against the shell's glibc, and its program does not start (exit 127)
+        run: RC_HOST_TESTS_STRICT=1 RC_TEST_CC=gcc nix develop .#ci --command bash tools/run-host-tests.sh -v
 
   release-tools:
     runs-on: ubuntu-latest

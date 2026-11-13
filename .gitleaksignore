@@ -1,3 +1,5 @@
 # Reviewed false positives of the CI secret scan (gitleaks fingerprints: commit:file:rule:line).
 # 4011: an environment variable name in a comment (KZ3_KB_PROMPTS_FLIP=N), not a key.
 7c7f1d81dec30b24fc608484db203b03014d73f7:port/patches/4011-cellpad-last-device-button-prompts-option.patch:generic-api-key:65
+# test_pso_keys_rec.c: the 64-bit golden-ratio hash multiplier 0x9E3779B97F4A7C15 that spreads synthetic test keys, not a key.
+06118e6b4586bd8f0ad1c017e753d8080887f411:port/rc/tests/test_pso_keys_rec.c:generic-api-key:31
