@@ -42,9 +42,11 @@ commits for personal paths and host names. A private address in a pushed commit 
 
 ## 3. Versions and releases
 
-- Tags are `vMAJOR.MINOR.PATCH`, with no suffixes (no `-alpha`, `-rc`): a fix bumps the last number, a feature the
-  middle one.
-- Every release stays a GitHub pre-release until `v1.0.0`.
+- Tags are `launcher-vMAJOR.MINOR.PATCH` for the launcher release (it carries the downloads) and
+  `<game id>-vMAJOR.MINOR.PATCH` for a game's notes-only release, with the launcher's version and no suffixes (no
+  `-alpha`, `-rc`): a fix bumps the last number, a feature the middle one. Releases before 0.3.0 were tagged
+  `vMAJOR.MINOR.PATCH`.
+- Every release stays a GitHub pre-release until version 1.0.0.
 - A tag is never moved or reused; if a release is wrong, publish the next version.
 - Use the same version string everywhere it appears: the tag, the exe's version block (`tools/build-rc.sh` takes it
   from the tag through `RC_RELEASE_TAG`) and `CITATION.cff`.
@@ -64,7 +66,8 @@ For these workflows and your own:
 - Give the workflow token the least permission it needs (`permissions: contents: read` at the top, widen per job).
 - Require approval before Actions run for first-time contributors, and never run workflows from forks with secrets.
 - Never commit tokens, keys or credentials, and never print them in logs.
-- Add a ruleset on the default branch (no force push, no deletion) and on `v*` tags (no update, no delete).
+- Add a ruleset on the default branch (no force push, no deletion) and on the release tags (`launcher-v*`, each
+  `<game id>-v*` and the older `v*`: no update, no delete).
 - Turn on private vulnerability reporting, since `.github/SECURITY.md` points reporters to it.
 
 ## 5. The ps3recomp submodule and the patch layout

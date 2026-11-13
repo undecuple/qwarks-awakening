@@ -28,12 +28,12 @@ if [[ "${RC_ALLOW_STALE_PATCHES:-0}" != 1 ]]; then
   have="$(cat "$PT/.rc-patchset" 2>/dev/null || true)"
   [[ "$have" == "$want" ]] || { echo "build-rc: $PT is stale ($have, want $want): run tools/ps3recomp-patched.sh first" >&2; exit 3; }
 fi
-# Release builds (the version comes from the tag): RC_RELEASE_TAG=vX.Y.Z must be a plain vMAJOR.MINOR.PATCH tag
-# and equal the exe's version, the project VERSION in port/rc/CMakeLists.txt (tools/release/bump_version.py keeps it
+# Release builds (the version comes from the tag): RC_RELEASE_TAG must be a release tag, launcher-vMAJOR.MINOR.PATCH
+# or <game id>-vMAJOR.MINOR.PATCH (a plain vX.Y.Z, the tags before is still read), and its version must equal the exe's version, the project VERSION in port/rc/CMakeLists.txt (tools/release/bump_version.py keeps it
 # equal to names.VERSION). Unset (every dev build) = no check.
 if [[ -n "${RC_RELEASE_TAG:-}" ]]; then
-  [[ "$RC_RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "build-rc: RC_RELEASE_TAG '$RC_RELEASE_TAG' is not vMAJOR.MINOR.PATCH" >&2; exit 3; }
-  tagv="${BASH_REMATCH[1]}"
+  [[ "$RC_RELEASE_TAG" =~ ^([a-z0-9]+-)?v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "build-rc: RC_RELEASE_TAG '$RC_RELEASE_TAG' is not launcher-vMAJOR.MINOR.PATCH or <game id>-vMAJOR.MINOR.PATCH" >&2; exit 3; }
+  tagv="${BASH_REMATCH[2]}"
   exev="$(sed -nE 's/^[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "$ROOT/port/rc/CMakeLists.txt" | head -1)"
   [[ "$tagv" == "$exev" ]] || { echo "build-rc: tag $RC_RELEASE_TAG but port/rc/CMakeLists.txt VERSION is ${exev:-none}" >&2; exit 3; }
 fi
@@ -56,7 +56,13 @@ fi
 # Lifted SPU images (tools/spu/lift_spu.sh): point the cache at $OUT/spu/lift when it has a registration TU
 # (the CMake default port/rc/spu does not exist). RC_SPU=0 builds without them.
 SPU_LIFT="$OUT/spu/$GAME/lift"
-if [[ "${RC_SPU:-1}" != 0 && -f "$SPU_LIFT/spu_workloads.c" ]]; then want_spu="$SPU_LIFT"; else want_spu="$ROOT/port/rc/$GAME/spu"; fi
+# A missing lift is refused (2026-11-11): the fallback directory does not exist, so the build used to succeed silently
+# and the exe stalled once the game started its raw SPUs (a fresh worktree without the work/spu link).
+if [[ "${RC_SPU:-1}" != 0 && ! -f "$SPU_LIFT/spu_workloads.c" ]]; then
+  echo "build-rc: no lifted SPU images at $SPU_LIFT (spu_workloads.c): run tools/spu/lift_spu.sh, link work/spu/$GAME in a worktree (tools/worktree-setup.sh), or set RC_SPU=0 to build without them" >&2
+  exit 5
+fi
+if [[ "${RC_SPU:-1}" != 0 ]]; then want_spu="$SPU_LIFT"; else want_spu="$ROOT/port/rc/$GAME/spu"; fi
 if [[ "$GO" != 1 && "$(sed -n 's/^SPU_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null)" != "$want_spu" ]]; then
   cmake -S "$ROOT/port/rc" -B "$DIR" -DSPU_DIR="$want_spu" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi

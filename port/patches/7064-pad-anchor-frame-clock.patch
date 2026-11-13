@@ -1,0 +1,207 @@
+R&C patch 7064: PAD_ANCHOR_CLOCK=flips[:N] -- the anchored part of a pad script on a frame clock (ToD regression gate).
+DRAFT 2026-11-11, written without a build or a run (machine reserved): run port/rc/tests/run_pad_anchor_test.sh (new
+section 5) and a Windows build before relying on it. Default off: without the env var the player is 7062's.
+
+What: with PAD_ANCHOR_CLOCK=flips the events after the script's "@fs:TEXT" anchor (7062) count guest flips since the
+anchor resolved (cellGcm_flip_request_count, read once per pad poll), 60 flips = 1 s of script time ("flips:N" sets N).
+Holds of anchored events ("for D s") count flips the same way; the 40-poll press of an event without a duration is
+unchanged. Events before the anchor stay on the pad clock (wall seconds, or flips under PAD_CLOCK=flips). Logs:
+"[cellPad] PAD_SCRIPT: anchored events on the flip clock, N flips = 1 s (PAD_ANCHOR_CLOCK)" at load, "[cellPad] script
+anchor at flip F: ..." when it fires; fired anchored events print t=@f+T. The last-fired stick event wins by fire order
+(a sequence number) instead of fired_at, since fired_at is now on each event's own clock.
+
+Why: tools/pad/tods-newgame-anchored.txt's in-level inputs are timed in wall seconds after Metropolis' control start, so
+at 35 fps an input lands at a different game frame than at 47 fps. In the scripted ToD runs Ratchet dies and respawns
+in Metropolis a number of times that varies with fps (deaths cluster at the "jump, then walk right" part of the cycle):
+tods-anch-main7062-2 and tods-anch-br7062-2 (same script) had 2 and 4 respawns in the gate's 140 s window. On a frame
+clock the same input lands at the same flip after control start whatever the fps.
+Not 3006/#344's PAD_CLOCK=flips: that clocks the WHOLE script in raw flips (the script's numbers would have to be
+rewritten in flips, and the menu part would follow the logo and loading screens' flip rates); 7064 keeps the script in
+seconds and changes only the anchored part, so the same script file runs on either clock and an A/B is one env var.
+ASSUMPTION: the game steps its simulation per frame. If ToD integrates a measured frame time instead, the same input at
+the same flip still finds Ratchet in a different place at a different fps, and only an fps-independent result shows
+the clock helps; the A/B below decides it.
+
+A/B (later, when a run is booked; one GPU run at a time, same exe, same window):
+  build: tools/ps3recomp-patched.sh, then the ToD Windows build (exe in work/stage/tods), 7062 + 7064 in the patch set;
+  run_pad_anchor_test.sh first (sections 1-5 pass).
+  arm W (wall):  tools/tod-regression.sh tods-fclk-wall-1
+  arm F (flips): EXTRA_ENV=PAD_ANCHOR_CLOCK=flips tools/tod-regression.sh tods-fclk-flips-1
+  (the log must show "anchored events on the flip clock"); then each arm
+  again with a second exe of a different fps (e.g. the SSE4.1 branch) or under load. Compare, per arm, the flip numbers
+  (and anchor-relative flips) of each "spu1 stopped by RunCntl" respawn: F should put them at the same anchor-relative
+  flip in every run and exe, W should not. Both arms must PASS the per-event gate. Do not retime
+  tods-newgame-anchored.txt until F has shown it.
+2026-11-11 (code review of rc-int-1600): a script without an anchor ignored PAD_ANCHOR_CLOCK silently, so an F arm with
+such a script ran on the wall clock with no line saying so; it now prints "WARNING PAD_ANCHOR_CLOCK='...' ignored: the
+script has no @fs: anchor, wall clock kept" (tools/tod-regression.sh already FAILs a PAD_ANCHOR_CLOCK arm without the
+flip-clock line).
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 2eba1d5..329b824 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1780,6 +1780,7 @@ typedef struct {
+     unsigned char ax[6];
+     int fired; double fired_at; int polls_left;
+     int anchored;          /* R&C patch 7062: written after the script's "@fs:" anchor: t counts from the anchor */
++    int seq;               /* R&C patch 7064: fire order (fired_at is on the event's own clock: pad_anchor_clock) */
+ } PadScriptEvent;
+ 
+ typedef struct {
+@@ -1787,6 +1788,7 @@ typedef struct {
+     int n, dropped, bad;
+     int log_sec, log_n, log_suppressed;
+     pad_anchor anchor; int in_anchor;   /* R&C patch 7062 */
++    int seq;                            /* R&C patch 7064: events fired so far */
+ } PadScript;
+ 
+ static const char* pad_script_skip(const char* p)          /* separators and comments */
+@@ -1884,10 +1886,13 @@ static int pad_script_parse(PadScript* s, const char* text)
+  * active analog hold into ax[6] (*ax_set = 1). Returns the number of events that fired at this poll. */
+ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned char ax[6], int* ax_set)
+ {
+-    int i, fired = 0; double ax_t = -1;
++    int i, fired = 0, ax_seq = -1;
+     *ax_set = 0;
+     if (pad_anchor_poll(&s->anchor, now)) {   /* R&C patch 7062 */
+         printf("[cellPad] script anchor '@fs:%s' fired at %.1f s (pad clock)\n", s->anchor.text, now);
++        if (s->anchor.fclock)   /* R&C patch 7064 */
++            printf("[cellPad] script anchor at flip %.0f: anchored events on the flip clock, %g flips = 1 s\n",
++                   s->anchor.at_f, s->anchor.per_s);
+         fflush(stdout);
+     }
+     for (i = 0; i < s->n; i++) {
+@@ -1896,7 +1901,8 @@ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned ch
+         if (!e->fired) {
+             int sec;
+             if (!pad_anchor_due(&s->anchor, e->anchored, e->t, now)) continue;
+-            e->fired = 1; e->fired_at = now; e->polls_left = PAD_SCRIPT_HOLD_POLLS; fired++;
++            e->fired = 1; e->fired_at = pad_anchor_clock(&s->anchor, e->anchored, now);   /* 7064: the event's clock */
++            e->seq = ++s->seq; e->polls_left = PAD_SCRIPT_HOLD_POLLS; fired++;
+             sec = (int)now;
+             if (sec != s->log_sec) {
+                 if (s->log_suppressed)
+@@ -1906,21 +1912,21 @@ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned ch
+             if (s->log_n++ < PAD_SCRIPT_LOG_PER_SEC) {
+                 if (e->analog)
+                     printf("[cellPad] script t=%s%.1fs sticks l=(%u,%u) r=(%u,%u) l2=%u r2=%u for %.2fs (at %.1fs)\n",
+-                           e->anchored ? "@+" : "", e->t, e->ax[0], e->ax[1], e->ax[2], e->ax[3], e->ax[4], e->ax[5], e->hold_s, now);
++                           e->anchored ? (s->anchor.fclock ? "@f+" : "@+") : "", e->t, e->ax[0], e->ax[1], e->ax[2], e->ax[3], e->ax[4], e->ax[5], e->hold_s, now);
+                 else if (e->hold_s < 0)
+                     printf("[cellPad] script t=%s%.1fs press 0x%04X for %d polls (at %.1fs)\n",
+-                           e->anchored ? "@+" : "", e->t, e->mask, PAD_SCRIPT_HOLD_POLLS, now);
++                           e->anchored ? (s->anchor.fclock ? "@f+" : "@+") : "", e->t, e->mask, PAD_SCRIPT_HOLD_POLLS, now);
+                 else
+-                    printf("[cellPad] script t=%s%.1fs press 0x%04X for %.2fs (at %.1fs)\n", e->anchored ? "@+" : "", e->t,
++                    printf("[cellPad] script t=%s%.1fs press 0x%04X for %.2fs (at %.1fs)\n", e->anchored ? (s->anchor.fclock ? "@f+" : "@+") : "", e->t,
+                            e->mask, e->hold_s, now);
+                 fflush(stdout);
+             } else s->log_suppressed++;
+         }
+         if (e->hold_s < 0) { active = e->polls_left > 0; if (active) e->polls_left--; }
+-        else active = (now - e->fired_at) <= e->hold_s;
++        else active = (pad_anchor_clock(&s->anchor, e->anchored, now) - e->fired_at) <= e->hold_s;
+         if (!active) continue;
+         if (!e->analog) *mask |= e->mask;
+-        else if (e->fired_at >= ax_t) { ax_t = e->fired_at; memcpy(ax, e->ax, 6); *ax_set = 1; }
++        else if (e->seq >= ax_seq) { ax_seq = e->seq; memcpy(ax, e->ax, 6); *ax_set = 1; }   /* 7064: last fired wins */
+     }
+     if (*ax_set) { if (ax[4] > 127) *mask |= 0x0100; if (ax[5] > 127) *mask |= 0x0200; }
+     return fired;
+@@ -2142,6 +2148,21 @@ skip_inject: ;
+                   int na = 0, k; for (k = 0; k < s_script.n; k++) na += s_script.ev[k].anchored;
+                   printf("[cellPad] PAD_SCRIPT: anchor '@fs:%s', %d event(s) timed from it\n", s_script.anchor.text, na);
+                   pad_script_anchor_install(&s_script);
++                  {   /* R&C patch 7064: PAD_ANCHOR_CLOCK=flips[:N] puts the anchored events on the flip clock */
++                      const char* ac = getenv("PAD_ANCHOR_CLOCK");
++                      if (ac && !strncmp(ac, "flips", 5) && (ac[5] == 0 || ac[5] == ':')) {
++                          double per = ac[5] == ':' ? atof(ac + 6) : 60.0;
++                          if (per > 0) {
++                              pad_anchor_frame_clock(&s_script.anchor, per);
++                              printf("[cellPad] PAD_SCRIPT: anchored events on the flip clock, %g flips = 1 s (PAD_ANCHOR_CLOCK)\n", per);
++                          } else printf("[cellPad] PAD_SCRIPT: WARNING PAD_ANCHOR_CLOCK='%s': bad flip rate, wall clock kept\n", ac);
++                      } else if (ac && *ac)
++                          printf("[cellPad] PAD_SCRIPT: WARNING PAD_ANCHOR_CLOCK='%s' unknown (want flips or flips:N), wall clock kept\n", ac);
++                  }
++              } else {   /* R&C patch 7064: the flip clock times anchored events only; say so rather than ignore it */
++                  const char* ac = getenv("PAD_ANCHOR_CLOCK");
++                  if (ac && *ac)
++                      printf("[cellPad] PAD_SCRIPT: WARNING PAD_ANCHOR_CLOCK='%s' ignored: the script has no @fs: anchor, wall clock kept\n", ac);
+               }
+               if (s_script.dropped)
+                   printf("[cellPad] PAD_SCRIPT: WARNING %d event(s) dropped over the limit of %d\n", s_script.dropped, PAD_SCRIPT_MAX);
+@@ -2153,6 +2174,8 @@ skip_inject: ;
+       if (s_sc && port_no == 0) {
+           double now = pad_clock(t0);   /* PR #344: PAD_CLOCK=flips counts guest flips (3006's v2 grammar unchanged) */
+           unsigned m = 0; unsigned char ax[6]; int ax_set = 0;
++          if (s_script.anchor.fclock)   /* R&C patch 7064: the anchored events' frame clock */
++              pad_anchor_frames(&s_script.anchor, (double)cellGcm_flip_request_count());
+           pad_script_poll(&s_script, now, &m, ax, &ax_set);
+           data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(m & 0xFF);
+           data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] |= (u16)((m >> 8) & 0xFF);
+diff --git a/libs/input/pad_script_anchor.h b/libs/input/pad_script_anchor.h
+index ac568d5..1c1b6c1 100644
+--- a/libs/input/pad_script_anchor.h
++++ b/libs/input/pad_script_anchor.h
+@@ -15,6 +15,11 @@
+  *
+  * The anchor is noted from the filesystem thread (pad_anchor_note: a flag) and resolved on the pad thread at its next
+  * poll (pad_anchor_poll), so the anchored times are on the pad clock (wall seconds or PAD_CLOCK=flips) like the rest.
++ *
++ * R&C patch 7064: an optional frame clock for the anchored part (pad_anchor_frame_clock; cellPad.c turns it on from
++ * PAD_ANCHOR_CLOCK=flips[:N]). Anchored events then count guest flips since the anchor, N flips (default 60) = 1 s of
++ * script time, so an input lands at the same game frame after the level's control start whatever the fps; holds of
++ * anchored events ("for D s") count flips the same way. Unanchored events stay on the pad clock. Off (all zero) = 7062.
+  * Pure C (host test port/rc/tests/run_pad_anchor_test.sh). */
+ #ifndef PAD_SCRIPT_ANCHOR_H
+ #define PAD_SCRIPT_ANCHOR_H
+@@ -28,6 +33,10 @@ typedef struct {
+     volatile int hit;            /* the filesystem saw a matching open (set once, from any thread) */
+     int resolved;                /* the pad thread saw the hit ... */
+     double at;                   /* ... at this pad-clock second */
++    int fclock;                  /* R&C patch 7064: anchored events on the frame clock ... */
++    double per_s;                /* ... this many flips = 1 s of script time */
++    double fnow;                 /* the flip count, set by the pad thread before each poll (pad_anchor_frames) */
++    double at_f;                 /* the flip count when the anchor resolved */
+ } pad_anchor;                    /* all zero = no anchor (a static PadScript needs no init) */
+ 
+ /* p at '@': parse "@fs:TEXT" (TEXT runs to a separator: space, tab, CR, LF, ',' or '#'). Returns the end of the
+@@ -56,15 +65,35 @@ static inline int pad_anchor_note(pad_anchor* a, const char* path)
+ static inline int pad_anchor_poll(pad_anchor* a, double now)
+ {
+     if (!a->set || !a->hit || a->resolved) return 0;
+-    a->at = now; a->resolved = 1;
++    a->at = now; a->at_f = a->fnow; a->resolved = 1;
+     return 1;
+ }
+ 
++/* R&C patch 7064: the frame clock. flips_per_s <= 0 leaves it off. */
++static inline void pad_anchor_frame_clock(pad_anchor* a, double flips_per_s)
++{
++    a->fclock = flips_per_s > 0; a->per_s = flips_per_s > 0 ? flips_per_s : 0;
++}
++
++/* Pad thread, before each poll: the current guest flip count (only read when the frame clock is on). */
++static inline void pad_anchor_frames(pad_anchor* a, double flips) { a->fnow = flips; }
++
++/* The clock an event runs on, in script seconds: an unanchored event, the pad clock (now); an anchored one, seconds
++ * since the anchor resolved: flips since then / per_s on the frame clock, else now - at. Only meaningful for an
++ * anchored event once the anchor resolved. Holds compare two readings of the same event's clock. */
++static inline double pad_anchor_clock(const pad_anchor* a, int anchored, double now)
++{
++    if (!anchored) return now;
++    if (a->fclock) return (a->fnow - a->at_f) / a->per_s;
++    return now - a->at;
++}
++
+ /* 1 when an event of time t is due at pad-clock second now: now >= t for an unanchored event; for an anchored one,
+- * the anchor resolved and now >= anchor + t (never before the anchor fired). */
++ * the anchor resolved and its clock (pad_anchor_clock: now - anchor, or flips since the anchor / per_s) >= t (never
++ * before the anchor fired). */
+ static inline int pad_anchor_due(const pad_anchor* a, int anchored, double t, double now)
+ {
+     if (!anchored) return now >= t;
+-    return a->resolved && now >= a->at + t;
++    return a->resolved && pad_anchor_clock(a, 1, now) >= t;
+ }
+ #endif

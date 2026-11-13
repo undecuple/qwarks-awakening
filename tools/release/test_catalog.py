@@ -271,9 +271,16 @@ def run(tmp):
     a = by_id(res, "acit")
     check(a["state"] == "wrong_version" and a["reason"].startswith("Needs update 01.20") and a["needs_update"] == "01.20", "state: ACiT wrong_version without the update")
     check(by_id(res, "nexus")["state"] == "wrong_version" and by_id(res, "ffa")["state"] == "wrong_version", "state: Nexus and FFA wrong_version (unsupported but update missing)")
-    check(by_id(res, "qfb")["state"] == "not_ported" and by_id(res, "qfb")["reason"] == "Not ported yet", "state: QfB (PSN folder) not_ported")
+    # 2026-11-10: catalogue "builds" (QfB, the Collection's games) offers Build although not "supported"; without an EBOOT
+    # they need attention like a supported game
+    check(by_id(res, "qfb")["state"] == "needs_attention" and by_id(res, "qfb")["reason"] == "EBOOT.elf missing", "state: QfB (PSN folder, builds) needs its EBOOT")
     col = by_id(res, "collection")
-    check(col["state"] == "not_ported" and [c["state"] for c in col["children"]] == ["not_ported"] * 3, "Collection: disc found -> parent and children not_ported")
+    check(col["state"] == "needs_attention" and [c["state"] for c in col["children"]] == ["needs_attention"] * 3, "Collection: disc found, no EBOOTs -> parent and children needs_attention")
+    elf(os.path.join(lib, "qfb_psn", "USRDIR", "EBOOT.elf"))
+    check(by_id(catalog.scan([lib]), "qfb")["state"] == "ready_to_build", "state: QfB with its EBOOT ready_to_build (builds, not supported)")
+    os.remove(os.path.join(lib, "qfb_psn", "USRDIR", "EBOOT.elf"))
+    nb = [g["id"] for e in catalog.load()["games"] for g in [e] + e.get("children", []) if not g.get("builds")]
+    check(nb == ["collection"], "catalogue: builds = every game but the Collection launcher")
     check(by_id(res, "a4o")["state"] == "not_added" and by_id(res, "dlhd")["state"] == "not_added", "partial set: others not_added")
 
     # update PKG fixes ACiT; installed update folder too
@@ -407,6 +414,8 @@ def run(tmp):
     run_locations(tmp)
     run_eboot(tmp)
     run_settings(tmp)
+    run_online(tmp)
+    run_phase4_scan(tmp)
 
 
 # ------------------------------------------------------------------------------------------------- RPCS3 source
@@ -1199,6 +1208,109 @@ def run_settings(tmp):
           "a UTF-8 BOM is read past and kept")
     leftovers = [f for d_, _, fs in os.walk(data) for f in fs if f.endswith(".tmp")]
     check(not leftovers, "no temporary files left behind")
+
+
+def run_online(tmp):
+    """The shared online settings (docs/ONLINE.md): synthetic folders, documentation hosts only."""
+    import contextlib
+    import io
+
+    def cli(*args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = catalog.main(list(args))
+        return rc, out.getvalue(), err.getvalue()
+
+    d = os.path.join(tmp, "online")
+    check(catalog.online_dir({"PS3RECOMP_SHARED_DIR": d, "KZ3_SHARED_DIR": "/x"}) == os.path.abspath(d)
+          and catalog.online_dir({"KZ3_SHARED_DIR": d}) == os.path.abspath(d), "online: env overrides, PS3RECOMP first")
+    check(catalog.online_dir({"APPDATA": os.path.join(tmp, "ad")}, launcher_dir=os.path.join(tmp, "nope"))
+          == os.path.join(tmp, "ad", "PS3Recomp"), "online: %APPDATA%\\PS3Recomp")
+    if os.name != "nt":
+        check(catalog.online_dir({"XDG_CONFIG_HOME": os.path.join(tmp, "xdg")}, launcher_dir=os.path.join(tmp, "nope"))
+              == os.path.join(tmp, "xdg", "ps3recomp"), "online: $XDG_CONFIG_HOME/ps3recomp")
+    g = catalog.get_online(d)
+    check(g["method"] == "off" and not os.path.exists(d), "online: off by default, reading writes nothing")
+    for kw, why in (({"method": "repsn"}, "re-psn without a server"), ({"method": "community"}, "community without a preset"),
+                    ({"server": "bad host!"}, "a bad server"), ({"name": "x"}, "a short name"),
+                    ({"name": "a b c d"}, "a name with spaces"), ({"server": "192.0.2.1:70000"}, "a port over 65535"),
+                    ({"preset": "Bad Name", "address": "192.0.2.2"}, "a preset name with capitals"),
+                    ({"active": "none"}, "an active preset that does not exist"), ({"method": "lan"}, "an unknown method")):
+        try:
+            catalog.set_online(d, **kw)
+            check(False, f"online: refused, nothing written: {why}")
+        except ValueError:
+            check(not os.path.exists(d), f"online: refused, nothing written: {why}")
+    g = catalog.set_online(d, server="rpcn.example.invalid", name="Player_1")
+    check(g["method"] == "off" and g["repsn"]["server"] == "rpcn.example.invalid" and not g["repsn"]["enabled"],
+          "online: server and name saved, still off")
+    g = catalog.set_online(d, method="repsn")
+    check(g["method"] == "repsn" and g["repsn"]["enabled"], "online: re-psn on")
+    g = catalog.set_online(d, preset="lan", address="192.0.2.10:36100", preset_name="Lan_Player")
+    g = catalog.set_online(d, active="lan")
+    check(g["method"] == "repsn" and g["community"]["active"] == "lan"
+          and g["community"]["presets"] == [{"name": "lan", "address": "192.0.2.10:36100", "player_name": "Lan_Player"}],
+          "online: a preset added and chosen; the method does not change by itself")
+    g = catalog.set_online(d, method="community")
+    with open(os.path.join(d, "repsn.ini"), encoding="utf-8") as f:
+        rt = f.read()
+    with open(os.path.join(d, "community.ini"), encoding="utf-8") as f:
+        ct = f.read()
+    check(g["method"] == "community" and not g["repsn"]["enabled"] and "enabled = 0" in rt and "enabled = 1" in ct,
+          "online: one method at a time (choosing community turns re-psn off in the same save)")
+    check(rt.startswith("#") and "Only one online method" in rt and "Port-exclusive features do not work" in ct,
+          "online: both files explain themselves")
+    with open(os.path.join(d, "repsn.ini"), "a", encoding="utf-8") as f:
+        f.write("# my own note\ncomm_id = NPWR00000\nmystery = 1\n")
+    g = catalog.set_online(d, method="off")
+    with open(os.path.join(d, "repsn.ini"), encoding="utf-8") as f:
+        rt = f.read()
+    check(g["method"] == "off" and "# my own note" in rt and "mystery = 1" in rt and "comm_id = NPWR00000" in rt
+          and g["rejected"] == 1, "online: comments and keys it does not own are kept; unknown keys counted")
+    g = catalog.set_online(d, delete_preset="lan")
+    check(g["community"]["presets"] == [] and g["community"]["active"] == "", "online: deleting the active preset clears it")
+    with open(os.path.join(d, "community.ini"), "wb") as f:
+        f.write(b"#" * (catalog.ONLINE_MAX_BYTES + 1))
+    try:
+        catalog.get_online(d)
+        check(False, "online: a file over 64 KB is refused")
+    except ValueError:
+        check(True, "online: a file over 64 KB is refused")
+    os.remove(os.path.join(d, "community.ini"))
+    with open(os.path.join(d, "community.ini"), "w", encoding="utf-8") as f:
+        f.write("[community]\nenabled = 1\nactive = " + "x" * 600 + "\n")
+    check(catalog.get_online(d)["community"]["active"] == "" and catalog.get_online(d)["rejected"] >= 1,
+          "online: a line over 512 bytes is not read")
+    check(catalog.get_online(d)["method"] == "community", "online: get reports what the files say")
+    rc, out, _ = cli("get-online", "--shared-dir", d)
+    check(rc == 0 and json.loads(out)["folder"] == os.path.abspath(d), "online CLI: get-online prints JSON")
+    rc, _, err = cli("set-online", "--shared-dir", d, "--preset", "x")
+    check(rc == 2 and "--address" in err, "online CLI: --preset needs --address")
+    rc, out, _ = cli("set-online", "--shared-dir", d, "--method", "off")
+    check(rc == 0 and json.loads(out)["method"] == "off", "online CLI: set-online --method off")
+    leftovers = [f for d_, _, fs in os.walk(d) for f in fs if f.endswith(".tmp")]
+    check(not leftovers, "online: no temporary files left behind")
+
+
+def run_phase4_scan(tmp):
+    """playability fields on every entry an installed update newer than the tested one is a warning."""
+    cat = catalog.load()
+    root = os.path.join(tmp, "p4")
+    disc(root, "a4o_disc", "BCUS98175")
+    games = catalog.scan([root])
+    flat = [x for y in games for x in [y] + list(y.get("children", []))]
+    cflat = {x["id"]: x for y in cat["games"] for x in [y] + list(y.get("children", []))}
+    check(all(g.get(k) == cflat[g["id"]].get(k) for g in flat for k in catalog.PLAYABILITY_KEYS)
+          and by_id(games, "a4o").get("playability") == "boots" and by_id(games, "a4o").get("playability_note"),
+          "every entry carries the catalogue's playability and note (badges.py's fields)")
+    check(not by_id(games, "a4o").get("update_check"), "no update, no update warning")
+    hdd_game(root, "BCUS98175", "GD", "01.03")
+    check(not by_id(catalog.scan([root]), "a4o").get("update_check"), "the tested update gives no warning")
+    hdd_game(root, "BCUS98175", "GD", "01.04")
+    a = by_id(catalog.scan([root]), "a4o")
+    check((a.get("update_check") or {}).get("tag") == "Newer than tested" and "01.04" in a["update_check"]["message"]
+          and a["files"].get("update", "").endswith("BCUS98175"),
+          "an installed update newer than the tested one is used, with a warning")
 
 
 def wr_ret(path, data):

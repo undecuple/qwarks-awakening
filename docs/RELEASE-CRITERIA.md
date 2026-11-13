@@ -34,7 +34,17 @@ A launcher preview for Windows, built by the release workflow from this reposito
 its SHA-256: it lists the games and the files it finds, with Python included for its scanner. It does not build or
 start a game yet. Still no installer and no game program.
 
-## Gates for a v0.x tag (preview)
+## What v0.3.0 adds
+
+The launcher builds a game's program on the player's PC from the player's own copy (Build, Rebuild, Play), checked on
+Linux only and not tried on Windows. Releases get one tag per part from now on: `launcher-v0.3.0` is the launcher's
+release, with the downloads, and each game with changes gets a release of its own with notes only, such as
+`tods-v0.3.0` (the game ids are those of the README's badges). Earlier releases were tagged `v0.1.0` to `v0.2.1`. The
+launcher release has two downloads: the bare launcher, which asks before it fetches
+the build files, and the full build zip, which holds them. Still no installer and no ready-made game program, and no
+game is playable yet: how far each one gets is in the README and in [CHANGELOG.md](../CHANGELOG.md).
+
+## Gates for a v0.x release (preview)
 
 1. **CI green** on the commit that is tagged: every patch in `port/patches/` applies to the pinned ps3recomp, and the
    secret scan of the full history passes.
@@ -44,11 +54,13 @@ start a game yet. Still no installer and no game program.
 3. **Known issues listed** in the README, on the build that is tagged.
 4. **One version string** in the exe's version block (`port/rc/CMakeLists.txt`), the README and `CITATION.cff`,
    checked to agree before the tag.
-5. **Release notes from the changelog:** the tag's section of [CHANGELOG.md](../CHANGELOG.md); a release never goes
-   out with generic text.
+5. **Release notes from the changelog:** the version's section of [CHANGELOG.md](../CHANGELOG.md): the launcher
+   release takes its [All games] and [Launcher] entries, a game's release that game's entries and its playability
+   state; a release never goes out with generic text.
 6. **SHA256SUMS** published beside any uploaded asset; the launcher download is built by the release workflow from the
    tagged commit, never uploaded by hand, and started once on Windows or under Proton before the draft is published.
-7. **Tags are never moved**; a fix is a new tag (v0.1.1), a feature a new minor version (v0.2.0).
+7. **Tags are never moved**; a fix is a new tag (`launcher-v0.3.1`), a feature a new minor version
+   (`launcher-v0.4.0`). A game's tag uses the version of the launcher release that builds it.
 8. **Published as a pre-release** while the version is 0.x.
 
 ## Release criteria for v1.0.0 (playable)

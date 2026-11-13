@@ -314,6 +314,7 @@ void rc_log_note_env(void)
         int hit = 0;
         for (size_t i = 0; i < sizeof pre / sizeof pre[0]; i++) if (!strncmp(e, pre[i], strlen(pre[i]))) hit = 1;
         if (!hit || !strncmp(e, "LD_LIBRARY_PATH=", 16) || !strncmp(e, "LD_PRELOAD=", 11)) continue;
+        if (!strncmp(e, "PS3_RIF_KEY=", 12)) { kz3_log(KZ3_LOG_INFO, TAG, "env PS3_RIF_KEY=<redacted>"); n++; continue; }   /* licence key */
         kz3_log(KZ3_LOG_INFO, TAG, "env %.300s", e);
         n++;
     }

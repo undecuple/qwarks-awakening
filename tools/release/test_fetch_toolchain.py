@@ -91,13 +91,25 @@ def test_real_manifest():
     m = ft.load()
     check(not ft.validate(m, strict=True), "real toolchain.json passes --strict", ft.validate(m, strict=True))
     names = {c["name"] for c in m["components"]}
-    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"},
-          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python",
+    lic = {"llvm-mingw-license", "llvm-license", "mingw-w64-license", "winpthreads-license", "lgpl-2.1-text", "ninja-license"}
+    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic,
+          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python and the kit's licence texts",
           names)
     for c in m["components"]:
         e = ft.expand(c)
+        if c["name"] in lic:   # licence texts: the project's own repository at the pinned tag (or the FSF's text)
+            check(e["url"].startswith(("https://raw.githubusercontent.com/", "https://www.gnu.org/licenses/"))
+                  and "{" not in e["url"] and c["archive"] == "file" and c.get("kit_license"),
+                  f"{c['name']}: a plain licence file from its project, with its place in the kit", e["url"])
+            continue
         check(e["url"].startswith(("https://github.com/", "https://www.python.org/ftp/")) and "{" not in e["url"],
               f"{c['name']}: https URL from the project's own release site, expanded", e["url"])
+    # launcher phase 4: the build kit carries llvm-mingw, CMake and Ninja (never the CI-only Linux llvm-mingw)
+    kit = {c["name"]: c["kit"] for c in m["components"] if c.get("kit")}
+    check(set(kit) == {"llvm-mingw", "cmake", "ninja"} and all(k["dest"].startswith("toolchain/") for k in kit.values()),
+          "kit blocks: llvm-mingw, cmake, ninja under toolchain/", kit)
+    check(any(p.startswith("aarch64") for p in kit["llvm-mingw"]["prune"]) and "python/*" in kit["llvm-mingw"]["prune"],
+          "llvm-mingw's kit leaves out the other targets and its own Python")
     py = ft.expand([c for c in m["components"] if c["name"] == "python"][0])
     check(py["url"].endswith(f"python-{py['version']}-embed-amd64.zip") and not py.get("strip_top"),
           "python is the official Windows x64 embeddable package, unpacked as is", py["url"])

@@ -25,6 +25,10 @@ jobs:
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
       - name: Patches apply to the pinned ps3recomp
         run: nix develop .#ci --command bash tools/ps3recomp-patched.sh
+      - name: Host tests (no game data, no GPU; a SKIP counts as a failure)
+        # tools/run-host-tests.sh runs the tests in tools/host-tests.txt against the patched tree built above and prints one
+        # ok/FAIL/SKIP line per test; it fails at the end when any test failed
+        run: RC_HOST_TESTS_STRICT=1 nix develop .#ci --command bash tools/run-host-tests.sh -v
 
   release-tools:
     runs-on: ubuntu-latest

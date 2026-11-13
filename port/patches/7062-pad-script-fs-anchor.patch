@@ -1,0 +1,219 @@
+R&C patch 7062: PAD_SCRIPT anchors -- scripted input timed from a game event (ToD regression gate).
+ToD's scripted regression played its in-level inputs at fixed wall-clock seconds, but Metropolis' control starts at a
+different second in every build (281 s in tods-7049-reg, 247 s in tods-7054-reg), so the same inputs walked Ratchet
+into different places and the gate's restart / Lua-pair counts moved with the build's load speed (base main failed the
+gate too, 2026-11-11). A script token "@fs:TEXT" (libs/input/pad_script_anchor.h) now starts an anchored part: every
+event after it is timed in seconds after the game's first cellFsOpen of a path containing TEXT (found or not; seen
+through KZ3 4024's pre-open hook, an earlier hook chained), resolved at the next pad poll so the times stay on the pad
+clock. Anchored events never fire before the anchor. Logs: "[cellPad] PAD_SCRIPT: anchor '@fs:TEXT', N event(s) timed
+from it" at load and "[cellPad] script anchor '@fs:TEXT' fired at T s (pad clock)" once; fired anchored events print
+t=@+T. One anchor per script (a second one, an unknown kind or an empty text count as unparsable). The keyboard
+script (KZ3_KB_SCRIPT, 4026) parses anchors but has no hook: its anchored events would never fire.
+Host test port/rc/tests/run_pad_anchor_test.sh runs cellPad.c's own parser and player (cut from the patched file):
+parse, play before and after the anchor, a non-matching open, a second open, the unanchored control, and
+tools/pad/tods-newgame-anchored.txt (336 events, 330 anchored, none bad). Mutants (anchor ignored, anchor re-fired,
+every event anchored) each fail it.
+
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index f6977c6..3dad960 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1767,6 +1767,7 @@ void cellPad_poll(void)
+  * t=..."), at most PAD_SCRIPT_LOG_PER_SEC per wall second. Up to PAD_SCRIPT_MAX events; a WARNING line names
+  * anything dropped past that or unparsable.
+  * -----------------------------------------------------------------------*/
++#include "pad_script_anchor.h"   /* R&C patch 7062: "@fs:TEXT" anchors */
+ #define PAD_SCRIPT_MAX         1024
+ #define PAD_SCRIPT_HOLD_POLLS  40
+ #define PAD_SCRIPT_LOG_PER_SEC 20
+@@ -1778,12 +1779,14 @@ typedef struct {
+     int analog;            /* 1: ax[] = lx ly rx ry l2 r2 as 0..255 */
+     unsigned char ax[6];
+     int fired; double fired_at; int polls_left;
++    int anchored;          /* R&C patch 7062: written after the script's "@fs:" anchor: t counts from the anchor */
+ } PadScriptEvent;
+ 
+ typedef struct {
+     PadScriptEvent ev[PAD_SCRIPT_MAX];
+     int n, dropped, bad;
+     int log_sec, log_n, log_suppressed;
++    pad_anchor anchor; int in_anchor;   /* R&C patch 7062 */
+ } PadScript;
+ 
+ static const char* pad_script_skip(const char* p)          /* separators and comments */
+@@ -1830,6 +1833,10 @@ static int pad_script_parse(PadScript* s, const char* text)
+         const char* end; const char* tok0 = 0;
+         double t = 0, dur = -1, v[6];
+         int nv = 0, ok = 1;
++        if (*p == '@') {   /* R&C patch 7062: the anchor; the events after it count from it (invalid: skipped as bad) */
++            const char* q = pad_anchor_parse(&s->anchor, p);
++            if (q) { s->in_anchor = 1; p = pad_script_skip(q); continue; }
++        }
+         if (!pad_script_number(p, &end, &t)) ok = 0;
+         else { p = pad_script_blank(end); if (*p != ':') ok = 0; else p = pad_script_blank(p + 1); }
+         while (ok) {   /* p ends right after the last number read, so the terminator check below sees it */
+@@ -1863,7 +1870,7 @@ static int pad_script_parse(PadScript* s, const char* text)
+         if (s->n >= PAD_SCRIPT_MAX) { s->dropped++; p = pad_script_skip(p); continue; }
+         { PadScriptEvent* e = &s->ev[s->n++];
+           memset(e, 0, sizeof *e);
+-          e->t = t; e->hold_s = dur;
++          e->t = t; e->hold_s = dur; e->anchored = s->in_anchor;
+           if (nv == 1) e->mask = (unsigned)strtoul(tok0, 0, 0);      /* as v1: base 0 */
+           else { int i; e->analog = 1; if (dur < 0) e->hold_s = 1.0;
+                  for (i = 0; i < nv; i++) e->ax[i] = pad_script_axis(v[i], i >= 4); }
+@@ -1879,12 +1886,16 @@ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned ch
+ {
+     int i, fired = 0; double ax_t = -1;
+     *ax_set = 0;
++    if (pad_anchor_poll(&s->anchor, now)) {   /* R&C patch 7062 */
++        printf("[cellPad] script anchor '@fs:%s' fired at %.1f s (pad clock)\n", s->anchor.text, now);
++        fflush(stdout);
++    }
+     for (i = 0; i < s->n; i++) {
+         PadScriptEvent* e = &s->ev[i];
+         int active;
+         if (!e->fired) {
+             int sec;
+-            if (now < e->t) continue;
++            if (!pad_anchor_due(&s->anchor, e->anchored, e->t, now)) continue;
+             e->fired = 1; e->fired_at = now; e->polls_left = PAD_SCRIPT_HOLD_POLLS; fired++;
+             sec = (int)now;
+             if (sec != s->log_sec) {
+@@ -1894,13 +1905,14 @@ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned ch
+             }
+             if (s->log_n++ < PAD_SCRIPT_LOG_PER_SEC) {
+                 if (e->analog)
+-                    printf("[cellPad] script t=%.1fs sticks l=(%u,%u) r=(%u,%u) l2=%u r2=%u for %.2fs (at %.1fs)\n",
+-                           e->t, e->ax[0], e->ax[1], e->ax[2], e->ax[3], e->ax[4], e->ax[5], e->hold_s, now);
++                    printf("[cellPad] script t=%s%.1fs sticks l=(%u,%u) r=(%u,%u) l2=%u r2=%u for %.2fs (at %.1fs)\n",
++                           e->anchored ? "@+" : "", e->t, e->ax[0], e->ax[1], e->ax[2], e->ax[3], e->ax[4], e->ax[5], e->hold_s, now);
+                 else if (e->hold_s < 0)
+-                    printf("[cellPad] script t=%.1fs press 0x%04X for %d polls (at %.1fs)\n",
+-                           e->t, e->mask, PAD_SCRIPT_HOLD_POLLS, now);
++                    printf("[cellPad] script t=%s%.1fs press 0x%04X for %d polls (at %.1fs)\n",
++                           e->anchored ? "@+" : "", e->t, e->mask, PAD_SCRIPT_HOLD_POLLS, now);
+                 else
+-                    printf("[cellPad] script t=%.1fs press 0x%04X for %.2fs (at %.1fs)\n", e->t, e->mask, e->hold_s, now);
++                    printf("[cellPad] script t=%s%.1fs press 0x%04X for %.2fs (at %.1fs)\n", e->anchored ? "@+" : "", e->t,
++                           e->mask, e->hold_s, now);
+                 fflush(stdout);
+             } else s->log_suppressed++;
+         }
+@@ -1914,6 +1926,29 @@ static int pad_script_poll(PadScript* s, double now, unsigned* mask, unsigned ch
+     return fired;
+ }
+ 
++/* R&C patch 7062: the anchor sees the game's opens through KZ3 4024's pre-open hook (runtime/ppu/ppu_fs.cpp, called for
++ * every cellFsOpen before the host open, so an open that fails counts too); an earlier hook is chained. */
++#ifndef PAD_ANCHOR_NO_FS_HOOK
++extern void (*g_ps3_fs_preopen_hook)(const char* guest_path, const char* host_path);
++static void (*s_anchor_prev_hook)(const char*, const char*);
++static PadScript* volatile s_anchor_script;
++static void pad_script_fs_hook(const char* guest_path, const char* host_path)
++{
++    PadScript* s = s_anchor_script;
++    if (s) pad_anchor_note(&s->anchor, guest_path);
++    if (s_anchor_prev_hook) s_anchor_prev_hook(guest_path, host_path);
++}
++static void pad_script_anchor_install(PadScript* s)
++{
++    if (!s->anchor.set || s_anchor_script) return;
++    s_anchor_prev_hook = g_ps3_fs_preopen_hook;
++    s_anchor_script = s;
++    g_ps3_fs_preopen_hook = pad_script_fs_hook;
++}
++#else
++static void pad_script_anchor_install(PadScript* s) { (void)s; }
++#endif
++
+ static char* pad_script_read_file(const char* path)        /* malloc'd, NUL-terminated; NULL if unreadable */
+ {
+     FILE* f = fopen(path, "rb");
+@@ -2103,6 +2138,11 @@ skip_inject: ;
+           if ((e && *e) || (pf && *pf)) {
+               s_sc = 1; t0 = GetTickCount64();
+               printf("[cellPad] PAD_SCRIPT: %d event(s)\n", s_script.n);
++              if (s_script.anchor.set) {   /* R&C patch 7062 */
++                  int na = 0, k; for (k = 0; k < s_script.n; k++) na += s_script.ev[k].anchored;
++                  printf("[cellPad] PAD_SCRIPT: anchor '@fs:%s', %d event(s) timed from it\n", s_script.anchor.text, na);
++                  pad_script_anchor_install(&s_script);
++              }
+               if (s_script.dropped)
+                   printf("[cellPad] PAD_SCRIPT: WARNING %d event(s) dropped over the limit of %d\n", s_script.dropped, PAD_SCRIPT_MAX);
+               if (s_script.bad)
+diff --git a/pb/libs/input/pad_script_anchor.h b/libs/input/pad_script_anchor.h
+new file mode 100644
+index 0000000..d9c594f
+--- /dev/null
++++ b/libs/input/pad_script_anchor.h
+@@ -0,0 +1,70 @@
++/* R&C patch 7062: PAD_SCRIPT anchors -- scripted input timed from a game event instead of the first pad poll.
++ *
++ * Why: ToD's scripted regression (tools/pad/tods-newgame-play.txt) plays its in-level inputs at fixed wall-clock
++ * seconds, but Metropolis' control starts at a different time in every build (281 s in tods-7049-reg, 247 s in
++ * tods-7054-reg: the PSO work before the first frame moves it). The same script then walks Ratchet into different
++ * places, so the restart / Lua-pair counts of tools/tod-regression.sh differ by build for reasons that are not the
++ * build's (base main also failed the gate, 2026-11-11). An anchor ties the in-level inputs to the level itself.
++ *
++ * Grammar (added to KZ3 3006's v2): a token "@fs:TEXT" starts the anchored part of the script. Every event written
++ * after it is timed in seconds after the anchor fires; events before it keep their seconds since the first pad poll.
++ * The anchor fires at the first pad poll after the game opens (cellFsOpen, found or not) a path that contains TEXT;
++ * only the first such open counts, and only once the script is loaded (its first pad poll). One anchor per script: a
++ * second "@" token is counted as unparsable. Until the anchor fires, anchored events wait (none fires early).
++ * Log: "[cellPad] script anchor '@fs:TEXT' fired at T s (pad clock)" once.
++ *
++ * The anchor is noted from the filesystem thread (pad_anchor_note: a flag) and resolved on the pad thread at its next
++ * poll (pad_anchor_poll), so the anchored times are on the pad clock (wall seconds or PAD_CLOCK=flips) like the rest.
++ * Pure C (host test port/rc/tests/run_pad_anchor_test.sh). */
++#ifndef PAD_SCRIPT_ANCHOR_H
++#define PAD_SCRIPT_ANCHOR_H
++#include <string.h>
++
++#define PAD_ANCHOR_MAX 192
++
++typedef struct {
++    char text[PAD_ANCHOR_MAX];   /* the substring an opened path must contain */
++    int set;                     /* an anchor was parsed */
++    volatile int hit;            /* the filesystem saw a matching open (set once, from any thread) */
++    int resolved;                /* the pad thread saw the hit ... */
++    double at;                   /* ... at this pad-clock second */
++} pad_anchor;                    /* all zero = no anchor (a static PadScript needs no init) */
++
++/* p at '@': parse "@fs:TEXT" (TEXT runs to a separator: space, tab, CR, LF, ',' or '#'). Returns the end of the
++ * token, or NULL when it is not a valid anchor (unknown kind, empty or too long TEXT, or a second anchor). */
++static inline const char* pad_anchor_parse(pad_anchor* a, const char* p)
++{
++    if (p[0] != '@' || strncmp(p + 1, "fs:", 3) != 0 || a->set) return NULL;
++    const char* t = p + 4;
++    size_t n = 0;
++    while (t[n] && t[n] != ' ' && t[n] != '\t' && t[n] != '\r' && t[n] != '\n' && t[n] != ',' && t[n] != '#') n++;
++    if (n == 0 || n >= PAD_ANCHOR_MAX) return NULL;
++    memcpy(a->text, t, n); a->text[n] = 0;
++    a->set = 1;
++    return t + n;
++}
++
++/* Filesystem thread: a path was opened. 1 when this open fired the anchor (the first match). */
++static inline int pad_anchor_note(pad_anchor* a, const char* path)
++{
++    if (!a->set || a->hit || !path || !strstr(path, a->text)) return 0;
++    a->hit = 1;
++    return 1;
++}
++
++/* Pad thread, every poll before the events: 1 when the anchor resolved at this poll (at = now). */
++static inline int pad_anchor_poll(pad_anchor* a, double now)
++{
++    if (!a->set || !a->hit || a->resolved) return 0;
++    a->at = now; a->resolved = 1;
++    return 1;
++}
++
++/* 1 when an event of time t is due at pad-clock second now: now >= t for an unanchored event; for an anchored one,
++ * the anchor resolved and now >= anchor + t (never before the anchor fired). */
++static inline int pad_anchor_due(const pad_anchor* a, int anchored, double t, double now)
++{
++    if (!anchored) return now >= t;
++    return a->resolved && now >= a->at + t;
++}
++#endif

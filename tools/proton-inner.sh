@@ -39,8 +39,20 @@ PRE=""
 [[ "${RC_WINE_UNMANAGED:-0}" == 1 ]] && PRE='reg add "HKCU\Software\Wine\X11 Driver" /v Managed /t REG_SZ /d N /f >nul 2>&1'$'\r\n'
 printf '@echo off\r\n%s%s%s > app_stdout.txt 2>&1\r\nset RC_EXIT=%%errorlevel%%\r\necho [exit code %%RC_EXIT%%]>> app_stdout.txt\r\nexit /b %%RC_EXIT%%\r\n' \
   "$PRE" "$EXE" "$ARGQ" > run.bat
+rm -f app_stdout.txt
 steam-run "$PROTON_DIR/proton" run cmd /c run.bat >"$RUN/proton.log" 2>&1 &
 APP=$!
+# SECONDS count from the program's start, not from Proton's launch (2026-11-11): a fresh prefix is built first and that
+# can take minutes under load (351 s in tods-int-flips, whose game then got 249 of its 600 s and was killed mid-load,
+# which read as a stall). app_stdout.txt appears when cmd runs run.bat, i.e. once the prefix is ready. Wait for it up to
+# RC_START_MAX s (default 900); past that the run goes on with the plain SECONDS so a broken launch still ends.
+T_LAUNCH=$SECONDS; START_MAX="${RC_START_MAX:-900}"
+while [[ ! -e app_stdout.txt ]] && (( SECONDS - T_LAUNCH < START_MAX )) && kill -0 "$APP" 2>/dev/null; do sleep 0.5; done
+if [[ -e app_stdout.txt ]]; then
+  echo "program started $(( SECONDS - T_LAUNCH )) s after the Proton launch (prefix setup); running ${SECS} s from here"
+else
+  echo "program did not start within $(( SECONDS - T_LAUNCH )) s of the Proton launch (RC_START_MAX ${START_MAX}); running ${SECS} s anyway"
+fi
 # RC_XDO=SCRIPT (2026-11-09, window stage 1c): a bash script run alongside the program on the same display (Xvfb or
 # the real one), for X input the Win32 side cannot fake from inside, e.g. an xdotool script (a mouse drag on the title bar
 # or border, or Alt+Space -> Move / Size: Wine's own modal move/size loop). Its output goes to <run>/xdo.log; it is killed with the run.
@@ -50,7 +62,7 @@ if [[ -n "${RC_XDO:-}" ]]; then
   XDO=$!
 fi
 # RC_VIDEO=START:SECONDS: snapshot the hidden display from START s
-# for SECONDS s as fast as import manages (~5-10/s), then tools/make_clip.py builds <shot>.mp4 at wall-clock speed
+# after the program's start for SECONDS s as fast as import manages (~5-10/s), then tools/make_clip.py builds <shot>.mp4 at wall-clock speed
 # with the game's own fps (from its [flip] log, GCM_FLIPCOUNT=1) burned in. Xvfb only, never the user's display.
 VID=""
 if [[ -n "${RC_VIDEO:-}" && -n "$XVFB" ]]; then

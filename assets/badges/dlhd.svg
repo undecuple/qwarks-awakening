@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="156" height="20" viewBox="0 0 156 20" role="img" aria-label="Deadlocked HD: not built">
-<title>Deadlocked HD: not built</title>
-<clipPath id="r"><rect width="156" height="20" rx="3"/></clipPath>
-<g clip-path="url(#r)"><rect width="97" height="20" fill="#303034"/><rect x="97" width="59" height="20" fill="#ebebed"/></g>
-<g font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11" text-anchor="middle"><text x="48.5" y="14" fill="#ffffff">Deadlocked HD</text><text x="126.5" y="14" fill="#2f2f34">not built</text></g>
+<svg xmlns="http://www.w3.org/2000/svg" width="148" height="20" viewBox="0 0 148 20" role="img" aria-label="Deadlocked HD: menus">
+<title>Deadlocked HD: menus</title>
+<clipPath id="r"><rect width="148" height="20" rx="3"/></clipPath>
+<g clip-path="url(#r)"><rect width="97" height="20" fill="#303034"/><rect x="97" width="51" height="20" fill="#e5a50a"/></g>
+<g font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11" text-anchor="middle"><text x="48.5" y="14" fill="#ffffff">Deadlocked HD</text><text x="122.5" y="14" fill="#2e2102">menus</text></g>
 </svg>

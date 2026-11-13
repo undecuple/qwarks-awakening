@@ -1,34 +1,60 @@
-# Release build: the launcher preview for Windows x64, as a portable zip, on a GitHub Windows runner;
-# adapted from Project Helghast, the Killzone 3 PC port's release workflow (same author, MIT).
+# Release build: the launcher for Windows x64 (a bare zip and a full build zip), on a GitHub Windows runner, and the
+# notes-only release of each game; adapted from Project Helghast, the Killzone 3 PC port's release workflow (same
+# author, MIT).
 #
-# Triggers: a pushed tag vMAJOR.MINOR.PATCH (builds, then creates a DRAFT release) and workflow_dispatch (a dry run:
-# builds and uploads the workflow artifact, never publishes). Nothing runs on a push to a branch or on a pull request.
-# Release rules: the version comes from the tag and must equal tools/release/names.py VERSION (checked in the build and
-# the publish job; bump_version.py keeps the same string in the launcher, the port's CMakeLists.txt and CITATION.cff);
-# the release is a pre-release while the major version is 0; its title is the tag; its notes are written from the
-# version's CHANGELOG.md section (tools/release/release_notes.py, which refuses a version without one) before the
-# build; SHA256SUMS and one .sha256 per file sit beside the assets; an existing release is never touched, no tag is
-# created, moved or deleted, and no asset is overwritten. The maintainer reads the draft and publishes it.
+# Tags: `launcher-vMAJOR.MINOR.PATCH` is the launcher release: it builds, then creates a DRAFT release titled
+# "Launcher vX.Y.Z" with the assets and the [All games] and [Launcher] notes. `<id>-vMAJOR.MINOR.PATCH`, for each game
+# id of data/titles/catalog.json, is a game release: a DRAFT pre-release titled "<badge name> vX.Y.Z" with that game's
+# notes and its playability state, no assets (a game is built on the player's PC from their own copy) and never marked
+# latest. workflow_dispatch is a dry run of the launcher: it builds and uploads the workflow artifact, never publishes.
+# Nothing runs on a push to a branch or on a pull request.
+# Release rules: the version comes from the tag and must equal tools/release/names.py VERSION, for a launcher tag (in
+# the build and the publish job; bump_version.py keeps the same string in the launcher, the port's CMakeLists.txt and
+# CITATION.cff) and for a game tag too: a game's release names the release whose build kit builds it, so a game tag is
+# only made together with the launcher tag of the same version, from the same commit. A release is a pre-release while
+# the major version is 0; the launcher release is marked latest from 1.0.0 on (GitHub never marks a pre-release as
+# latest). The notes are written from the version's CHANGELOG.md section (tools/release/release_notes.py --tag, which
+# refuses a version without a section, an unknown game and a tag with no item) before anything is built; SHA256SUMS and
+# one .sha256 per zip sit beside the launcher's assets; an existing release is never touched, no tag is created, moved
+# or deleted, and no asset is overwritten. The maintainer reads each draft and publishes it.
 #
-# What is built: the launcher only (launcher/, SDL3 + Dear ImGui). Never a game program: a game is built on the
-# player's own computer from their own copy of it. No game file is read, used or produced here. No installer yet
-# (the Killzone 3 workflow's Inno Setup steps are left out until the port has one).
+# What is built: the launcher (launcher/, SDL3 + Dear ImGui) and two zips from one file list: the bare launcher,
+# which asks before it fetches the build kit on a player's first Build, and the full build zip, which holds the same
+# files plus the build kit (the release's port/ sources, the patched ps3recomp, llvm-mingw, CMake, Ninja and their
+# licences; kit.json lists every kit file with its SHA-256, and the launcher carries that list's hash, compiled in).
+# Never a game program: a game is built on the player's own computer from their own copy of it. No game file is read,
+# used or produced here. No installer yet (the Killzone 3 workflow's Inno Setup steps are left out until the port has
+# one).
 #
 # Third-party pieces: actions/checkout and actions/upload-artifact (GitHub, MIT), the gh CLI (MIT, on the image),
-# Dear ImGui (MIT, the third_party/imgui submodule). Downloads at build time, each pinned by SHA-256 in
+# Dear ImGui (MIT, the third_party/imgui submodule), ps3recomp (MIT, the third_party/ps3recomp submodule, with this
+# port's patches applied by tools/ps3recomp-patched.sh; it ships in the full build zip). Downloads at build time, each pinned by SHA-256 in
 # tools/release/toolchain.json: llvm-mingw (Apache-2.0 WITH LLVM-exception; MinGW-w64 and winpthreads licences),
 # SDL3's MinGW development package (zlib; its SDL3.dll ships in the zip), CMake (BSD-3-Clause), Ninja (Apache-2.0),
 # and the Python embeddable package for Windows x64 (Python Software Foundation, PSF-2.0; it ships unmodified in the
 # zip's python\ folder and runs the launcher's setup engine, so a player needs no Python of their own).
 #
 # Published files (names from tools/release/names.py, checked by tools/release/test_names.py):
-#   Qwarks-Awakening-<version>-launcher-windows-x64.zip, its .sha256, SHA256SUMS
+#   Qwarks-Awakening-<version>-launcher-windows-x64.zip, Qwarks-Awakening-<version>-build-windows-x64.zip, the
+#   Qwarks-Awakening-<version>-launcher-symbols.zip (the launcher's split debug file: the "Get launcher symbols"
+#   button fetches it), the .sha256 of each, and SHA256SUMS (all three zips)
 name: release
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
-  workflow_dispatch:   # dry run only: no inputs, version = names.py VERSION, publishing is skipped
+    tags:   # the launcher and every game id of data/titles/catalog.json (test_workflows.py checks the list against it)
+      - "launcher-v[0-9]+.[0-9]+.[0-9]+"
+      - "tods-v[0-9]+.[0-9]+.[0-9]+"
+      - "qfb-v[0-9]+.[0-9]+.[0-9]+"
+      - "acit-v[0-9]+.[0-9]+.[0-9]+"
+      - "a4o-v[0-9]+.[0-9]+.[0-9]+"
+      - "ffa-v[0-9]+.[0-9]+.[0-9]+"
+      - "nexus-v[0-9]+.[0-9]+.[0-9]+"
+      - "rc1-v[0-9]+.[0-9]+.[0-9]+"
+      - "rc2-v[0-9]+.[0-9]+.[0-9]+"
+      - "rc3-v[0-9]+.[0-9]+.[0-9]+"
+      - "dlhd-v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:   # dry run of the launcher only: no inputs, version = names.py VERSION, publishing is skipped
 
 permissions:
   contents: read    # default for every job; only the publish job below gets write
@@ -39,12 +65,16 @@ concurrency:
 
 jobs:
   launcher:
+    # launcher tags and the dry run; a game tag skips the build (game-notes below)
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')
     permissions:
       contents: read    # builds and uploads the artifact only; the publish job below is the one with write
     outputs:
       version: ${{ steps.ver.outputs.version }}
       artifact: ${{ steps.ver.outputs.artifact }}
       zip: ${{ steps.ver.outputs.zip }}
+      build_zip: ${{ steps.ver.outputs.build_zip }}
+      symbols_zip: ${{ steps.ver.outputs.symbols_zip }}
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -62,10 +92,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Dear ImGui only: the launcher needs nothing else. Not `submodules: true` on the checkout: that would also fetch
-      # third_party/ps3recomp (the game build's, large, unused here).
-      - name: Dear ImGui submodule
-        run: git submodule update --init --depth 1 third_party/imgui
+      # Dear ImGui for the launcher, ps3recomp for the build kit in the full zip. Not `submodules: true` on the
+      # checkout: that would also fetch any other submodule.
+      - name: Dear ImGui and ps3recomp submodules
+        run: git submodule update --init --depth 1 third_party/imgui third_party/ps3recomp
 
       # The scripts call python3; the image has python.exe (a WindowsApps python3 may be the store stub).
       - name: python3 on PATH
@@ -80,9 +110,13 @@ jobs:
         run: |
           want=$(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.VERSION)')
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
-            v="${GITHUB_REF_NAME#v}"
+            case "$GITHUB_REF_NAME" in
+              launcher-v*) ;;
+              *) echo "::error::tag $GITHUB_REF_NAME is not launcher-vMAJOR.MINOR.PATCH"; exit 1 ;;
+            esac
+            v="${GITHUB_REF_NAME#launcher-v}"
             case "$v" in
-              *[!0-9.]*|.*|*.|*..*|"") echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1 ;;
+              *[!0-9.]*|.*|*.|*..*|"") echo "::error::tag $GITHUB_REF_NAME is not launcher-vMAJOR.MINOR.PATCH"; exit 1 ;;
             esac
             if [ "$v" != "$want" ]; then
               echo "::error::tag $GITHUB_REF_NAME says $v but tools/release/names.py VERSION is $want"; exit 1
@@ -101,12 +135,14 @@ jobs:
           grep -qE "^version: \"?$ve\"?\s*$" CITATION.cff \
             || { echo "::error::CITATION.cff version is not $v"; exit 1; }
           # shellcheck disable=SC2046  # two words: the asset stem and the zip name (no spaces in either)
-          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.launcher_zip_name(sys.argv[1]))' "$v")
-          stem="$1"; zip="$2"
+          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.launcher_zip_name(sys.argv[1]), names.build_zip_name(sys.argv[1]), names.symbols_zip_name(sys.argv[1]))' "$v")
+          stem="$1"; zip="$2"; bzip="$3"; szip="$4"
           {
             echo "version=$v"
-            echo "artifact=$stem-$v-launcher"
+            echo "artifact=$stem-$v-release"
             echo "zip=$zip"
+            echo "build_zip=$bzip"
+            echo "symbols_zip=$szip"
           } >> "$GITHUB_OUTPUT"
 
       # The notes first, so a missing or empty CHANGELOG section fails before the build. A dry run of a version
@@ -117,10 +153,10 @@ jobs:
         run: |
           mkdir -p build/release-out
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            python3 tools/release/release_notes.py "$VERSION" --out build/release-out/release-body.md
+            python3 tools/release/release_notes.py --tag "launcher-v$VERSION" --out build/release-out/release-body.md
           else
-            python3 tools/release/release_notes.py "$VERSION" --out build/release-out/release-body.md \
-              || echo "::warning::no CHANGELOG section for $VERSION: a tag for it would fail here"
+            python3 tools/release/release_notes.py --tag "launcher-v$VERSION" --out build/release-out/release-body.md \
+              || echo "::warning::no launcher notes for $VERSION in CHANGELOG.md: a tag for it would fail here"
           fi
           cat build/release-out/release-body.md 2>/dev/null || true
 
@@ -129,8 +165,8 @@ jobs:
         # Linux in ci.yml.
         run: |
           failed=""
-          for t in test_names test_release_notes test_fetch_toolchain test_pack_zip test_stage_sdl3 test_workflows \
-                   test_pe_imports test_launcher_src; do
+          for t in test_names test_release_notes test_fetch_toolchain test_pack_zip test_kit test_stage_sdl3 \
+                   test_workflows test_pe_imports test_launcher_src; do
             python3 "tools/release/$t.py" || failed="$failed $t"
           done
           if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
@@ -138,12 +174,32 @@ jobs:
       - name: Toolchain manifest (every download pinned)
         run: python3 tools/release/fetch_toolchain.py --check --strict
 
-      - name: Toolchain (llvm-mingw, SDL3 devel, CMake, Ninja, Python embeddable; SHA-256 checked)
-        # the Windows-host entries only (llvm-mingw-linux is ci.yml's Linux cross build)
-        run: python3 tools/release/fetch_toolchain.py --only llvm-mingw,sdl3,cmake,ninja,python
+      - name: Toolchain (llvm-mingw, SDL3 devel, CMake, Ninja, Python embeddable, licence texts; SHA-256 checked)
+        # the Windows-host entries only (llvm-mingw-linux is ci.yml's Linux cross build); the licence texts go into
+        # the full build zip beside the tools they belong to
+        run: python3 tools/release/fetch_toolchain.py --only llvm-mingw,sdl3,cmake,ninja,python,llvm-mingw-license,llvm-license,mingw-w64-license,winpthreads-license,lgpl-2.1-text,ninja-license
 
-      - name: Launcher (built with the pinned llvm-mingw)
-        # build_launcher.sh puts llvm-mingw's bin first on PATH (windres and clang run their helpers from there)
+      # ps3recomp at its pinned commit with every port/patches/*.patch applied: the build kit's recompiler
+      - name: Patched ps3recomp (the build kit's toolkit)
+        run: bash tools/ps3recomp-patched.sh
+
+      # The kit's file list first: the launcher is built with its SHA-256 (and the full zip's URL and sizes) compiled in,
+      # so it accepts exactly this release's kit and nothing else.
+      - name: Build kit list (kit.json)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 tools/release/pack_zip.py --make-kit-manifest build/kit/kit.json --toolkit work/ps3recomp-patched \
+            --toolchain work/release/toolchain-cache/trees --version "$VERSION"
+
+      - name: Launcher (built with the pinned llvm-mingw and the kit list)
+        # build_launcher.sh puts llvm-mingw's bin first on PATH (windres and clang run their helpers from there).
+        # LAUNCHER_SYMBOLS=1: it builds with -g, moves the debug information to launcher.exe.debug (objcopy
+        # --only-keep-debug), strips the exe and adds the .gnu_debuglink naming that file and its CRC-32, so the launcher
+        # in both zips carries the debuglink of exactly the file that goes into the symbols zip
+        env:
+          LAUNCHER_KIT_MANIFEST: build/kit/kit.json
+          LAUNCHER_SYMBOLS: "1"
         run: tools/release/build_launcher.sh build/launcher-release
 
       # The zip carries SDL3.dll and nothing else of the toolchain: a libc++.dll, libunwind.dll or libwinpthread-1.dll
@@ -157,12 +213,14 @@ jobs:
           python3 tools/release/stage_sdl3.py --dll "$T/x86_64-w64-mingw32/bin/SDL3.dll" --license "$T/LICENSE.txt" \
             --out work/release/sdl3
 
-      - name: Portable zip (and its .sha256)
+      - name: Bare launcher zip, full build zip and launcher symbols zip (and their .sha256)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           python3 tools/release/pack_zip.py --exe build/launcher-release/launcher.exe --sdl3 work/release/sdl3 \
-            --python work/release/toolchain-cache/trees/python --version "$VERSION" --out build/release-out
+            --python work/release/toolchain-cache/trees/python --version "$VERSION" --out build/release-out \
+            --kit-manifest build/kit/kit.json --toolkit work/ps3recomp-patched \
+            --toolchain work/release/toolchain-cache/trees --symbols build/launcher-release/launcher.exe.debug
           cd build/release-out
           sha256sum -c ./*.sha256
           ls -l
@@ -173,19 +231,24 @@ jobs:
           path: |
             build/release-out/${{ steps.ver.outputs.zip }}
             build/release-out/${{ steps.ver.outputs.zip }}.sha256
+            build/release-out/${{ steps.ver.outputs.build_zip }}
+            build/release-out/${{ steps.ver.outputs.build_zip }}.sha256
+            build/release-out/${{ steps.ver.outputs.symbols_zip }}
+            build/release-out/${{ steps.ver.outputs.symbols_zip }}.sha256
             build/release-out/release-body.md
           if-no-files-found: error
           # The artifact is kept 14 days: publish downloads it from this run, so re-running the publish job of a run
           # older than that fails at the download; a later release needs a new tag push (a new build).
           retention-days: 14
 
-  # Tag pushes only; a dispatch never publishes (the job is skipped). The only job with write access; it checks out
-  # no code. A draft pre-release (major 0) titled with the tag. If a release for the tag already exists the job
+  # Launcher tag pushes only; a dispatch never publishes (the job is skipped). One of the two jobs with write access
+  # (the other is game-publish); it checks out no code. A draft, a pre-release while the major version is 0, titled
+  # "Launcher vX.Y.Z", marked latest from 1.0.0 on. If a release for the tag already exists the job
   # fails: nothing is edited, re-uploaded or clobbered, and no tag is touched (--verify-tag refuses to create one).
   # The assets and the notes are the launcher job's artifact (gh run download of this run needs actions: read).
   publish:
     needs: launcher
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'launcher-v')
     permissions:
       contents: write   # gh release create; nothing else is written
       actions: read     # gh run download of this run's artifact
@@ -199,10 +262,12 @@ jobs:
           VERSION: ${{ needs.launcher.outputs.version }}
           ARTIFACT: ${{ needs.launcher.outputs.artifact }}
           ZIP: ${{ needs.launcher.outputs.zip }}
+          BUILD_ZIP: ${{ needs.launcher.outputs.build_zip }}
+          SYMBOLS_ZIP: ${{ needs.launcher.outputs.symbols_zip }}
         run: |
           set -euo pipefail
-          [ "$GITHUB_REF_NAME" = "v$VERSION" ] \
-            || { echo "::error::tag $GITHUB_REF_NAME is not v$VERSION (names.py VERSION of the build)"; exit 1; }
+          [ "$GITHUB_REF_NAME" = "launcher-v$VERSION" ] \
+            || { echo "::error::tag $GITHUB_REF_NAME is not launcher-v$VERSION (names.py VERSION of the build)"; exit 1; }
           # outside any checkout: the repository has its own assets/ folder (README art)
           out="$RUNNER_TEMP/release-assets"
           mkdir "$out"
@@ -213,9 +278,83 @@ jobs:
           fi
           test -s release-body.md
           sha256sum -c "$ZIP.sha256"
-          sha256sum "$ZIP" > SHA256SUMS
+          sha256sum -c "$BUILD_ZIP.sha256"
+          sha256sum -c "$SYMBOLS_ZIP.sha256"
+          sha256sum "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
-          pre=""; case "$VERSION" in 0.*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --draft $pre --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-body.md \
-            "$ZIP" "$ZIP.sha256" SHA256SUMS
+          # GitHub never marks a pre-release as latest: --latest only from 1.0.0 on
+          pre=""; latest="--latest"; case "$VERSION" in 0.*) pre="--prerelease"; latest="" ;; esac
+          gh release create "$GITHUB_REF_NAME" --draft $pre $latest --verify-tag --title "Launcher v$VERSION" --notes-file release-body.md \
+            "$ZIP" "$ZIP.sha256" "$BUILD_ZIP" "$BUILD_ZIP.sha256" "$SYMBOLS_ZIP" "$SYMBOLS_ZIP.sha256" SHA256SUMS
+
+  # Game tags (<id>-vX.Y.Z): the notes only, written from the CHANGELOG on a read-only job; nothing is built.
+  game-notes:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !startsWith(github.ref_name, 'launcher-v')
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Game id and version (the version must equal names.py VERSION; the id must be a catalogue game)
+        id: ver
+        run: |
+          want=$(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.VERSION)')
+          v="${GITHUB_REF_NAME##*-v}"
+          case "$v" in
+            *[!0-9.]*|.*|*.|*..*|"") echo "::error::tag $GITHUB_REF_NAME is not <game id>-vMAJOR.MINOR.PATCH"; exit 1 ;;
+          esac
+          if [ "$v" != "$want" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $v but tools/release/names.py VERSION is $want"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # release_notes.py refuses an id that is not a catalogue game and a version section without that game's group
+      - name: Release notes and title (from CHANGELOG.md and the catalogue)
+        run: |
+          mkdir -p build/release-out
+          python3 tools/release/release_notes.py --tag "$GITHUB_REF_NAME" --out build/release-out/release-body.md \
+            --title-out build/release-out/release-title.txt
+          cat build/release-out/release-title.txt build/release-out/release-body.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: game-release-notes
+          path: |
+            build/release-out/release-body.md
+            build/release-out/release-title.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # The game release: a draft pre-release with notes only, never latest. Write access, no checkout.
+  game-publish:
+    needs: game-notes
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !startsWith(github.ref_name, 'launcher-v')
+    permissions:
+      contents: write   # gh release create; nothing else is written
+      actions: read     # gh run download of this run's artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Draft pre-release, notes only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # gh runs with no checkout
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-notes"
+          mkdir "$out"
+          gh run download "$GITHUB_RUN_ID" --name game-release-notes --dir "$out"
+          cd "$out"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::a release for $GITHUB_REF_NAME already exists; refusing to touch it"; exit 1
+          fi
+          test -s release-body.md
+          title=$(head -n 1 release-title.txt)
+          test -n "$title"
+          gh release create "$GITHUB_REF_NAME" --draft --prerelease --latest=false --verify-tag --title "$title" \
+            --notes-file release-body.md

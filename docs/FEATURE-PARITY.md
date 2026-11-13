@@ -23,13 +23,13 @@ the part of the run the row names.
 
 | Game | Title ID tested | State reached | Parity (estimate) | Last checked |
 |---|---|---|---|---|
-| Ratchet & Clank Future: Tools of Destruction | BCUS98127 | plays by hand from the first level; scripted, a new game from an empty install and about 11 minutes in Metropolis; not played through | 48 % | 2026-11-10, scripted; hand play 2026-11-03 (keyboard) and October 2026 (earlier build) |
+| Ratchet & Clank Future: Tools of Destruction | BCUS98127 | plays by hand from the first level; scripted, a new game from an empty install and about 11 minutes in Metropolis; not played through | 48 % | 2026-11-10, scripted; levels started directly 2026-11-13, scripted, no input; hand play 2026-11-03 (keyboard) and October 2026 (earlier build) |
 | Ratchet & Clank Future: Quest for Booty | BCES00301 | installs its data; a new game reaches the ship deck, with Ratchet under scripted control | 33 % | 2026-11-10, scripted |
-| Ratchet & Clank Future: A Crack in Time | BCUS98124, 1.20 update | a new game reaches its first save; then black in most runs | 23 % | 2026-11-10, scripted |
+| Ratchet & Clank Future: A Crack in Time | BCUS98124, 1.20 update | a new game reaches its first level and plays its opening cutscenes; player control not confirmed | 23 % | 2026-11-10, scripted |
 | Ratchet & Clank: All 4 One | BCUS98175, 1.03 update | the menus reach the first level, then the game stops | 23 % | 2026-11-10, scripted |
 | Ratchet & Clank: Full Frontal Assault | BCUS98380, 1.05 update | installs its data; the screen stays black | 8 % | 2026-11-04, scripted |
 | Ratchet & Clank: Into the Nexus | BCUS99245, 1.01 update | installs its data and shows its intro movie; then the lobby stays black | 11 % | 2026-11-10, scripted |
-| Ratchet: Deadlocked HD | NPUA80646 | not built yet | 0 % | - |
+| Ratchet: Deadlocked HD | NPUA80646 | builds; a scripted new game plays its intro, then stops before the first level | not estimated | 2026-11-10, scripted |
 | Ratchet & Clank Collection: Ratchet & Clank 1 | BCUS98282 | a new game reaches Veldin, the first level, with Ratchet under scripted control | 30 % | 2026-11-10, scripted |
 | Ratchet & Clank Collection: Ratchet & Clank 2 | BCUS98282 | a new game reaches Aranos, the first level, with Ratchet under scripted control | 23 % | 2026-11-10, scripted |
 | Ratchet & Clank Collection: Ratchet & Clank 3 | BCUS98282 | a new game reaches Veldin, the first level, with Ratchet under scripted control | 27 % | 2026-11-10, scripted |
@@ -53,19 +53,19 @@ the part of the run the row names.
 | Load and delete a save | LOAD and DELETE in the main menu | partial | a saved game loads into Fastoon; DELETE does nothing yet |
 | Prerendered cutscenes | movies between levels | partial | the new-game intro plays to its end, with the same colour error as the menu movie |
 | In-engine cutscenes | real-time scenes in levels | not tried | |
-| Planets and levels | the campaign's planets in order | partial | Metropolis (new game), Fastoon (saved game), Cobalia and further planets reached by hand; none played to its end |
+| Planets and levels | the campaign's planets in order | partial | Metropolis (new game), Fastoon (saved game), Cobalia and further planets reached by hand; none played to its end. Started directly with the game's developer level option (scripted, no input, 2026-11-12 and 2026-11-13), 17 of the 19 level ids load and draw to the end of a 300-second run, and two stop drawing after their first frames; that is not play |
 | Ratchet on foot | walk, jump, wrench, jetpack | works | hand play, October 2026; the ground holds after every level load. Scripted, 2026-11-10: about 11 minutes of moving, jumping, wrench and firing in Metropolis after a new game from an empty install, twice, no crash |
 | Combat | enemies fight back and can be beaten | works | fights in Fastoon won by hand, October 2026 |
 | Weapons and upgrades | buy, level up and upgrade weapons | not tried | |
 | Gadgets and Clank sections | gadgets and Clank's own sections | not tried | |
 | Ship travel | pick a planet on the map and fly there | works | from Fastoon to Cobalia and on, by hand, October 2026 |
-| Space combat | on-rails ship sections | not tried | |
+| Space combat | on-rails ship sections | not tried | the first, second and third space combat load and draw when started directly with the game's developer level option (scripted, no input, 2026-11-13); not played |
 | Motion control | Sixaxis tilt in some sections | not tried | pads without motion sensors will need a mapping |
 | Audio | music, effects and voices | not tried | test runs have sound turned off |
-| Video output | 720p | partial | a 1280x704 picture; window, borderless and fullscreen work; no scaling options yet |
-| Scene rendering | levels drawn whole and stable | partial | full scenes; the too-strong reflections and the mirrored HUD prompt at Fastoon's spaceport are fixed in a scripted run on 2026-11-04; the picture still flickers in one cave on Fastoon, and glow looks washed out (scripted runs, 2026-11-10) |
+| Video output | 720p | partial | a 1280x704 picture; window, borderless and fullscreen work; FSR 1 upscaling is opt-in (see Port additions) |
+| Scene rendering | levels drawn whole and stable | partial | full scenes; the too-strong reflections and the mirrored HUD prompt at Fastoon's spaceport are fixed in a scripted run on 2026-11-04; the picture still flickers in one cave on Fastoon, (scripted runs, 2026-11-10); the washed-out glow is fixed (patch 7049, one scripted run, 2026-11-10) |
 | Level loading | levels load without visible stalls | partial | levels load, but loads stall while graphics pipelines are built, and the game's own stall notice can show |
-| Frame rate | the console's own frame rate (not measured by us) | partial | hand play, October 2026, earlier build: about 37 per second in Fastoon over 147 seconds, fights included. Scripted, 2026-11-04: about 47 at a Fastoon save, but about 15 in Metropolis after a new game. Scripted, 2026-11-10: 39.9 and 27.6 over two runs' time in Metropolis (the machine's load was not the same in both) |
+| Frame rate | the console's own frame rate (not measured by us) | partial | hand play, October 2026, earlier build: about 37 per second in Fastoon over 147 seconds, fights included. Scripted, 2026-11-04: about 47 at a Fastoon save, but about 15 in Metropolis after a new game. Scripted, 2026-11-10: 39.9 and 27.6 over two runs' time in Metropolis (the machine's load was not the same in both). Started directly in 17 levels with no input (2026-11-12 and 2026-11-13): about 12 to 59 over the last two minutes, depending on the level, 11 of the 17 under 30 |
 | Challenge mode and extras | replay with upgrades, skill points, extras | not tried | |
 
 ## Ratchet & Clank Future: Quest for Booty
@@ -78,7 +78,7 @@ crash. 18 rows: 1 works, 10 partial, 7 not reached or not tried. **Estimate: 33 
 | Feature | On the console | Port | Notes |
 |---|---|---|---|
 | Start-up and front end | start-up screens, then the front end | partial | the front end is shown |
-| Game-data install | the first start installs the game data | works | about 4 GB installed in a scripted run on 2026-11-04, then the game goes on |
+| Game-data install | the first start installs the game data | works | about 4 GB installed in a scripted run on 2026-11-10, then the game goes on |
 | Main menu | new game, load, options | partial | NEW GAME starts the game; the other entries were not tried |
 | Options menu | controls, display and sound | not tried | |
 | Pad input in menus | D-pad and buttons navigate | partial | scripted button presses only |
@@ -100,15 +100,16 @@ crash. 18 rows: 1 works, 10 partial, 7 not reached or not tried. **Estimate: 33 
 
 1.20 update. The game builds and starts. In scripted runs on 2026-11-10 it does its first-start setup, plays the
 install movie, reaches the title screen, and a new game (NEW GAME, difficulty, brightness) writes its first save.
-After the save, one run in five shows the next dialog; the others stay black and do not react to the pad. Not
-playable. 15 rows: 7 partial, 8 not reached or not tried. **Estimate: 23 %.**
+After the save the game now goes on to its first level, `great_clock_a`, and plays the opening cutscenes (4 of 4
+scripted runs, 2026-11-10, after a fix that makes the save dialog take the console's time). In one run Clank is in the
+level's corridor under scripted stick input; player control is not confirmed. Not playable. 15 rows: 7 partial, 8 not reached or not tried. **Estimate: 23 %.**
 
 | Feature | On the console | Port | Notes |
 |---|---|---|---|
 | Start-up and intro | start-up screens, then the intro | partial | the setup, the install movie and the title screen are shown |
 | Main menu | new game, load, options, extras | partial | NEW GAME chosen by the script; the other entries not tried |
 | Options menu | controls, brightness, motion and sound | not reached yet | the brightness screen of a new game is passed |
-| Input | pad in menus and in play, four control schemes | partial | scripted presses work in the menus; after the save the game ignores them in most runs |
+| Input | pad in menus and in play, four control schemes | partial | scripted presses work in the menus; control in the first level is not confirmed |
 | Saving and loading | save and load from the menu | partial | a new game writes its first save; loading not tried |
 | Cutscenes | movies and real-time story scenes | partial | the intro cinematic is drawn |
 | Planets and levels | the campaign's planets, moons and stations | not reached yet | |
@@ -118,7 +119,7 @@ playable. 15 rows: 7 partial, 8 not reached or not tried. **Estimate: 23 %.**
 | Space flight | the Aphelion between planets and moons, ship upgrades | not reached yet | |
 | Challenge mode and extras | challenge mode, skill points, arena, extras | not reached yet | |
 | Audio | music, effects and voices | not tried | test runs have sound turned off |
-| Picture | 720p, full scenes | partial | the intro, the install movie, the title and the new-game screens are drawn; black after the save in most runs |
+| Picture | 720p, full scenes | partial | the intro, the install movie, the title and the new-game screens are drawn; after the save the first level's opening cutscenes play |
 | Frame rate | the console's own frame rate | partial | scripted, 2026-11-04: 16.7 per second; scripted, 2026-11-10: 8 to 20 during the install movie, 60 at the title screen |
 
 ## Ratchet & Clank: Into the Nexus
@@ -219,8 +220,9 @@ partial), *Ratchet & Clank 3* 27 % (8 partial).**
 
 ## Ratchet: Deadlocked HD
 
-**Not built yet.** A PS2 remaster. Its main-CPU (PPU) code is lifted to C; no program has been built from it. Every
-feature counts 0 until it runs. **Estimate: 0 %.**
+A PS2 remaster. The game builds and starts. In scripted runs on 2026-11-10 it shows its warning screen and main menu, and
+a new game plays its in-engine intro and stops before the first level. Not playable. No feature rows are counted yet.
+**Estimate: not made.**
 
 ## Port additions
 

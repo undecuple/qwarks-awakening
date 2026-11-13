@@ -1,0 +1,393 @@
+PSO lookahead: on a pipeline miss, queue the upcoming draws' pipelines before waiting (no draw is skipped).
+KZ3 2048 builds missing PSOs on worker threads, but since RSX pass 57 the walker waits for each build at once, so a
+cold level start builds its misses strictly one after another (ToD tods-scr-play2: 202 PSOs awaited for 45.8 s in the
+first Metropolis frame, max in flight 1, three of four workers idle; any label wait over 2.5 s shows ToD's own
+RSX-stall overlay, func_00501BD8). The commands after the current draw are already in memory up to put. On a miss,
+live draw now decodes the FIFO ahead (rsx_fifo_ahead.h: NOP, JUMP old/new, CALL/RET, methods of subchannels 0/1;
+stops at put, the next flip word, a semaphore acquire or a park; nothing is consumed) into a copy of the register
+file and runs get_pso for each upcoming draw that renders to the same surface as the current one (the PSO's DSV/RTV
+formats come from the bound surface, not the key): a miss there is submitted to the workers and left pending, and the
+real draw later waits only for what is left. The register file, the current-PSO metadata, the texture-unit mask and
+the FP constants are restored afterwards. A wrong guess only builds an unused pipeline: a lookahead build is recorded
+(pso_keys.bin, ld_pl_record; the template export, ld_pt_note) only once a real draw takes it. One scan covers the draws up to
+its first draw on another surface (its horizon); a miss before the horizon waits as before, so the same commands are
+not read twice. LD_PSO_AHEAD=0 = old.
+[pso-ahead] statistics print with [pso-async] (used = lookahead PSOs a real draw later took: the check that the guesses
+match). cellGcmSys.c exports gcm_walker_ahead (the walker's position).
+Host test: R&C port/rc/tests/run_fifo_ahead_test.sh.
+2026-11-11 (code review of rc-int-1600): guesses no draw took were saved to pso_keys.bin and the template, so later sessions
+preloaded or prewarmed them; their record now waits (ld_ahead_pl_record / ld_ahead_taken) and ld_pt_note skips the scan.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index d7fc546..0d5fb14 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1035,6 +1035,25 @@ static u32 gcm_fifo_backlog(u32 put, u32 get)
+ }
+ static u32 s_last_ring_off = 0;   /* last offset the walker actually consumed */
+ static u32 s_fifo_calloff = 0;
++/* R&C patch 7050: the walker's position for the PSO lookahead (rsx_fifo_ahead.h): the word after the method
++ * command being dispatched, the pass's put and the pending CALL return. s_walk_next is 0 outside a pass. */
++static u32 s_walk_next, s_walk_put, s_walk_call;
++#include "rsx_fifo_ahead.h"
++static int gcm_ahead_read(void* u, u32 off, u32* word)
++{
++    (void)u;
++    const u32 ea = gcm_io2ea(off);
++    if (!ea) return 0;
++    *word = vm_read32(ea);
++    return 1;
++}
++/* Live draw (patch 7050): decode the FIFO after the current command, up to put / the next flip, without
++ * consuming it. -1 = not inside a walker pass. */
++int gcm_walker_ahead(int (*on_method)(void* u, u32 method, u32 arg), void* u, u32 max_words)
++{
++    if (!s_walk_next) return -1;
++    return rsx_fifo_ahead(s_walk_next, s_walk_put, s_walk_call, max_words, gcm_ahead_read, NULL, on_method, u);
++}
+ static u32 s_park_off = 0xFFFFFFFFu;  /* KZ3 patch 1007: park being waited on */
+ static u64 s_park_t0 = 0;
+ static u32 s_park_put = 0, s_park_putchg = 0;  /* KZ3 patch 1011: put moves during a park wait */
+@@ -3331,6 +3350,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             u32 count  = (w >> 18) & 0x7FF;
+             u32 method = w & 0x1FFCu;
+             u32 subch  = (w >> 13) & 7;
++            s_walk_next = s_fifo_getoff + 4u + count * 4u; s_walk_put = put; s_walk_call = s_fifo_calloff;   /* R&C patch 7050 */
+             /* TCONST_FIFO=1: how the title actually streams vertex constants.
+              * NV4097_SET_TRANSFORM_CONSTANT is a 32-register window; if a block
+              * arrives NON-INCREMENTING then every dword carries the same method
+@@ -3654,6 +3674,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             fprintf(stderr, "[FIFOUW] unknown word 0x%08X at getoff 0x%X\n", w, s_fifo_getoff); }
+         s_fifo_getoff += 4;                    /* unknown word: skip */
+     }
++    s_walk_next = 0;   /* R&C patch 7050: outside a pass, no lookahead */
+ 
+     /* Walker watchdog. Everything above recovers from a *recognised* stall --
+      * a branch we cannot take, a park the title abandoned. A walker that stops
+diff --git a/pb/libs/video/rsx_fifo_ahead.h b/libs/video/rsx_fifo_ahead.h
+new file mode 100644
+index 0000000..bb8e428
+--- /dev/null
++++ b/libs/video/rsx_fifo_ahead.h
+@@ -0,0 +1,68 @@
++/* R&C patch 7050: read the command FIFO ahead of the walker, without consuming it.
++ *
++ * The walker builds a missing pipeline (PSO) when a draw needs it and waits for that build before it records the
++ * draw (KZ3 RSX pass 57: a draw is never skipped). At a cold level start ToD's first frame meets ~200 misses one
++ * after another, so the build workers run one job at a time and the frame takes tens of seconds. The commands that
++ * follow the current draw are already in memory up to `put`: decoding them ahead lets live draw submit the upcoming
++ * pipelines to the idle workers before it waits for the first.
++ *
++ * rsx_fifo_ahead decodes the words from `off` to `put` the way the walker does (NOP, old and new JUMP, CALL / RET,
++ * incrementing and non-incrementing method headers) and hands every method of subchannels 0 and 1 (the 3D object)
++ * to `on_method`, which returns non-zero to stop. It stops at the first flip word (0xFEADxxxx: the frame ends there),
++ * a semaphore acquire (0x68 on subchannel 0: what follows may wait for other producers), a JUMP to itself (a park),
++ * an unreadable word, a RET without a CALL, or after max_words words. Nothing is written. Returns the stop reason. */
++#ifndef RSX_FIFO_AHEAD_H
++#define RSX_FIFO_AHEAD_H
++#include <stdint.h>
++
++enum {
++    RSX_AHEAD_PUT = 0, RSX_AHEAD_FLIP, RSX_AHEAD_ACQUIRE, RSX_AHEAD_PARK, RSX_AHEAD_UNMAPPED,
++    RSX_AHEAD_RET, RSX_AHEAD_LIMIT, RSX_AHEAD_STOPPED, RSX_AHEAD_UNKNOWN
++};
++
++/* read: the word at IO offset `off`; returns 0 when the offset is not mapped. */
++typedef int (*rsx_ahead_read_fn)(void* u, uint32_t off, uint32_t* word);
++typedef int (*rsx_ahead_method_fn)(void* u, uint32_t method, uint32_t arg);
++
++static inline int rsx_fifo_ahead(uint32_t off, uint32_t put, uint32_t call_ret, uint32_t max_words,
++                                 rsx_ahead_read_fn rd, void* ru, rsx_ahead_method_fn fn, void* fu)
++{
++    while (off != put) {
++        uint32_t w;
++        if (!max_words) return RSX_AHEAD_LIMIT;
++        max_words--;
++        if (!rd(ru, off, &w)) return RSX_AHEAD_UNMAPPED;
++        if (!w) { off += 4u; continue; }
++        if ((w & 0xFFFF0000u) == 0xFEAD0000u) return RSX_AHEAD_FLIP;
++        if ((w & 3u) == 1u) w = 0x20000000u | (w & 0x1FFFFFFCu);   /* new-style JUMP (KZ3 2104) */
++        const uint32_t type = w >> 29;
++        if (type == 1u) {
++            const uint32_t tgt = w & 0x1FFFFFFCu;
++            if (tgt == off) return RSX_AHEAD_PARK;
++            off = tgt; continue;
++        }
++        if ((w & 3u) == 2u) { call_ret = off + 4u; off = w & 0x1FFFFFFCu; continue; }
++        if (w == 0x00020000u) {
++            if (!call_ret) return RSX_AHEAD_RET;
++            off = call_ret; call_ret = 0; continue;
++        }
++        if (type == 0u || type == 2u) {
++            const uint32_t count = (w >> 18) & 0x7FFu, method = w & 0x1FFCu, subch = (w >> 13) & 7u;
++            if (subch == 0u && method == 0x68u) return RSX_AHEAD_ACQUIRE;
++            if (subch <= 1u) {
++                for (uint32_t i = 0; i < count; i++) {
++                    uint32_t a;
++                    if (!rd(ru, off + 4u + i * 4u, &a)) return RSX_AHEAD_UNMAPPED;
++                    if (fn(fu, (subch << 13) | (type == 0u ? method + i * 4u : method), a)) return RSX_AHEAD_STOPPED;
++                }
++            }
++            if (max_words < count) return RSX_AHEAD_LIMIT;
++            max_words -= count;
++            off += 4u + count * 4u;
++            continue;
++        }
++        return RSX_AHEAD_UNKNOWN;
++    }
++    return RSX_AHEAD_PUT;
++}
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 69497cd..23a851b 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -446,7 +446,7 @@ typedef struct {
+     u32 quiet, written, skip_frame;   /* patch 2033, as texcache_t */
+     u32 dyn;   /* patch 2046, as texcache_t (content change seen) */
+ } vtexcache_t;
+-typedef struct { u64 key; ID3D12PipelineState* pso; u8 preloaded; u8 pending; } psocache_t;   /* patch 2031: preloaded until first use; patch 2048: pending = an asynchronous build in flight */
++typedef struct { u64 key; ID3D12PipelineState* pso; u8 preloaded; u8 pending; u8 ahead; } psocache_t;   /* patch 2031: preloaded until first use; patch 2048: pending = an asynchronous build in flight */
+ typedef struct {
+     u64 hash;
+     u32 source_length;
+@@ -8812,6 +8812,7 @@ static void ld_pl_drain(void)
+         g.psos[g.n_psos].key = key;
+         g.psos[g.n_psos].pso = pso;
+         g.psos[g.n_psos].preloaded = g_ld_pl.staged[s].src ? g_ld_pl.staged[s].src : 1;
++        g.psos[g.n_psos].ahead = 0;   /* R&C patch 7050 */
+         g.n_psos++;
+     }
+     g_ld_pl.n_staged = 0;
+@@ -9130,8 +9131,10 @@ static LONGLONG ld_pt_qpc(void) { LARGE_INTEGER q; QueryPerformanceCounter(&q);
+ static double ld_pt_secs(void) { return (double)(ld_pt_qpc() - g_pt.t0) / (double)(g_pt.qpf ? g_pt.qpf : 1); }
+ 
+ /* ---- export (walker thread) ---- */
++static int g_ld_ahead_active;   /* R&C patch 7050: the PSO lookahead's scan is running (defined with the lookahead) */
+ static void ld_pt_note(u64 key, const ld_xl_in* xi, int packed, int depth)
+ {
++    if (g_ld_ahead_active) return;   /* R&C patch 7050: a lookahead guess is noted when a real draw asks for it */
+     if (!rsx_pt_set_add(&g_pt.seen, key)) return;
+     if (!ld_fp_constants_buffered()) return;
+     if (g_pt.n_out == g_pt.cap_out) {
+@@ -9904,6 +9907,52 @@ static int ld_apso_submit(const char* vs_hlsl, const char* ps_hlsl, const render
+     return 1;
+ }
+ 
++/* R&C patch 7050: a lookahead build is a guess. It goes into pso_keys.bin (ld_pl_record) only once a real draw takes
++ * it; until then its record waits here (walker thread only). A guess no draw takes is built and never saved, so the
++ * next session neither preloads nor prewarms it. */
++typedef struct ld_ahead_rec {
++    struct ld_ahead_rec* next;
++    u64 key, vs_hash, ps_hash;
++    u32 vs_len, ps_len;
++    render_state_t rs;
++    rsx_vertex_layout_plan layout;
++    int masked, packed, depth;
++} ld_ahead_rec;
++static ld_ahead_rec* g_ld_ahead_recs;
++/* 1 when key's pending entry was submitted by the lookahead and no draw has taken it yet. */
++static int ld_ahead_pending(u64 key)
++{
++    u32 m; RSX_APSO_FIND_PENDING(g.psos, g.n_psos, key, m);
++    return m < g.n_psos && g.psos[m].ahead;
++}
++/* ld_pl_record, or (ahead) keep the record, with the HLSL hashes of g_ld_pl_last_*, until ld_ahead_taken. */
++static void ld_ahead_pl_record(u64 key, const render_state_t* rs, const rsx_vertex_layout_plan* layout, int packed,
++                               int depth, int ahead)
++{
++    if (!ahead) { ld_pl_record(key, rs, layout, packed, depth); return; }
++    ld_ahead_rec* r = (ld_ahead_rec*)calloc(1, sizeof *r);
++    if (!r) return;
++    r->key = key; r->vs_hash = g_ld_pl_last_vs_hash; r->ps_hash = g_ld_pl_last_ps_hash;
++    r->vs_len = g_ld_pl_last_vs_len; r->ps_len = g_ld_pl_last_ps_len;
++    r->rs = *rs; r->masked = layout != NULL; if (layout) r->layout = *layout;
++    r->packed = packed; r->depth = depth;
++    r->next = g_ld_ahead_recs; g_ld_ahead_recs = r;
++}
++/* A real draw takes the lookahead entry psos[i]: record its build if it already finished (a build still pending is
++ * recorded by ld_apso_drain, which then finds the entry taken). */
++static void ld_ahead_taken(u32 i)
++{
++    for (ld_ahead_rec** pp = &g_ld_ahead_recs; *pp; pp = &(*pp)->next)
++        if ((*pp)->key == g.psos[i].key) {
++            ld_ahead_rec* r = *pp; *pp = r->next;
++            g_ld_pl_last_vs_hash = r->vs_hash; g_ld_pl_last_vs_len = r->vs_len;
++            g_ld_pl_last_ps_hash = r->ps_hash; g_ld_pl_last_ps_len = r->ps_len;
++            ld_pl_record(r->key, &r->rs, r->masked ? &r->layout : NULL, r->packed, r->depth);
++            free(r);
++            return;
++        }
++}
++
+ /* Walker: merge the finished builds into the caches and their pending entries. */
+ static void ld_apso_drain(void)
+ {
+@@ -9932,7 +9981,8 @@ static void ld_apso_drain(void)
+         if (j->pso) {
+             g_ld_pl_last_vs_hash = j->vs_hash; g_ld_pl_last_vs_len = j->vs_len;
+             g_ld_pl_last_ps_hash = j->ps_hash; g_ld_pl_last_ps_len = j->ps_len;
+-            ld_pl_record(j->key, &j->rs, j->masked ? &j->layout : NULL, j->packed, j->depth);
++            ld_ahead_pl_record(j->key, &j->rs, j->masked ? &j->layout : NULL, j->packed, j->depth,
++                               ld_ahead_pending(j->key));   /* R&C patch 7050: a lookahead build waits for its draw */
+         } else g_apso.failed++;
+         int merged = 0;
+         RSX_APSO_MERGE(g.psos, g.n_psos, j->key, j->pso, merged);
+@@ -9975,9 +10025,11 @@ static ID3D12PipelineState* ld_apso_await(u32 idx)
+     return g.psos[idx].pso;
+ }
+ 
++static void ld_ahead_stat_print(void);   /* R&C patch 7050 */
+ static void ld_apso_stat_print(void)
+ {
+     if (!g_apso.submitted) return;
++    ld_ahead_stat_print();   /* R&C patch 7050 */
+     fprintf(stderr, "[pso-async] frame=%u submitted=%llu finished=%llu failed=%llu in-flight=%ld max-in-flight=%u "
+                     "awaited=%llu await=%.1f ms max=%.1f ms worker compile=%.1f ms create=%.1f ms latency avg=%.1f max=%.1f ms"
+                     " compiles-owned=%llu deduped=%llu waits=%llu in-flight-blobs=%u\n",
+@@ -10182,6 +10234,97 @@ static int ld_pso_memo(void)
+ static struct { u32 n; u64 h; u8 bytes[RSX_DSP_VP_INSTR * 16]; } g_ld_vpm;
+ static struct { u32 loc, off, size, hvalid, hmode; u64 hseed, h; u8 bytes[0x10000]; } g_ld_fpm;
+ 
++/* ===================== R&C patch 7050: PSO lookahead =====================
++ * A PSO miss hands the build to the async workers (KZ3 2048) and the draw waits for it (RSX pass 57: never skip).
++ * At a cold level start ToD's first Metropolis frame met 202 misses one after another: max in flight 1, three of
++ * four workers idle, 45.8 s of waiting, and every label wait over 2.5 s shows the game's own RSX-stall overlay
++ * (func_00501BD8). Now the first miss of a run of draws reads the FIFO ahead (rsx_fifo_ahead.h, up to put or the
++ * next flip) on a copy of the register file and asks get_pso for each upcoming draw that renders to the same surface
++ * as the current one (same DSV and RTV formats, which the key does not hold): a miss there is submitted and left
++ * pending, so the workers build in parallel while the walker waits for the first. Nothing is drawn or skipped; a
++ * wrong guess (a draw whose layout or GPU-fetch variant comes out differently) only builds a pipeline nobody uses.
++ * LD_PSO_AHEAD=0 = old (no lookahead). [pso-ahead] statistics print with [pso-async]. */
++static ID3D12PipelineState* get_pso(const rsx_vertex_layout_plan* masked_layout, int packed_payload);
++extern int gcm_walker_ahead(int (*on_method)(void* u, u32 method, u32 arg), void* u, u32 max_words);
++static int g_ld_ahead_active;
++static u64 g_ld_end_seq;   /* every END the walker dispatches (sink_end_impl), the lookahead's horizon unit */
++static struct { u64 scans, skipped, draws, same_surface, submitted, used, us, horizon, stops[9]; } g_ld_ahead;
++static int ld_ahead_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_PSO_AHEAD"); on = (e && *e) ? atoi(e) != 0 : 1;
++                  fprintf(stderr, "[pso-ahead] %s (LD_PSO_AHEAD=%s)\n", on ? "on" : "off", e && *e ? e : "<unset>, default on"); }
++    return on;
++}
++typedef struct { rsx_dsp_surface sf; u32 draws, first_other; } ld_ahead_ctx;
++static void ld_ahead_end(void* user, const rsx_dispatch* r)
++{
++    (void)r;
++    ld_ahead_ctx* c = (ld_ahead_ctx*)user;
++    g_ld_ahead.draws++; c->draws++;
++    rsx_dsp_surface sf; memset(&sf, 0, sizeof sf); rsx_dsp_get_surface(&g.rsx, &sf);
++    if (memcmp(&sf, &c->sf, sizeof sf)) {   /* another target: its formats are not the bound ones */
++        if (!c->first_other) c->first_other = c->draws;
++        return;
++    }
++    g_ld_ahead.same_surface++;
++    rsx_vertex_layout_plan l; ld_current_vertex_layout(&l);
++    const u32 n0 = g.n_psos;
++    (void)get_pso(ld_vertex_mask_signature() ? &l : NULL,
++                  ld_vertex_compact_payload() ? (ld_vtx_gpu_on() ? 2 : 1) : 0);
++    g_ld_ahead.submitted += g.n_psos - n0;
++}
++static int ld_ahead_method(void* u, u32 method, u32 arg)
++{
++    ld_ahead_ctx* c = (ld_ahead_ctx*)u;
++    rsx_dispatch_method(&g.rsx, method, arg);
++    return c->draws >= 4096u || g.n_psos + 8u >= MAX_PSOS;
++}
++static void ld_ahead_scan(void)
++{
++    if (g_ld_ahead_active || !ld_ahead_on()) return;
++    /* One scan covers the draws up to its first draw on another surface (the horizon, counted in draw groups): a
++     * miss before it was already looked at, so it waits as before instead of reading the same commands again. */
++    const u64 seq = g_ld_end_seq;
++    if (seq < g_ld_ahead.horizon) { g_ld_ahead.skipped++; return; }
++    static rsx_dispatch* saved;
++    if (!saved && !(saved = (rsx_dispatch*)malloc(sizeof *saved))) return;
++    LARGE_INTEGER t0, t1, f; QueryPerformanceCounter(&t0);
++    g_ld_ahead_active = 1;
++    memcpy(saved, &g.rsx, sizeof *saved);
++    const ld_pso_metadata cur = g_ld_current_pso;
++    const u32 fp_units = g_ld_fp_units_cur;
++    const rsx_fp_constant_block fpc = g.fp_constants;
++    const float alpha_ref = g.fp_alpha_ref;
++    ld_ahead_ctx c; memset(&c, 0, sizeof c);
++    rsx_dsp_get_surface(&g.rsx, &c.sf);
++    rsx_dispatch_sink s; memset(&s, 0, sizeof s);
++    s.user = &c; s.end = ld_ahead_end;
++    g.rsx.sink = s;
++    g.rsx.in_begin_end = 0;
++    const int why = gcm_walker_ahead(ld_ahead_method, &c, 1u << 21);
++    memcpy(&g.rsx, saved, sizeof *saved);
++    g_ld_current_pso = cur; g_ld_fp_units_cur = fp_units; g.fp_constants = fpc; g.fp_alpha_ref = alpha_ref;
++    g_ld_ahead_active = 0;
++    g_ld_ahead.horizon = seq + (c.first_other ? c.first_other : c.draws);
++    QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&f);
++    g_ld_ahead.scans++; g_ld_ahead.us += (u64)((t1.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart);
++    if (why >= 0 && why < 9) g_ld_ahead.stops[why]++;
++}
++
++static void ld_ahead_stat_print(void)
++{
++    if (g_ld_ahead.scans)
++        fprintf(stderr, "[pso-ahead] frame=%u scans=%llu skipped=%llu draws=%llu same-surface=%llu submitted=%llu used=%llu scan=%.1f ms"
++                        " stops put=%llu flip=%llu acquire=%llu park=%llu unmapped=%llu ret=%llu limit=%llu stopped=%llu unknown=%llu\n",
++                g_ld_frames, (unsigned long long)g_ld_ahead.scans, (unsigned long long)g_ld_ahead.skipped, (unsigned long long)g_ld_ahead.draws,
++                (unsigned long long)g_ld_ahead.same_surface, (unsigned long long)g_ld_ahead.submitted,
++                (unsigned long long)g_ld_ahead.used, g_ld_ahead.us / 1e3,
++                (unsigned long long)g_ld_ahead.stops[0], (unsigned long long)g_ld_ahead.stops[1], (unsigned long long)g_ld_ahead.stops[2],
++                (unsigned long long)g_ld_ahead.stops[3], (unsigned long long)g_ld_ahead.stops[4], (unsigned long long)g_ld_ahead.stops[5],
++                (unsigned long long)g_ld_ahead.stops[6], (unsigned long long)g_ld_ahead.stops[7], (unsigned long long)g_ld_ahead.stops[8]);
++}
++
+ static ID3D12PipelineState* get_pso(
+     const rsx_vertex_layout_plan* masked_layout, int packed_payload)
+ {
+@@ -10506,12 +10649,14 @@ static ID3D12PipelineState* get_pso(
+         g_ld_profile.total.pso_probes++;
+ #endif
+         if (g.psos[i].key == key) {
++            if (g.psos[i].ahead && !g_ld_ahead_active) ld_ahead_taken(i);   /* R&C patch 7050: now it is recorded */
+ #if defined(YZ_PERF_PROFILE)
+             g_ld_profile.total.pso_hits++;
+ #endif
+             if (g.psos[i].preloaded) { if (g.psos[i].preloaded == 2) g_pt.used++; g.psos[i].preloaded = 0; g_ld_pl_used++; }
+             LDW_ADD(RSX_PERF_W_PSO_FIND_T, gp_t3);
+-            if (g.psos[i].pending) return ld_apso_await(i);   /* RSX pass 57: wait, never skip */
++            if (g.psos[i].ahead && !g_ld_ahead_active) { g.psos[i].ahead = 0; g_ld_ahead.used++; }   /* R&C patch 7050 */
++            if (g.psos[i].pending) return g_ld_ahead_active ? NULL : ld_apso_await(i);   /* RSX pass 57: wait, never skip; 7050: the lookahead only submits */
+             return g.psos[i].pso;
+         }
+     }
+@@ -10622,7 +10767,7 @@ static ID3D12PipelineState* get_pso(
+         LDW_T0(bp_t0);
+         pso = build_pso(
+             vs_hlsl, ps_hlsl, &rs, masked_layout, packed_payload, key);
+-        if (pso) ld_pl_record(key, &rs, masked_layout, packed_payload, g.depth != NULL);   /* patch 2031 */
++        if (pso) ld_ahead_pl_record(key, &rs, masked_layout, packed_payload, g.depth != NULL, g_ld_ahead_active);   /* patch 2031; 7050 */
+         /* Patch 2042 (diagnostic): LD_PSO_KEYLOG=<file> writes one line per PSO built this session with
+          * the key's components and the HLSL hashes, so two sessions' lines show which component
+          * keeps the keys from repeating (release pass 17: 54 of 4,933 stored keys used). */
+@@ -10653,8 +10798,13 @@ static ID3D12PipelineState* get_pso(
+     g.psos[g.n_psos].key = key;
+     g.psos[g.n_psos].pso = pso;
+     g.psos[g.n_psos].pending = (u8)apso_pending;   /* patch 2048 */
++    g.psos[g.n_psos].ahead = (u8)(g_ld_ahead_active != 0);   /* R&C patch 7050 */
+     g.n_psos++;
+-    if (apso_pending) return ld_apso_await(g.n_psos - 1u);   /* RSX pass 57: the draw waits for its build */
++    if (apso_pending) {
++        if (g_ld_ahead_active) return NULL;   /* R&C patch 7050: a lookahead draw only submits */
++        ld_ahead_scan();                      /* R&C patch 7050: queue the upcoming misses before waiting */
++        return ld_apso_await(g.n_psos - 1u);  /* RSX pass 57: the draw waits for its build */
++    }
+     return pso;
+ }
+ 
+@@ -14546,6 +14696,7 @@ static void ld_tm_stat_print(void)
+ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ {
+     (void)user; (void)r;
++    g_ld_end_seq++;   /* R&C patch 7050 */
+     if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) return;
+     if (!dc.n_packets) { g_ld_stats.groups_empty++; return; }
+     g_ld_stats.groups_seen++;

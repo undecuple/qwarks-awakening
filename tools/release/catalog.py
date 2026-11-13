@@ -26,7 +26,25 @@ warning: the whole-file hash can depend on the program that made the file). Libr
 
 Launcher preferences live in library.json's top-level `prefs` block, kept across rescans like `locations`;
 `set-pref` changes one and rewrites the file without a rescan. Keys and values: PREFS below (theme: system, light or
-dark; absent = system).
+dark; absent = system; debug_info off|on: `build` writes split debug information next to the exe; update_check
+off|on: the launcher's opt-in check for new releases, which kit.py makes; this file never connects anywhere).
+
+Launcher phase 4 (D30-): every entry carries its catalogue playability (`playability`, `playability_note`,
+`playability_checked`, `badge_name`: the disclaimer shown beside Build, the same source as badges.py). A build record
+carries `inputs` (build_inputs: the port's code for that game, the patch set and the EBOOT hash): a built game is
+port_updated ("Update available: rebuild") only when its inputs changed, never for a new release alone. A title update
+found as an installed folder (<...>/game/<TITLE_ID>) is layered read-only under the game's writable dev_hdd0 at Play
+(PS3_HDD0_LOWER, patch 7014), as the console reads it; an update newer than the tested one is a warning
+(`update_check`). The launcher never downloads updates.
+
+Online settings (docs/ONLINE.md): get-online / set-online read and write the shared repsn.ini and
+community.ini in the PS3Recomp folder (one method at a time; temp file, fsync, atomic replace; unknown keys and comments
+kept). No game reads them yet.
+
+    catalog.py get-online [--shared-dir DIR]
+    catalog.py set-online [--shared-dir DIR] [--method off|repsn|community] [--server HOST[:PORT]] [--name NAME]
+                          [--preset NAME --address HOST[:PORT] [--preset-name NAME]] [--delete-preset NAME]
+                          [--active NAME]
 
 Game settings (launcher-plan.md "Shared display and control settings"): get-settings prints, as JSON, the settable
 display and control keys (SETTINGS) of the shared files (<data>/shared/display.ini, keybinds.ini) and of every game's
@@ -58,6 +76,7 @@ import re
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +90,9 @@ OVERRIDE_SLOTS = ("disc", "update", "eboot", "saves")
 LOCATION_LISTS = ("library_folders", "excluded", "rpcs3_folders")
 LOCATION_PATHS = ("build", "saves", "logs", "art_cache")
 LOCATION_KEYS = LOCATION_LISTS + ("rpcs3_auto",) + LOCATION_PATHS
-PREFS = {"theme": ("system", "light", "dark")}   # launcher preferences: key -> allowed values (first = default)
+PREFS = {"theme": ("system", "light", "dark"),   # launcher preferences: key -> allowed values (first = default)
+         "debug_info": ("off", "on"), "update_check": ("off", "on")}
+PLAYABILITY_KEYS = ("playability", "playability_note", "playability_checked", "badge_name")
 # PARAM.SFO categories a folder may be: disc game (DG), installed game (HG), game update (GD); None = no CATEGORY key.
 FOLDER_CATEGORIES = ("DG", "HG", "GD", None)
 
@@ -651,6 +672,7 @@ def _eboot_for(entry, base, ebs, base_items):
 
 def _empty(entry, state, reason):
     e = {k: entry[k] for k in ("id", "title", "year", "order", "readme_state", "supported")}
+    e.update({k: entry.get(k) for k in PLAYABILITY_KEYS})     # the disclaimer beside Build
     e.update(state=state, reason=reason, title_id=None, version=None, needs_update=(entry.get("update") or {}).get("version"),
              files={"disc": None, "update": None, "eboot": None}, art={"icon": None, "background": None}, build=None,
              estimate=entry.get("estimate") and {"minutes": entry["estimate"]["minutes"],
@@ -691,6 +713,11 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
                 upd_item = i
     if upd_item:
         r["files"]["update"] = upd_item["path"]
+        need = (entry.get("update") or {}).get("version")
+        if need and upd_item.get("version") and _vkey(upd_item["version"]) > _vkey(need):   # like an unknown build
+            r["update_check"] = {"level": "warn", "tag": "Newer than tested",
+                                 "message": f"Update {upd_item['version']} is newer than the tested {need}; it may "
+                                            "still work."}
     elif prior and (prior.get("files") or {}).get("update"):
         r["files"]["update"] = prior["files"]["update"]
     src = {}
@@ -722,8 +749,11 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
         exe = pb.get("exe")
         if exe and os.path.isfile(exe):
             r["build"] = pb
-            if pb.get("port_version") != port_version:
-                r.update(state="port_updated", reason="Port updated: rebuild")
+            changed = inputs_changed(pb, (r.get("eboot_check") or {}).get("sha256"))
+            if changed:
+                r.update(state="port_updated", reason="Update available: rebuild (" + ", ".join(changed) + ")")
+            elif changed is None and pb.get("port_version") != port_version:   # a record without inputs (before )
+                r.update(state="port_updated", reason="Update available: rebuild (built with another release)")
             else:
                 r.update(state="built", reason="Built")
             return r
@@ -740,7 +770,7 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
         if _vkey(best) < _vkey(need):
             r.update(state="wrong_version", reason=f"Needs update {need}" + (f" (found {best})" if best else ""))
             return r
-    if not entry["supported"]:
+    if not entry["supported"] and not entry.get("builds"):
         r.update(state="not_ported", reason="Not ported yet")
         return r
     if not r["files"]["eboot"]:
@@ -928,6 +958,12 @@ def scan(paths, library=None, catalog=None, depth=DEFAULT_DEPTH, rpcs3=None, fin
                          files=dict(f0["files"]), art=dict(f0["art"]))
                 if all(k["state"] in ("built", "port_updated") for k in kids):
                     r.update(state="built", reason="Built")
+                elif any(k["state"] in ("ready_to_build", "built", "port_updated") for k in kids):
+                    # a game inside can be built (catalog "builds"): the entry offers Build (each game in turn)
+                    r.update(state="ready_to_build", reason="Ready to build")
+                elif any(k["state"] == "needs_attention" for k in kids):
+                    k0 = next(k for k in kids if k["state"] == "needs_attention")
+                    r.update(state="needs_attention", reason=k0["reason"])
             r["children"] = kids
             pov = _clean_overrides(prior.get(entry["id"]))
             if pov:
@@ -1705,6 +1741,498 @@ def _edit_library(path, edit):
     return 0, new
 
 
+# ------------------------------------------------------------------------------------------------ online settings
+# The shared online settings (docs/ONLINE.md; folder "PS3Recomp", the same for the sister ports): player-wide online
+# values in one shared folder for every port's games: repsn.ini [repsn] enabled, server, name; community.ini [community]
+# enabled, active and [preset NAME] address, name. One method at a time: choosing one sets the other's enabled to 0 in the same save. Files are
+# untrusted input (64 KB, 512-byte lines, unknown keys kept and counted); every write re-reads first, keeps comments and
+# keys it does not own, and replaces the file atomically (temp file, fsync, os.replace). Neither file ships a host.
+ONLINE_FOLDER = "PS3Recomp"
+ONLINE_MAX_BYTES = 64 << 10
+ONLINE_MAX_LINE = 512
+ONLINE_NAME = re.compile(r"[A-Za-z0-9_-]{3,16}")
+ONLINE_PRESET = re.compile(r"[a-z0-9_-]{1,32}")
+ONLINE_HOST = re.compile(r"(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?)(?::(\d{1,5}))?")
+ONLINE_KEYS = {"repsn.ini": {"repsn": ("enabled", "server", "name", "comm_id", "p2p_port", "report_rtt")},
+               "community.ini": {"community": ("enabled", "active"), "preset": ("address", "name")}}
+ONLINE_HEAD = {
+    "repsn.ini": ("# re-psn settings shared by every game (written by the launcher and the games' menus; a hand edit\n"
+                  "# works too). Only one online method is on at a time: re-psn here or a community server in\n"
+                  "# community.ini. Each game's own repsn.ini keeps its own values.\n"),
+    "community.ini": ("# Community server settings shared by every game. Port-exclusive features do not work on a\n"
+                      "# community server. Only one online method is on at a time: a community server here or re-psn\n"
+                      "# in repsn.ini. Add a [preset NAME] section per server; [community] active names the one in use.\n"),
+}
+
+
+def online_dir(env=None, launcher_dir=None):
+    """The shared online folder: $PS3RECOMP_SHARED_DIR (then KZ3's $KZ3_SHARED_DIR) for tests and one-off runs; a
+    portable install's <install root>/shared; %APPDATA%\\PS3Recomp on Windows; $XDG_CONFIG_HOME/ps3recomp (else
+    .config/ps3recomp in the home folder) elsewhere."""
+    env = os.environ if env is None else env
+    for k in ("PS3RECOMP_SHARED_DIR", "KZ3_SHARED_DIR"):
+        if env.get(k):
+            return os.path.abspath(env[k])
+    base = os.path.abspath(launcher_dir or os.path.join(HERE, "..", ".."))
+    if _portable_dir(base):
+        return os.path.join(base, SHARED_FOLDER)
+    if os.name == "nt" or env.get("APPDATA"):
+        if env.get("APPDATA"):
+            return os.path.join(env["APPDATA"], ONLINE_FOLDER)
+    xdg = env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, ONLINE_FOLDER.lower())
+
+
+def _online_read(path):
+    """-> (text, rejected line count). A file over 64 KB is refused (ValueError); lines over 512 bytes are dropped
+    from what is read (and kept as they are on a write: they are not ours)."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(ONLINE_MAX_BYTES + 1)
+    except OSError:
+        return "", 0
+    if len(raw) > ONLINE_MAX_BYTES:
+        raise ValueError(f"{os.path.basename(path)} is larger than 64 KB; it was left alone")
+    return raw.decode("utf-8", "surrogateescape").lstrip("﻿"), 0
+
+
+def _online_sections(text):
+    """-> ({section: {key: value}}, rejected): sections lower case, the last value of a key wins, unknown keys
+    counted as rejected, over-long lines skipped."""
+    out, sec, rejected = {}, "", 0
+    for line in _lines(text):
+        if len(line.encode("utf-8", "surrogateescape")) > ONLINE_MAX_LINE:
+            rejected += 1
+            continue
+        _, s, _ = _split_line(line)
+        hs = _section_of(s)
+        if hs is not None:
+            sec = hs
+            out.setdefault(sec, {})
+            continue
+        k = _key_of(s)
+        if k is None:
+            continue
+        kind = "preset" if sec.startswith("preset ") else sec
+        known = [x for f in ONLINE_KEYS.values() for x in f.get(kind, ())]
+        if k not in known:
+            rejected += 1
+        out.setdefault(sec, {})[k] = _value_of(s, True)
+    return out, rejected
+
+
+def _on(v):
+    return str(v or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def get_online(folder):
+    """The shared online settings as the launcher shows them."""
+    rt, _ = _online_read(os.path.join(folder, "repsn.ini"))
+    ct, _ = _online_read(os.path.join(folder, "community.ini"))
+    r, rr = _online_sections(rt)
+    c, cr = _online_sections(ct)
+    rp, cm = r.get("repsn", {}), c.get("community", {})
+    presets = [{"name": s[len("preset "):].strip(), "address": v.get("address", ""), "player_name": v.get("name", "")}
+               for s, v in c.items() if s.startswith("preset ")]
+    on_r, on_c = _on(rp.get("enabled")), _on(cm.get("enabled"))
+    method = "both" if on_r and on_c else "repsn" if on_r else "community" if on_c else "off"
+    return {"folder": folder, "method": method, "rejected": rr + cr,
+            "repsn": {"enabled": on_r, "server": rp.get("server", ""), "name": rp.get("name", "")},
+            "community": {"enabled": on_c, "active": cm.get("active", ""), "presets": presets}}
+
+
+def _online_address(v, what):
+    v = (v or "").strip()
+    m = ONLINE_HOST.fullmatch(v)
+    if not m or (m.group(1) and not 1 <= int(m.group(1)) <= 65535):
+        raise ValueError(f"{what}: give a host name or address, with :port if it is not 36100")
+    return v
+
+
+def _drop_section(text, section):
+    out, skip = [], False
+    for line in _lines(text):
+        _, s, _ = _split_line(line)
+        hs = _section_of(s)
+        if hs is not None:
+            skip = hs == section
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
+def set_online(folder, method=None, server=None, name=None, preset=None, address=None, preset_name=None,
+               delete_preset=None, active=None):
+    """Change the shared online files (read again right before the change) -> get_online(folder). ValueError on a
+    bad value; nothing is written then."""
+    rp, cp = os.path.join(folder, "repsn.ini"), os.path.join(folder, "community.ini")
+    rt, _ = _online_read(rp)
+    ct, _ = _online_read(cp)
+    r0, c0 = rt, ct
+    if server is not None:
+        rt = ini_edit(rt, "repsn", "server", _online_address(server, "re-psn server"), head=ONLINE_HEAD["repsn.ini"])
+    if name is not None:
+        if not ONLINE_NAME.fullmatch(name.strip()):
+            raise ValueError("Online name: 3 to 16 letters, digits, - or _")
+        rt = ini_edit(rt, "repsn", "name", name.strip(), head=ONLINE_HEAD["repsn.ini"])
+    if preset is not None:
+        if not ONLINE_PRESET.fullmatch(preset):
+            raise ValueError("Preset name: 1 to 32 of a-z, 0-9, - and _")
+        sec = f"preset {preset}"
+        ct = ini_edit(ct, sec, "address", _online_address(address, "Server address"), head=ONLINE_HEAD["community.ini"])
+        if preset_name:
+            if not ONLINE_NAME.fullmatch(preset_name.strip()):
+                raise ValueError("Online name: 3 to 16 letters, digits, - or _")
+            ct = ini_edit(ct, sec, "name", preset_name.strip(), head=ONLINE_HEAD["community.ini"])
+    if delete_preset is not None:
+        ct = _drop_section(ct, f"preset {delete_preset}")
+        if _online_sections(ct)[0].get("community", {}).get("active") == delete_preset:
+            ct = ini_edit(ct, "community", "active", "", head=ONLINE_HEAD["community.ini"])
+            ct = ini_edit(ct, "community", "enabled", "0", head=ONLINE_HEAD["community.ini"])
+    if active is not None:
+        if f"preset {active}" not in _online_sections(ct)[0]:
+            raise ValueError("Choose a preset that exists")
+        ct = ini_edit(ct, "community", "active", active, head=ONLINE_HEAD["community.ini"])
+    if method is not None:
+        if method not in ("off", "repsn", "community"):
+            raise ValueError("method: off, repsn or community")
+        rs, cs = _online_sections(rt)[0], _online_sections(ct)[0]
+        if method == "repsn" and not (rs.get("repsn", {}).get("server") and rs.get("repsn", {}).get("name")):
+            raise ValueError("Give the re-psn server and your online name first")
+        act = cs.get("community", {}).get("active", "")
+        if method == "community" and not (act and cs.get(f"preset {act}", {}).get("address")):
+            raise ValueError("Add a community server preset and choose it first")
+        # one method at a time: both files in the same save (a file that does not exist stays absent when off)
+        if rt or method == "repsn":
+            rt = ini_edit(rt, "repsn", "enabled", "1" if method == "repsn" else "0", head=ONLINE_HEAD["repsn.ini"])
+        if ct or method == "community":
+            ct = ini_edit(ct, "community", "enabled", "1" if method == "community" else "0",
+                          head=ONLINE_HEAD["community.ini"])
+    if rt != r0:
+        _write_text(rp, rt)
+    if ct != c0:
+        _write_text(cp, ct)
+    return get_online(folder)
+
+
+# ------------------------------------------------------------------------------------------------ build and play
+# `build` runs tools/release/firstrun.py (the build pipeline, launcher-plan.md phase 2) as a child process, one build
+# at a time (an OS file lock beside library.json), passes its lines through unchanged (LOG / PROGRESS / REASON /
+# STAGED / RESULT, which the launcher parses) and records the staged exe in library.json when it succeeds. This file
+# stays standard-library only and imports no tools/release module (the embeddable Python's ._pth): firstrun.py is
+# started by path. `play` starts a built game's exe with the player's EBOOT and game files and reports its exit code.
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+FIRSTRUN = os.path.join(HERE, "firstrun.py")
+BUILD_LOCK = ".build.lock"
+
+
+class BuildBusy(Exception):
+    pass
+
+
+# what a game's build is made from, so a rebuild is offered only when that changed. firstrun.py's stage step
+# records it in build.json (`inputs`); every scan compares it with the files of this install.
+_INPUTS_CACHE = {}
+INPUT_WORDS = {"port": "the port's code for this game changed", "patches": "the recompiler or its runtime changed",
+               "eboot": "your EBOOT.elf changed"}
+
+
+def _hash_files(root, rels, h):
+    for rel in sorted(set(rels)):
+        p = os.path.join(root, *rel.split("/"))
+        h.update(rel.encode() + b"\0")
+        with open(p, "rb") as f:
+            h.update(hashlib.sha256(f.read()).digest())
+
+
+def _files_under(root, rel, skip=("__pycache__", "tests")):
+    out, top = [], os.path.join(root, *rel.split("/"))
+    for d, dirs, fs in os.walk(top):
+        dirs[:] = [x for x in dirs if x not in skip]
+        for n in fs:
+            if not n.endswith((".pyc", ".pyo")):
+                out.append(os.path.relpath(os.path.join(d, n), root).replace(os.sep, "/"))
+    return out
+
+
+def build_inputs(root, profile, eboot_sha=None):
+    """-> {"port", "patches", "eboot"} for one build profile, or None when `root` holds no port sources (a launcher
+    without its build kit cannot tell). port = SHA-256 (16 hex) over port/common, port/rc's own files, port/rc/<profile>,
+    cmake/, the profile's data/titles/<profile>_* tables and build_profiles.json entry, tools/spu; patches = the patch
+    set (port/patches) and the toolkit commit of its stamp."""
+    rc = os.path.join(root, "port", "rc")
+    if not profile or not os.path.isfile(os.path.join(rc, "CMakeLists.txt")):
+        return None
+    key = (os.path.abspath(root), profile)
+    if key not in _INPUTS_CACHE:
+        rels = _files_under(root, "port/common") + _files_under(root, f"port/rc/{profile}") + \
+            [f"port/rc/{n}" for n in os.listdir(rc) if os.path.isfile(os.path.join(rc, n))]
+        for sub, pat in (("cmake", re.compile(r".*\.cmake$")), ("data/titles", re.compile(re.escape(profile) + r"_.*")),
+                         ("tools/spu", re.compile(r".*\.py$|" + re.escape(profile) + r"_.*"))):
+            d = os.path.join(root, *sub.split("/"))
+            if os.path.isdir(d):
+                rels += [f"{sub}/{n}" for n in os.listdir(d) if pat.fullmatch(n) and os.path.isfile(os.path.join(d, n))]
+        h = hashlib.sha256()
+        _hash_files(root, rels, h)
+        try:
+            with open(os.path.join(root, "data", "titles", "build_profiles.json"), encoding="utf-8") as f:
+                prof = [p for p in json.load(f).get("profiles", []) if p.get("id") == profile]
+        except (OSError, ValueError):
+            prof = []
+        h.update(json.dumps(prof, sort_keys=True).encode())
+        ph = hashlib.sha256()
+        pd = os.path.join(root, "port", "patches")
+        for n in sorted(os.listdir(pd)) if os.path.isdir(pd) else []:
+            if n.endswith(".patch"):
+                with open(os.path.join(pd, n), "rb") as f:
+                    ph.update(f.read())
+        commit = ""
+        for st in (os.path.join(root, "ps3recomp", ".rc-patchset"), os.path.join(root, "work", "ps3recomp-patched", ".rc-patchset")):
+            try:
+                with open(st, encoding="utf-8") as f:
+                    commit = f.read().strip().partition("-")[2]
+                break
+            except OSError:
+                pass
+        _INPUTS_CACHE[key] = {"port": h.hexdigest()[:16], "patches": f"{ph.hexdigest()[:16]}-{commit}"}
+    return dict(_INPUTS_CACHE[key], eboot=eboot_sha)
+
+
+def inputs_changed(build, eboot_sha=None, root=None):
+    """A build record against this install -> list of plain reasons (empty = nothing changed), or None when the
+    record has no inputs (built before ) or this install cannot tell (no port sources)."""
+    old = (build or {}).get("inputs")
+    if not isinstance(old, dict):
+        return None
+    now = build_inputs(root or ROOT, build.get("profile"), eboot_sha or old.get("eboot"))
+    if now is None:
+        return [] if old else None
+    return [INPUT_WORDS[k] for k in ("port", "patches", "eboot") if old.get(k) != now.get(k)]
+
+
+class _FileLock:
+    """An exclusive OS lock on a file (fcntl / msvcrt); released when the process ends, so a crash never leaves it."""
+
+    def __init__(self, path):
+        self.path, self.f = path, None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        self.f = open(self.path, "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.f.close()
+            raise BuildBusy()
+        return self
+
+    def __exit__(self, *a):
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        self.f.close()
+
+
+def build_targets(lib, gid):
+    """The game ids one `build --game gid` builds: the game itself, or each buildable game inside the Collection."""
+    g = _find_game(lib, gid)
+    if g is None:
+        return None
+    ok = ("ready_to_build", "built", "port_updated", "needs_attention")   # needs_attention: firstrun's check says why
+    if g.get("children"):
+        return [c["id"] for c in g["children"] if c.get("state") in ok]
+    return [gid] if g.get("state") in ok else []
+
+
+def stage_folder(lib, gid):
+    """Where a game's exe goes: locations.build (the player's build folder) or <root>/games, then the game's id."""
+    base = ((lib or {}).get("locations") or {}).get("build") or os.path.join(ROOT, "games")
+    return os.path.join(base, gid)
+
+
+def record_build(library, gid, stage, log=None):
+    """Read <stage>/build.json (written by firstrun.py's stage step) into the game's library entry, then rescan."""
+    with open(os.path.join(stage, "build.json"), encoding="utf-8") as f:
+        b = json.load(f)
+    rec = {"exe": os.path.join(stage, b["exe"]), "port_version": b.get("port_version"), "exe_sha256": b.get("exe_sha256"),
+           "built_at": b.get("built_at"), "profile": b.get("profile"), "config": b.get("config"),
+           "compiler": b.get("compiler"), "disc": b.get("disc") or None, "log": log,
+           # build record: release, patch set, EBOOT hash and the inputs a later scan compares
+           "release": b.get("release") or b.get("port_version"), "patch_set": b.get("toolkit_stamp"),
+           "eboot_sha256": b.get("eboot_sha256"), "inputs": b.get("inputs"),
+           # "none" (player build), "split" (<exe>.debug beside it, never published), "embedded" (developer)
+           "debug_info": b.get("debug_info"), "debug_file": b.get("debug_file")}
+
+    def edit(lib, cat):
+        g = _find_game(lib, gid)
+        if g is None:
+            return f"Unknown game id: {gid}"
+        g["build"] = rec
+        return None
+    return _edit_library(library, edit)
+
+
+def build_config_args(lib, config=None, debug_info=None):
+    """a player's build is Release (RelWithDebInfo's -O2 without -g: no debug information in the exe). With the
+    debug_info pref (or --debug-info on) it is RelWithDebInfo and firstrun.py splits the debug information into
+    <exe>.debug next to the exe (--split-debug). An explicit --config wins (developers)."""
+    on = (debug_info or ((lib or {}).get("prefs") or {}).get("debug_info") or "off") == "on"
+    if config:
+        return ["--config", config] + (["--split-debug"] if on and config == "RelWithDebInfo" else [])
+    return ["--config", "RelWithDebInfo", "--split-debug"] if on else ["--config", "Release"]
+
+
+def run_build(library, gid, extra=(), out=sys.stdout, python=None, firstrun=FIRSTRUN):
+    """One build (or the Collection's games in turn) under the build lock -> exit code (0 built, 1 failed, 2 usage
+    or busy, 130 cancelled). Lines from firstrun.py go to `out` as they come."""
+    lib = read_library(library)
+    if lib is None:
+        lib = make_library(scan([], None, load()), load())
+        write_library(library, lib)
+    targets = build_targets(lib, gid)
+    if targets is None:
+        print(f"REASON Unknown game id: {gid}", file=out, flush=True)
+        print("RESULT ok=0 step=check elapsed=0", file=out, flush=True)
+        return 2
+    if not targets:
+        g = _find_game(lib, gid)
+        why = "No game inside this entry can be built yet." if g.get("children") else \
+            (g.get("reason") or "This game cannot be built yet.")
+        print(f"REASON {why}", file=out, flush=True)
+        print("RESULT ok=0 step=check elapsed=0", file=out, flush=True)
+        return 2
+    try:
+        with _FileLock(os.path.join(os.path.dirname(os.path.abspath(library)), BUILD_LOCK)):
+            rc = 0
+            for t in targets:
+                if len(targets) > 1:
+                    print(f"GAME id={t} n={targets.index(t) + 1}/{len(targets)}", file=out, flush=True)
+                stage = stage_folder(lib, t)
+                argv = [python or sys.executable, "-X", "utf8", firstrun, "--game", t, "--library", os.path.abspath(library),
+                        "--stage", stage, *extra]
+                kw = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     encoding="utf-8", errors="replace", bufsize=1, **kw)
+                log = None
+                try:
+                    for line in p.stdout:
+                        line = line.rstrip("\r\n")
+                        if line.startswith("LOG path="):
+                            log = line[len("LOG path="):]
+                        print(line, file=out, flush=True)
+                    rc = p.wait()
+                except KeyboardInterrupt:
+                    p.terminate()
+                    rc = 130
+                if rc != 0:
+                    return rc
+                code, _ = record_build(library, t, stage, log)
+                if code != 0:
+                    print("REASON The game was built but could not be recorded in the library.", file=out, flush=True)
+                    return 1
+                print(f"RECORDED game={t}", file=out, flush=True)
+            return rc
+    except BuildBusy:
+        print("REASON Another game is being built. Wait for it to finish, then try again.", file=out, flush=True)
+        print("RESULT ok=0 step=busy elapsed=0", file=out, flush=True)
+        return 2
+
+
+def play_command(lib, gid):
+    """-> (argv, env additions, cwd) to start a built game, or raises ValueError(player message)."""
+    g = _find_game(lib, gid)
+    if g is None:
+        raise ValueError(f"Unknown game id: {gid}")
+    if g.get("children"):
+        raise ValueError("Choose which game of the collection to play.")
+    b = g.get("build") or {}
+    exe = b.get("exe")
+    if not exe or not os.path.isfile(exe):
+        raise ValueError("This game has not been built yet (or its program was removed). Build it first.")
+    eboot = (g.get("files") or {}).get("eboot")
+    if not eboot or not os.path.isfile(eboot):
+        raise ValueError("The game's EBOOT is not there any more. Choose it again in Game files.")
+    env = {}
+    disc = b.get("disc") or (g.get("files") or {}).get("disc")
+    if disc and os.path.isdir(disc):
+        # the folder that holds PS3_GAME (main.cpp derive_vfs_root); a PSN game folder holds PARAM.SFO + USRDIR itself
+        env["PS3_VFS_ROOT"] = disc
+    # saves: the game's own saves override is its dev_hdd0; the global saves folder gets one dev_hdd0 per game;
+    # neither = the game's default (gamedata/dev_hdd0 under its working folder, main.cpp)
+    own, glob_saves = (g.get("files") or {}).get("saves"), (lib.get("locations") or {}).get("saves")
+    if own:
+        env["PS3_HDD0_ROOT"] = own
+    elif glob_saves:
+        env["PS3_HDD0_ROOT"] = os.path.join(glob_saves, gid, "dev_hdd0")
+    lower = update_lower(g)
+    if lower:
+        env["PS3_HDD0_LOWER"] = lower
+    return [exe, eboot], env, os.path.dirname(exe)
+
+
+def update_lower(g):
+    """the read-only layer that makes an installed title update visible at /dev_hdd0/game/<TITLE_ID>, as the
+    console reads it (the update's files win over the disc because the game reads them there; the game's writes still
+    go to its own PS3_HDD0_ROOT, patch 7014). Only an installed update folder named <...>/game/<TITLE_ID> can be
+    layered without copying: its grandparent is the lower dev_hdd0. A PKG (its files are encrypted) or a folder with
+    another name -> None (the game runs with the update's EBOOT only)."""
+    upd = (g.get("files") or {}).get("update")
+    if not upd or not os.path.isdir(upd):
+        return None
+    p = os.path.normpath(os.path.abspath(upd))
+    parent = os.path.dirname(p)
+    tid = os.path.basename(p).upper()
+    if os.path.basename(parent).lower() == "game" and re.fullmatch(r"[A-Z]{4}\d{5}", tid):
+        return os.path.dirname(parent)
+    return None
+
+
+def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen):
+    lib = read_library(library)
+    if lib is None:
+        print("REASON The library has not been made yet; start the launcher once.", file=out, flush=True)
+        return 2
+    try:
+        argv, env, cwd = play_command(lib, gid)
+    except ValueError as e:
+        print(f"REASON {e}", file=out, flush=True)
+        return 2
+    upd = ((_find_game(lib, gid) or {}).get("files") or {}).get("update")
+    if upd and "PS3_HDD0_LOWER" not in env:
+        print("WARN The update's own files are not layered over the game (only an installed update folder named "
+              "game/<title ID> can be); the game runs with the update's EBOOT.", file=out, flush=True)
+    if dry_run:
+        print(json.dumps({"argv": argv, "env": env, "cwd": cwd}, indent=1, ensure_ascii=False), file=out)
+        return 0
+    e = dict(os.environ)
+    e.update(env)
+    t0 = datetime.datetime.now()
+    kw = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+    try:
+        p = popen(argv, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                  encoding="utf-8", errors="replace", bufsize=1, **kw)
+    except OSError:
+        print("REASON The game program could not be started on this PC.", file=out, flush=True)
+        return 3
+    print(f"STARTED game={gid} pid={p.pid}", file=out, flush=True)
+    for line in p.stdout:
+        print(line.rstrip("\r\n"), file=out, flush=True)
+    rc = p.wait()
+    secs = int((datetime.datetime.now() - t0).total_seconds())
+    print(f"EXITED game={gid} code={rc} seconds={secs}", file=out, flush=True)
+    return 0
+
+
 def _parse_bool(v):
     return {"true": True, "yes": True, "1": True, "on": True, "false": False, "no": False, "0": False,
             "off": False}.get(str(v).lower())
@@ -1755,7 +2283,60 @@ def main(argv=None):
     ce.add_argument("--title-id", help="the title ID of the player's game files, for the region note")
     ce.add_argument("--json", action="store_true")
     ce.add_argument("path")
+    bp = sub.add_parser("build", help="build one game (or the Collection's games in turn) with firstrun.py; one at a time")
+    bp.add_argument("--library", required=True)
+    bp.add_argument("--game", required=True)
+    bp.add_argument("--stop-file", help="the launcher's Cancel: firstrun.py stops when this file appears")
+    bp.add_argument("--jobs", type=int)
+    bp.add_argument("--toolchain")
+    bp.add_argument("--config", choices=("RelWithDebInfo", "Release"), help="default: Release, or what "
+                    "the debug_info pref asks for")
+    bp.add_argument("--debug-info", choices=("off", "on"), help="override the debug_info pref for this build")
+    go = sub.add_parser("get-online", help="print the shared online settings (repsn.ini, community.ini) as JSON")
+    so = sub.add_parser("set-online", help="change the shared online settings (one method at a time)")
+    for x in (go, so):
+        x.add_argument("--shared-dir", help="the shared folder (default: online_dir())")
+    so.add_argument("--method", choices=("off", "repsn", "community"))
+    so.add_argument("--server")
+    so.add_argument("--name")
+    so.add_argument("--preset")
+    so.add_argument("--address")
+    so.add_argument("--preset-name")
+    so.add_argument("--delete-preset")
+    so.add_argument("--active")
+    pp = sub.add_parser("play", help="start a built game and wait for it; prints STARTED and EXITED code=N")
+    pp.add_argument("--library", required=True)
+    pp.add_argument("--game", required=True)
+    pp.add_argument("--dry-run", action="store_true", help="print the command, environment and folder only")
     a = ap.parse_args(argv)
+
+    if a.cmd == "build":
+        extra = []
+        for k in ("stop_file", "jobs", "toolchain"):
+            v = getattr(a, k)
+            if v:
+                extra += ["--" + k.replace("_", "-"), str(v)]
+        extra += build_config_args(read_library(a.library), a.config, a.debug_info)
+        return run_build(a.library, a.game, extra)
+
+    if a.cmd == "play":
+        return run_play(a.library, a.game, dry_run=a.dry_run)
+
+    if a.cmd in ("get-online", "set-online"):
+        folder = os.path.abspath(a.shared_dir) if a.shared_dir else online_dir()
+        try:
+            if a.cmd == "get-online":
+                res = get_online(folder)
+            else:
+                if a.preset is not None and a.address is None:
+                    raise ValueError("--preset needs --address")
+                res = set_online(folder, a.method, a.server, a.name, a.preset, a.address, a.preset_name,
+                                 a.delete_preset, a.active)
+        except (ValueError, OSError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        print(json.dumps(res, indent=1, ensure_ascii=False))
+        return 0
 
     if a.cmd == "check-eboot":
         cat = load()

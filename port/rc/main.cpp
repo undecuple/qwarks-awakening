@@ -54,6 +54,7 @@ void     ppu_fs_register(void);               /* cellFs over the real game direc
 void     lv2_init_syscalls(void);             /* the lv2 syscall table */
 void     cellSaveData_register_ctx_handlers(void); /* 9-argument User*Auto{Load,Save} (patch 3001) */
 void     cellGame_init_from_paramsfo(const char* sfo_path); /* title id etc. from PARAM.SFO */
+const char* cellGame_get_hdd_title_id(void);   /* the title id when PARAM.SFO says CATEGORY "HG", else NULL */
 extern uint32_t ppu_hle_inject_base;           /* guest EA of the runtime's GCM window (labels, control) */
 int      ppu_run(uint32_t entry_opd, uint32_t stack_top);
 
@@ -734,6 +735,75 @@ static void derive_vfs_root(const char* eboot)
     ppu_vfs_root = s_vfs_root;
 }
 
+/* An HDD game (an installed PSN title, CATEGORY "HG": Deadlocked HD) runs from /dev_hdd0/game/<id> on the console, which
+ * holds its PARAM.SFO and USRDIR. Two things follow, both only when not already set in the environment:
+ *  - argv[0] is /dev_hdd0/game/<id>/USRDIR/EBOOT.BIN (the runtime's default is the disc path, ppu_loader.cpp PS3_BOOT_PATH);
+ *  - /dev_hdd0/game/<id> must read the game folder: when the VFS root is .../game/<id> (the installed layout, as RPCS3's
+ *    dev_hdd0 keeps it), the folder holding game/ becomes the read-only lower layer of /dev_hdd0 (PS3_HDD0_LOWER, patch 7014),
+ *    so the game's writes still go to the writable PS3_HDD0_ROOT. Any other folder name: a warning, the reads will miss. */
+static void set_env_default(const char* k, const char* v)
+{
+    if (getenv(k) && *getenv(k)) return;
+#ifdef _WIN32
+    char kv[1300];
+    snprintf(kv, sizeof kv, "%s=%s", k, v);
+    _putenv(kv);
+#else
+    setenv(k, v, 0);
+#endif
+}
+
+/* A licence-type-2 EDAT (Deadlocked HD's rcquatro.edat, read by the game's own licence check at boot) is under the owner's
+ * RIF key; the runtime takes it from $PS3_RIF_KEY (edat.c). RC_RIF_KEY_FILE=PATH (opt-in) names a file holding the 16 raw
+ * bytes: it is read here, after the log header listed the environment, and handed to edat.c through PS3_RIF_KEY in this
+ * process only, so the key never appears on a command line or in a log (the logger also redacts PS3_RIF_KEY). */
+static void rc_rif_key_from_file(void)
+{
+    const char* path = getenv("RC_RIF_KEY_FILE");
+    if (!path || !*path) return;
+    unsigned char k[16];
+    FILE* f = fopen(path, "rb");
+    size_t n = f ? fread(k, 1, sizeof k, f) : 0;
+    if (f) fclose(f);
+    if (n != sizeof k) { printf("[boot] RC_RIF_KEY_FILE: not 16 bytes, ignored\n"); return; }
+    char hex[33];
+    for (int i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02x", k[i]);
+#ifdef _WIN32
+    char kv[64];
+    snprintf(kv, sizeof kv, "PS3_RIF_KEY=%s", hex);
+    _putenv(kv);
+    memset(kv, 0, sizeof kv);
+#else
+    setenv("PS3_RIF_KEY", hex, 1);
+#endif
+    memset(hex, 0, sizeof hex); memset(k, 0, sizeof k);
+    printf("[boot] RIF key read from RC_RIF_KEY_FILE (16 bytes)\n");
+}
+
+static void rc_hdd_game_layout(void)
+{
+    const char* id = cellGame_get_hdd_title_id();
+    if (!id || !*id) return;
+    char boot[160];
+    snprintf(boot, sizeof boot, "/dev_hdd0/game/%s/USRDIR/EBOOT.BIN", id);
+    set_env_default("PS3_BOOT_PATH", boot);
+    char root[1100], tail[64];
+    snprintf(root, sizeof root, "%s", ppu_vfs_root);
+    for (char* p = root; *p; p++) if (*p == '\\') *p = '/';
+    for (size_t n = strlen(root); n > 1 && root[n - 1] == '/'; n--) root[n - 1] = 0;
+    snprintf(tail, sizeof tail, "/game/%s", id);
+    const size_t rl = strlen(root), tl = strlen(tail);
+    if (rl > tl && strcmp(root + rl - tl, tail) == 0) {
+        root[rl - tl] = 0;
+        set_env_default("PS3_HDD0_LOWER", root);
+    } else if (!getenv("PS3_HDD0_LOWER")) {
+        printf("[boot] WARNING: HDD game %s: the game folder %s is not named game/%s, so /dev_hdd0/game/%s will not find it "
+               "(set PS3_HDD0_LOWER to the folder holding game/%s)\n", id, ppu_vfs_root, id, id, id);
+    }
+    printf("[boot] HDD game %s: argv[0] %s, /dev_hdd0 lower layer %s\n", id, getenv("PS3_BOOT_PATH"),
+           getenv("PS3_HDD0_LOWER") ? getenv("PS3_HDD0_LOWER") : "(none)");
+}
+
 /* ---------------------------------------------------------------------------
  * Guest VM
  * -----------------------------------------------------------------------*/
@@ -1035,10 +1105,20 @@ int main(int argc, char** argv)
     cellSaveData_register_ctx_handlers();   /* 9-argument User*Auto{Load,Save} (patch 3001) */
     {   /* title id from PARAM.SFO (BCAS20087) instead of the runtime default: save directory and SysCache id */
         char sfo[1100];
+        struct stat sst;
         snprintf(sfo, sizeof sfo, "%s/PS3_GAME/PARAM.SFO", ppu_vfs_root);
+        /* An installed PSN game (Deadlocked HD, CATEGORY "HG") has no PS3_GAME level: its folder, /dev_hdd0/game/<id> on the
+         * console, holds PARAM.SFO and USRDIR. Given as the VFS root, its own PARAM.SFO is the one. */
+        if (stat(sfo, &sst) != 0) {
+            char alt[1100];
+            snprintf(alt, sizeof alt, "%s/PARAM.SFO", ppu_vfs_root);
+            if (stat(alt, &sst) == 0) snprintf(sfo, sizeof sfo, "%s", alt);
+        }
         cellGame_init_from_paramsfo(sfo);
         rc_log_note_sfo(sfo);   /* game version / update version as the game's own PARAM.SFO says */
+        rc_hdd_game_layout();   /* an HDD game boots from /dev_hdd0/game/<id> */
     }
+    rc_rif_key_from_file();   /* RC_RIF_KEY_FILE: the owner's RIF key for a licence-type-2 EDAT, never logged */
 
     g_ps3_guest_caller = harness_guest_caller;
     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);

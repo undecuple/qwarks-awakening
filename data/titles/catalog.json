@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "port_version": "0.2.1",
+ "port_version": "0.3.0",
  "note": "Numbers, ids and versions only. Known executables: see eboots_format.",
  "games": [
   {
@@ -11,9 +11,10 @@
    "readme_state": "first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet",
    "playability": "in_game",
    "playability_checked": "2026-11-10",
-   "playability_note": "about 10 minutes in Metropolis with scripted input",
+   "playability_note": "about 11 minutes in Metropolis with scripted input",
    "badge_name": "ToD",
    "supported": true,
+   "builds": true,
    "title_ids": {
     "disc": {
      "US": [
@@ -75,6 +76,7 @@
    "playability_note": "reaches the ship deck with scripted input",
    "badge_name": "QfB",
    "supported": false,
+   "builds": true,
    "title_ids": {
     "disc": {
      "EU": [
@@ -130,12 +132,13 @@
    "title": "Ratchet & Clank Future: A Crack in Time",
    "year": 2009,
    "order": 3,
-   "readme_state": "builds (1.20 update); a scripted new game reaches its first save, then the screen goes black in most runs; not playable",
+   "readme_state": "builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable",
    "playability": "boots",
    "playability_checked": "2026-11-10",
-   "playability_note": "the screen goes black after the first save",
+   "playability_note": "a new game reaches its first level and plays its opening cutscenes; player control is not confirmed",
    "badge_name": "ACiT",
    "supported": true,
+   "builds": true,
    "title_ids": {
     "disc": {
      "US": [
@@ -240,6 +243,7 @@
    "playability_note": "reaches its first level; the view is white",
    "badge_name": "A4O",
    "supported": false,
+   "builds": true,
    "title_ids": {
     "disc": {
      "US": [
@@ -339,6 +343,7 @@
    "playability_note": "a black frame",
    "badge_name": "FFA",
    "supported": false,
+   "builds": true,
    "title_ids": {
     "disc": {
      "US": [
@@ -448,6 +453,7 @@
    "playability_note": "the lobby stays black",
    "badge_name": "Nexus",
    "supported": false,
+   "builds": true,
    "title_ids": {
     "disc": {
      "US": [
@@ -556,6 +562,7 @@
    "playability_note": "each of its games reaches its first level with scripted input",
    "badge_name": "R&C Collection",
    "supported": false,
+   "builds": false,
    "title_ids": {
     "disc": {
      "US": [
@@ -603,6 +610,7 @@
      "playability_note": "reaches its first level with scripted input",
      "badge_name": "R&C 1",
      "supported": false,
+     "builds": true,
      "title_ids": {
       "disc": {
        "US": [
@@ -666,6 +674,7 @@
      "playability_note": "reaches its first level with scripted input",
      "badge_name": "R&C 2",
      "supported": false,
+     "builds": true,
      "title_ids": {
       "disc": {
        "US": [
@@ -726,6 +735,7 @@
      "playability_note": "reaches its first level with scripted input",
      "badge_name": "R&C 3",
      "supported": false,
+     "builds": true,
      "title_ids": {
       "disc": {
        "US": [
@@ -799,12 +809,13 @@
    "title": "Ratchet: Deadlocked HD",
    "year": 2013,
    "order": 8,
-   "readme_state": "coming soon: a different engine; PPU code lifted, not built yet",
-   "playability": "not_built",
+   "readme_state": "builds; a scripted new game plays its intro, then stops before the first level; not playable",
+   "playability": "menus",
    "playability_checked": "2026-11-10",
-   "playability_note": "not built yet",
+   "playability_note": "a new game plays its intro, then stops before the first level",
    "badge_name": "Deadlocked HD",
    "supported": false,
+   "builds": true,
    "title_ids": {
     "disc": {},
     "digital": {

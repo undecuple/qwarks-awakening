@@ -1,0 +1,115 @@
+Texture gamma bit 3 decodes alpha (TEXTURE_ADDRESS [23:20]), as RPCS3's _process_texel does.
+Live draw decoded only the R/G/B bits of a unit's gamma field and kept alpha raw. RPCS3 [src:rpcs3-texops] reads the field in
+R, G, B, A bit order and converts the whole texel with srgb_to_linear, masked per channel including GAMMA_A_MASK.
+Tools of Destruction's environment cube (unit 7 of the scene shaders, A8R8G8B8 32x32, wrap 0x00F30303: gamma 0xF)
+keeps an HDR exponent in alpha that the shaders apply as exp2(alpha * c3.x + c3.y): undecoded, the floors and other
+reflective surfaces of Metropolis came out several times too bright (the "washed-out glow"; glow-cap1, first
+Metropolis control frame, ground mean 193/190/142 against RPCS3's 71/69/48 at the same camera).
+gamma_mask now holds 4 bits per unit (R, G, B, A; 16 units fill the u64), rsx_srgb takes a float4 mask and returns
+the decoded channel where the mask is set and the fetched one elsewhere. LD_GAMMA_NO_ALPHA=1 = old R/G/B-only decode
+(A/B). Host test: R&C port/rc/tests/run_gamma_alpha_test.sh.
+
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 85c87f9..3c42dfb 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1852,8 +1852,13 @@ u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes)
+  * (A8R8G8B8 and DXT45) and leaves SET_SHADER_PACKER sRGB output off, so the
+  * linear values are written straight to the RGBA8 surface: without the decode
+  * every gamma texture comes out brighter and its reds turn yellow.
+- * ASSUMPTION: bits 0/1/2 = R/G/B; bit 3 (alpha) is not applied. The decode
+- * runs after filtering, not before as on the hardware.
++ * ASSUMPTION: bits 0/1/2 = R/G/B. The decode runs after filtering, not before
++ * as on the hardware.
++ * R&C patch 7049: bit 3 decodes alpha too, as RPCS3's _process_texel does
++ * (srgb_to_linear on the whole texel, masked per channel with GAMMA_A_MASK);
++ * gamma_mask holds 4 bits per unit (R, G, B, A). Tools of Destruction's
++ * environment cube (A8R8G8B8, gamma 0xF) keeps an HDR exponent in alpha:
++ * undecoded, its reflections came out several times too bright.
+  */
+ static int fp_insert(char* hlsl, u32 hlsl_size, char* at, const char* text)
+ {
+@@ -1870,14 +1875,14 @@ int rsx_fp_apply_gamma(char* hlsl, u32 hlsl_size, u64 gamma_mask)
+     if (!hlsl || !gamma_mask) return 0;
+     int patched = 0;
+     for (u32 u = 0; u < 16; u++) {
+-        const u32 bits = (u32)(gamma_mask >> (u * 3)) & 7u;
++        const u32 bits = (u32)(gamma_mask >> (u * 4)) & 15u;   /* patch 7049: 4 bits */
+         if (!bits) continue;
+         char needles[2][24];
+         snprintf(needles[0], sizeof needles[0], "rsx_tex[%u].", u);
+         snprintf(needles[1], sizeof needles[1], "rsx_tex%u.", u);
+         char tail[48];
+-        snprintf(tail, sizeof tail, ", float3(%u, %u, %u))",
+-                 bits & 1u, (bits >> 1) & 1u, (bits >> 2) & 1u);
++        snprintf(tail, sizeof tail, ", float4(%u, %u, %u, %u))",
++                 bits & 1u, (bits >> 1) & 1u, (bits >> 2) & 1u, (bits >> 3) & 1u);
+         for (int nidx = 0; nidx < 2; nidx++) {
+             for (;;) {
+                 char* at = strstr(hlsl, needles[nidx]);
+@@ -1903,9 +1908,9 @@ int rsx_fp_apply_gamma(char* hlsl, u32 hlsl_size, u64 gamma_mask)
+         memcpy(q, "rsx_tex", 7);
+     if (patched) {
+         static const char helper[] =
+-            "float4 rsx_srgb(float4 c, float3 m) {\n"
+-            "    float3 l = c.rgb <= 0.04045 ? c.rgb / 12.92 : pow((max(c.rgb, 0.0) + 0.055) / 1.055, 2.4);\n"
+-            "    return float4(lerp(c.rgb, l, m), c.a);\n"
++            "float4 rsx_srgb(float4 c, float4 m) {\n"
++            "    float4 l = c <= 0.04045 ? c / 12.92 : pow((max(c, 0.0) + 0.055) / 1.055, 2.4);\n"
++            "    return m != 0.0 ? l : c;\n"
+             "}\n";
+         if (fp_insert(hlsl, hlsl_size, hlsl, helper) < 0) return -1;
+     }
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+index 90d169f..d4b4223 100644
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -91,10 +91,10 @@ float rsx_fp_alpha_ref(u32 raw, u32 surface_color_format);
+  * by their depth as well. Returns the number of Sample sites patched, or -1 if
+  * the buffer would overflow. A no-op when unnorm_mask is 0. */
+ /* Texture gamma (TEXTURE_ADDRESS bits [23:20], patch 2009): wraps every
+- * sample of a unit whose R/G/B gamma bits are set in rsx_srgb(), an sRGB to
+- * linear decode of those channels after the fetch. gamma_mask holds 3 bits
+- * per unit (unit u at bits 3u..3u+2: R, G, B). Returns the number of sample
+- * sites wrapped, or -1 if the buffer is too small. */
++ * sample of a unit whose R/G/B/A gamma bits are set in rsx_srgb(), an sRGB to
++ * linear decode of those channels after the fetch. gamma_mask holds 4 bits
++ * per unit (R&C patch 7049; unit u at bits 4u..4u+3: R, G, B, A). Returns the
++ * number of sample sites wrapped, or -1 if the buffer is too small. */
+ int rsx_fp_apply_gamma(char* hlsl, u32 hlsl_size, u64 gamma_mask);
+ extern int rsx_fp_src2_abs_seen[64];   /* patch 2057 diagnostic */
+ 
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 231a724..69497cd 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10037,10 +10037,19 @@ static int ld_gamma_order_argb(void)
+                  fprintf(stderr, "[gamma] order %s (LD_GAMMA_ORDER=%s)\n", v ? "argb" : "rgb", e ? e : "unset"); }
+     return v;
+ }
++/* R&C patch 7049: field bit 3 decodes alpha (RPCS3 _process_texel masks srgb_to_linear(rgba) with
++ * GAMMA_A_MASK), so the rgb reading returns all four bits (R, G, B, A for rsx_fp_apply_gamma's 4-bit
++ * fields). LD_GAMMA_NO_ALPHA=1 (A/B) restores the R/G/B-only decode. */
++static int ld_gamma_no_alpha(void)
++{
++    static int v = -1;
++    if (v < 0) v = getenv("LD_GAMMA_NO_ALPHA") ? 1 : 0;
++    return v;
++}
+ static u32 ld_gamma_bits(u32 wrap)
+ {
+     const u32 g = (wrap >> 20) & 0xFu;
+-    if (!ld_gamma_order_argb()) return g & 7u;
++    if (!ld_gamma_order_argb()) return ld_gamma_no_alpha() ? (g & 7u) : g;
+     return ((g >> 1) & 1u) | (((g >> 2) & 1u) << 1) | (((g >> 3) & 1u) << 2);
+ }
+ /* Patch 2009 (diagnostic, off by default): LD_GAMMA_LOG=1 prints each new
+@@ -10312,7 +10321,7 @@ static ID3D12PipelineState* get_pso(
+                           unit, texture.offset, texture.format, texture.width, texture.height);
+               } }
+             if (!(no_surf && is_surf))
+-                gamma_mask |= (u64)ld_gamma_bits(texture.wrap) << (unit * 3);
++                gamma_mask |= (u64)ld_gamma_bits(texture.wrap) << (unit * 4);   /* patch 7049: 4 bits per unit */
+         }
+         if (texture.enabled && texture.cubemap)
+             cube_mask |= 1u << unit;

@@ -12,6 +12,11 @@
 #   SDL3_ROOT   SDL3 devel package root (x86_64-w64-mingw32/ inside it is the prefix CMake searches)
 #   CMAKE       cmake program (default: the cache's cmake on Windows, else cmake on PATH)
 #   NINJA       ninja program (default: the cache's ninja on Windows, else ninja on PATH)
+#   LAUNCHER_KIT_MANIFEST  kit.json from pack_zip.py --make-kit-manifest (launcher phase 4): the launcher carries its
+#               hash, the full build zip's URL and sizes; unset = a launcher that asks for no build kit
+#   LAUNCHER_SYMBOLS=1  build with -g, then move the debug information to OUTDIR/launcher.exe.debug (objcopy
+#               --only-keep-debug, --strip-all, --add-gnu-debuglink): the exe is as small as the plain build and names
+#               the debug file and its CRC-32, which kit.py symbols checks before it accepts a download of it
 # Needs third_party/imgui (git submodule update --init third_party/imgui). Nothing of a game is read or produced.
 # Links libc++ and libunwind statically (no toolchain DLL next to the exe); the exe imports system DLLs and SDL3.dll
 # only (tools/release/pack_zip.py checks it is a 64-bit Windows program). Prints the exe's size and SHA-256.
@@ -46,6 +51,9 @@ cross=()
                     -DCMAKE_FIND_ROOT_PATH="$SDL3_ROOT/x86_64-w64-mingw32"
                     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
                     -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY)
+strip=-s; cxxrel="-O3 -DNDEBUG"       # CMake's own Release flags; -s strips at link time
+if [[ "${LAUNCHER_SYMBOLS:-0}" == 1 ]]; then strip=; cxxrel="-O3 -DNDEBUG -g"; fi
+kitm=""; [[ -n "${LAUNCHER_KIT_MANIFEST:-}" ]] && kitm="$(native "$(cd "$(dirname "$LAUNCHER_KIT_MANIFEST")" && pwd)/$(basename "$LAUNCHER_KIT_MANIFEST")")"
 # -mwindows: a GUI program (no console window opens beside it); --no-insert-timestamp: no build time in the PE header
 "$CMAKE" -S "$(native "$ROOT/launcher")" -B "$(native "$OUT")" -G Ninja "${cross[@]}" \
   -DCMAKE_MAKE_PROGRAM="$(native "$NINJA")" \
@@ -53,10 +61,18 @@ cross=()
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$(native "$SDL3_ROOT/x86_64-w64-mingw32")" \
   -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON \
-  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc -mwindows -s -Wl,--no-insert-timestamp" \
+  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc -mwindows $strip -Wl,--no-insert-timestamp" \
+  -DCMAKE_CXX_FLAGS_RELEASE="$cxxrel" \
+  -DLAUNCHER_KIT_MANIFEST="$kitm" \
   -DLAUNCHER_FONT_DIR=fonts
 "$CMAKE" --build "$(native "$OUT")"
 EXE="$OUT/launcher.exe"
 [[ -f "$EXE" ]] || { echo "build_launcher: $EXE was not built" >&2; exit 1; }
+if [[ "${LAUNCHER_SYMBOLS:-0}" == 1 ]]; then
+  OBJCOPY="$LLVM_MINGW/bin/x86_64-w64-mingw32-objcopy$exe"
+  ( cd "$OUT" && "$OBJCOPY" --only-keep-debug launcher.exe launcher.exe.debug && "$OBJCOPY" --strip-all launcher.exe \
+      && "$OBJCOPY" --add-gnu-debuglink=launcher.exe.debug launcher.exe )
+  stat -c "%s %n" "$OUT/launcher.exe.debug" 2>/dev/null || ls -l "$OUT/launcher.exe.debug"
+fi
 stat -c "%s %n" "$EXE" 2>/dev/null || ls -l "$EXE"
 sha256sum "$EXE"

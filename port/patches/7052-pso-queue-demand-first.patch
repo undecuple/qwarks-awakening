@@ -1,0 +1,348 @@
+R&C patch 7052: demand-first order of the asynchronous PSO build queue (load stalls, the RE notes s.30).
+KZ3 2048's build queue is FIFO. With the 7050 lookahead a miss queues up to ~100 speculative builds, and the build the
+walker then waits on runs after all of them: ToD ahead-on2-cold (exe 00420049) waited 36 times for 26.0 s, max 5.1 s,
+against 181 waits, max 0.81 s, with LD_PSO_AHEAD=0; the 3 workers ran at ~1000 ms/s each through the level load.
+- libs/video/rsx_pso_prio.h (pure C): a priority queue. A build the walker waits on (a demand: a miss outside the
+  lookahead, or ld_apso_await on a build that is still queued) goes to the front, so it waits only for the builds
+  already running. Lookahead builds are ordered by FIFO distance (the END sequence number of their draw), nearest first,
+  also across scans; equal priorities keep submission order.
+- Shared compiles (RSX pass 50) stay deadlock-free: the owner of a pending compile is the job queued first. When a job
+  is queued or promoted ahead of the queued owner of a compile it needs, the ownership moves to it (rsx_apq_claim;
+  rsx_apso_blob gains owner/owner_flag, cleared when a worker takes the owner).
+- Worker count: KZ3 2048 fixed 3. Default now logical processors - 8 (the PPU main thread, 4 SPURS SPU threads, a raw
+  SPU, the RSX walker, d3d12core's queue thread: the game's busy threads in a ToD load), clamped to [2, 8]: 8 on the
+  20-thread i7-12700KF. LD_PSO_ASYNC_THREADS still overrides.
+- LD_PSO_AHEAD_BACKLOG=<n>: the lookahead stops scanning while n builds wait (default 0 = no cap); [pso-ahead] counts
+  those stops (backlog=), [pso-async] adds promoted= and claims=. LD_PSO_PRIO=0 = the old FIFO (for the A/B).
+Host test port/rc/tests/run_pso_prio_test.sh: order; a simulated load (3 running, 100 queued) where the demanded build
+starts when the first running one ends (FIFO negative control: 10.2 s later); a shared compile taken over by the demand
+(no-claim negative control deadlocks one worker); a fuzz of 60,000 steps checking that no queued job is ahead of its
+compile's owner (fails at step 25 without the claim); the worker count.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 7c73445..782918d 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -228,6 +228,7 @@ static uint8_t* ld_prompt_remap_cells(const uint8_t* cur, uint32_t w, uint32_t h
+     return out;
+ }
+ #include "rsx_pso_async.h"
++#include "rsx_pso_prio.h"   /* R&C patch 7052: demand-first build queue */
+ /* patch 2048: asynchronous PSO build bookkeeping */
+ #include "rsx_pso_template.h"   /* patch 2071 */
+ #include "rsx_pace.h"           /* patch 2072 */
+@@ -9743,7 +9744,8 @@ static ID3D12PipelineState* build_pso(
+  * pso_keys.bin, the PSO into its entry. Statistics: [pso-async] every 256 frames while builds ran (awaited = draws
+  * that waited, await = their total wait). */
+ typedef struct ld_apso_job {
+-    struct ld_apso_job* next;
++    rsx_apq_node qn;                      /* R&C patch 7052: queue node (first member: the node is the job) */
++    struct ld_apso_job* next;             /* the done list */
+     u64 key, vs_hash, ps_hash;
+     u32 vs_len, ps_len;
+     char* vs_src; char* ps_src;           /* NUL-terminated copies of the final HLSL */
+@@ -9764,7 +9766,9 @@ static struct {
+     rsx_apso_blobtab tab;                 /* walker-owned in-flight compile table */
+     u64 waits;                            /* dependent workers that had to wait for the owner's compile */
+     HANDLE sem;
+-    ld_apso_job *q_head, *q_tail, *done;
++    rsx_apq q;                            /* R&C patch 7052: demand first, then FIFO distance (was a FIFO) */
++    ld_apso_job *done;
++    u64 fifo_seq;                         /* LD_PSO_PRIO=0: submission order as the priority (the old FIFO) */
+     volatile LONG done_flag, in_flight;
+     u64 submitted, finished, failed, compile_us, create_us, latency_us, max_latency_us, merged;
+     u64 awaits, await_us, max_await_us;   /* RSX pass 57: walker waits for a pending build (no draw is skipped) */
+@@ -9812,14 +9816,35 @@ static ID3DBlob* ld_apso_wait(rsx_apso_blob* e)
+     return b;
+ }
+ 
++/* R&C patch 7052: the priority of the next submission (its FIFO distance; the lookahead sets it per draw) and the
++ * switch. LD_PSO_PRIO=0 = the old FIFO (submission order, no promotion). */
++static u64 g_apso_next_prio = RSX_APQ_DEMAND;
++static int ld_apso_prio_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_PSO_PRIO"); on = (e && *e) ? atoi(e) != 0 : 1;
++                  fprintf(stderr, "[pso-async] queue %s (LD_PSO_PRIO=%s)\n", on ? "demand first, then FIFO distance" : "FIFO",
++                          e && *e ? e : "<unset>, default on"); }
++    return on;
++}
++/* Under g_apso.cs: queued job j takes over the compiles it shares with a job queued behind it. */
++static void ld_apso_claim_locked(ld_apso_job* j)
++{
++    if (j->vs_e && !j->vs_own) rsx_apq_claim(&g_apso.q, &j->qn, &j->vs_own, &j->vs_e->owner, &j->vs_e->owner_flag);
++    if (j->ps_e && !j->ps_own) rsx_apq_claim(&g_apso.q, &j->qn, &j->ps_own, &j->ps_e->owner, &j->ps_e->owner_flag);
++}
++
+ static DWORD WINAPI ld_apso_worker(LPVOID arg)
+ {
+     (void)arg;
+     for (;;) {
+         WaitForSingleObject(g_apso.sem, INFINITE);
+         EnterCriticalSection(&g_apso.cs);
+-        ld_apso_job* j = g_apso.q_head;
+-        if (j) { g_apso.q_head = j->next; if (!g_apso.q_head) g_apso.q_tail = NULL; }
++        ld_apso_job* j = (ld_apso_job*)rsx_apq_pop(&g_apso.q);   /* R&C patch 7052 */
++        if (j) {   /* taken: a later job can no longer be queued ahead of this owner */
++            if (j->vs_e && j->vs_own) { j->vs_e->owner = NULL; j->vs_e->owner_flag = NULL; }
++            if (j->ps_e && j->ps_own) { j->ps_e->owner = NULL; j->ps_e->owner_flag = NULL; }
++        }
+         LeaveCriticalSection(&g_apso.cs);
+         if (!j) continue;
+         LARGE_INTEGER q0, q1, q2, f; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&q0);
+@@ -9860,12 +9885,17 @@ static int ld_apso_submit(const char* vs_hlsl, const char* ps_hlsl, const render
+         InitializeConditionVariable(&g_apso.cv);
+         g_apso.sem = CreateSemaphoreA(NULL, 0, 0x7FFFFFFF, NULL);
+         const char* e = getenv("LD_PSO_ASYNC_THREADS");
+-        int nt = e ? atoi(e) : 3; if (nt < 1) nt = 1; if (nt > 8) nt = 8;
++        /* R&C patch 7052: default from the host's logical processors less the game's busy threads (rsx_pso_prio.h);
++         * KZ3 2048 fixed 3, which ran at ~1000 ms/s each through ToD's level load. */
++        SYSTEM_INFO si; GetSystemInfo(&si);
++        int nt = e ? atoi(e) : rsx_apq_workers((int)si.dwNumberOfProcessors); if (nt < 1) nt = 1; if (nt > 8) nt = 8;
++        (void)ld_apso_prio_on();
+         for (int i = 0; i < nt && g_apso.sem; i++) {
+             HANDLE h = CreateThread(NULL, 0, ld_apso_worker, NULL, 0, NULL);
+             if (h) { CloseHandle(h); g_apso.n_threads++; }
+         }
+-        fprintf(stderr, "[pso-async] %d worker threads\n", g_apso.n_threads);
++        fprintf(stderr, "[pso-async] %d worker threads (%s, %lu logical processors)\n", g_apso.n_threads,
++                e ? "LD_PSO_ASYNC_THREADS" : "default", (unsigned long)si.dwNumberOfProcessors);
+     }
+     if (!g_apso.n_threads) return 0;
+     ld_apso_job* j = (ld_apso_job*)calloc(1, sizeof *j);
+@@ -9891,9 +9921,11 @@ static int ld_apso_submit(const char* vs_hlsl, const char* ps_hlsl, const render
+     j->masked = masked_layout != NULL; j->packed = (u8)packed; j->depth = g.depth != NULL;   /* 2076: 0/1/2 */
+     if (masked_layout) j->layout = *masked_layout;
+     { LARGE_INTEGER q; QueryPerformanceCounter(&q); j->t_submit = q.QuadPart; }
+-    EnterCriticalSection(&g_apso.cs);
+-    if (g_apso.q_tail) g_apso.q_tail->next = j; else g_apso.q_head = j;
+-    g_apso.q_tail = j;
++    EnterCriticalSection(&g_apso.cs);   /* R&C patch 7052: in priority order; owned compiles name their owner */
++    rsx_apq_insert(&g_apso.q, &j->qn, ld_apso_prio_on() ? g_apso_next_prio : ++g_apso.fifo_seq);
++    if (j->vs_e && j->vs_own) { j->vs_e->owner = &j->qn; j->vs_e->owner_flag = &j->vs_own; }
++    if (j->ps_e && j->ps_own) { j->ps_e->owner = &j->qn; j->ps_e->owner_flag = &j->ps_own; }
++    ld_apso_claim_locked(j);
+     LeaveCriticalSection(&g_apso.cs);
+     const LONG inf = InterlockedIncrement(&g_apso.in_flight);
+     if ((u32)inf > g_apso.max_in_flight) g_apso.max_in_flight = (u32)inf;
+@@ -9961,6 +9993,15 @@ static ID3D12PipelineState* ld_apso_await(u32 idx)
+     LARGE_INTEGER t0, t1, f; QueryPerformanceCounter(&t0);
+     ld_apso_drain();
+     if (!g.psos[idx].pending) return g.psos[idx].pso;
++    if (ld_apso_prio_on()) {   /* R&C patch 7052: the build the walker waits on runs next */
++        EnterCriticalSection(&g_apso.cs);
++        for (rsx_apq_node* n = g_apso.q.head; n; n = n->next)
++            if (((ld_apso_job*)n)->key == g.psos[idx].key) {
++                if (rsx_apq_promote(&g_apso.q, n)) ld_apso_claim_locked((ld_apso_job*)n);
++                break;
++            }
++        LeaveCriticalSection(&g_apso.cs);
++    }
+     while (g.psos[idx].pending) {
+         EnterCriticalSection(&g_apso.cs);
+         while (!g_apso.done) SleepConditionVariableCS(&g_apso.cv, &g_apso.cs, INFINITE);
+@@ -9980,13 +10021,14 @@ static void ld_apso_stat_print(void)
+     ld_ahead_stat_print();   /* R&C patch 7050 */
+     fprintf(stderr, "[pso-async] frame=%u submitted=%llu finished=%llu failed=%llu in-flight=%ld max-in-flight=%u "
+                     "awaited=%llu await=%.1f ms max=%.1f ms worker compile=%.1f ms create=%.1f ms latency avg=%.1f max=%.1f ms"
+-                    " compiles-owned=%llu deduped=%llu waits=%llu in-flight-blobs=%u\n",
++                    " compiles-owned=%llu deduped=%llu waits=%llu in-flight-blobs=%u promoted=%llu claims=%llu\n",
+             g_ld_frames, (unsigned long long)g_apso.submitted, (unsigned long long)g_apso.finished,
+             (unsigned long long)g_apso.failed, (long)g_apso.in_flight, g_apso.max_in_flight,
+             (unsigned long long)g_apso.awaits, g_apso.await_us / 1e3, g_apso.max_await_us / 1e3, g_apso.compile_us / 1e3, g_apso.create_us / 1e3,
+             g_apso.finished ? g_apso.latency_us / 1e3 / (double)g_apso.finished : 0.0, g_apso.max_latency_us / 1e3,
+             (unsigned long long)g_apso.tab.owned, (unsigned long long)g_apso.tab.deduped,
+-            (unsigned long long)g_apso.waits, g_apso.tab.count);
++            (unsigned long long)g_apso.waits, g_apso.tab.count,
++            (unsigned long long)g_apso.q.promoted, (unsigned long long)g_apso.q.claims);   /* R&C patch 7052 */
+ }
+ 
+ static int ld_current_vertex_layout(rsx_vertex_layout_plan* layout)
+@@ -10196,7 +10238,7 @@ static ID3D12PipelineState* get_pso(const rsx_vertex_layout_plan* masked_layout,
+ extern int gcm_walker_ahead(int (*on_method)(void* u, u32 method, u32 arg), void* u, u32 max_words);
+ static int g_ld_ahead_active;
+ static u64 g_ld_end_seq;   /* every END the walker dispatches (sink_end_impl), the lookahead's horizon unit */
+-static struct { u64 scans, skipped, draws, same_surface, submitted, used, us, horizon, stops[9]; } g_ld_ahead;
++static struct { u64 scans, skipped, draws, same_surface, submitted, used, us, horizon, stops[9], backlog; } g_ld_ahead;
+ static int ld_ahead_on(void)
+ {
+     static int on = -1;
+@@ -10218,14 +10260,22 @@ static void ld_ahead_end(void* user, const rsx_dispatch* r)
+     g_ld_ahead.same_surface++;
+     rsx_vertex_layout_plan l; ld_current_vertex_layout(&l);
+     const u32 n0 = g.n_psos;
++    g_apso_next_prio = g_ld_end_seq + c->draws;   /* R&C patch 7052: FIFO distance of this draw, nearest first */
+     (void)get_pso(ld_vertex_mask_signature() ? &l : NULL,
+                   ld_vertex_compact_payload() ? (ld_vtx_gpu_on() ? 2 : 1) : 0);
++    g_apso_next_prio = RSX_APQ_DEMAND;
+     g_ld_ahead.submitted += g.n_psos - n0;
+ }
+ static int ld_ahead_method(void* u, u32 method, u32 arg)
+ {
+     ld_ahead_ctx* c = (ld_ahead_ctx*)u;
+     rsx_dispatch_method(&g.rsx, method, arg);
++    /* R&C patch 7052: LD_PSO_AHEAD_BACKLOG=<n> stops the scan while n builds wait in the queue (default 0 = no cap;
++     * with the demand-first queue a backlog no longer delays the walker's own build, only spends worker time).
++     * n_queued is read without the lock: a stale count moves the stop by one draw at most. */
++    static int cap = -1;
++    if (cap < 0) { const char* e = getenv("LD_PSO_AHEAD_BACKLOG"); cap = (e && atoi(e) > 0) ? atoi(e) : 0; }
++    if (cap && g_apso.q.n_queued >= (u32)cap) { g_ld_ahead.backlog++; return 1; }
+     return c->draws >= 4096u || g.n_psos + 8u >= MAX_PSOS;
+ }
+ static void ld_ahead_scan(void)
+@@ -10264,13 +10314,14 @@ static void ld_ahead_stat_print(void)
+ {
+     if (g_ld_ahead.scans)
+         fprintf(stderr, "[pso-ahead] frame=%u scans=%llu skipped=%llu draws=%llu same-surface=%llu submitted=%llu used=%llu scan=%.1f ms"
+-                        " stops put=%llu flip=%llu acquire=%llu park=%llu unmapped=%llu ret=%llu limit=%llu stopped=%llu unknown=%llu\n",
++                        " stops put=%llu flip=%llu acquire=%llu park=%llu unmapped=%llu ret=%llu limit=%llu stopped=%llu unknown=%llu backlog=%llu\n",
+                 g_ld_frames, (unsigned long long)g_ld_ahead.scans, (unsigned long long)g_ld_ahead.skipped, (unsigned long long)g_ld_ahead.draws,
+                 (unsigned long long)g_ld_ahead.same_surface, (unsigned long long)g_ld_ahead.submitted,
+                 (unsigned long long)g_ld_ahead.used, g_ld_ahead.us / 1e3,
+                 (unsigned long long)g_ld_ahead.stops[0], (unsigned long long)g_ld_ahead.stops[1], (unsigned long long)g_ld_ahead.stops[2],
+                 (unsigned long long)g_ld_ahead.stops[3], (unsigned long long)g_ld_ahead.stops[4], (unsigned long long)g_ld_ahead.stops[5],
+-                (unsigned long long)g_ld_ahead.stops[6], (unsigned long long)g_ld_ahead.stops[7], (unsigned long long)g_ld_ahead.stops[8]);
++                (unsigned long long)g_ld_ahead.stops[6], (unsigned long long)g_ld_ahead.stops[7], (unsigned long long)g_ld_ahead.stops[8],
++                (unsigned long long)g_ld_ahead.backlog);   /* R&C patch 7052: of the stopped ones, at the backlog cap */
+ }
+ 
+ static ID3D12PipelineState* get_pso(
+diff --git a/libs/video/rsx_pso_async.h b/libs/video/rsx_pso_async.h
+index 265d58a..11df2eb 100644
+--- a/libs/video/rsx_pso_async.h
++++ b/libs/video/rsx_pso_async.h
+@@ -13,7 +13,9 @@
+  *    blob. Only the walker inserts and removes entries; an entry goes away when its last job was merged (its blob is
+  *    then in the walker's memory cache, so a later job finds it there). Workers read only entries they hold a
+  *    reference to, under the caller's lock. Deadlock-free with a FIFO queue: a job only depends on entries owned by
+- *    jobs queued before it, which a worker has already taken. */
++ *    jobs queued before it, which a worker has already taken. R&C patch 7052 reorders the queue (demand first,
++ *    then FIFO distance) and keeps the rule by moving a compile's ownership to the job queued first
++ *    (rsx_pso_prio.h). */
+ #ifndef RSX_PSO_ASYNC_H
+ #define RSX_PSO_ASYNC_H
+ 
+@@ -42,6 +44,8 @@ typedef struct rsx_apso_blob {
+     volatile uint8_t done;
+     char* src;          /* copy of the HLSL (exact match on hash collisions) */
+     void* blob;         /* published result (the table's own reference) or NULL when the compile failed */
++    void* owner;        /* R&C patch 7052: the queued owner job's queue node (NULL once a worker took it) */
++    uint8_t* owner_flag; /* R&C patch 7052: that job's "I compile it" flag (rsx_pso_prio.h rsx_apq_claim) */
+ } rsx_apso_blob;
+ 
+ typedef struct {
+diff --git a/pb/libs/video/rsx_pso_prio.h b/libs/video/rsx_pso_prio.h
+new file mode 100644
+index 0000000..78185c5
+--- /dev/null
++++ b/libs/video/rsx_pso_prio.h
+@@ -0,0 +1,109 @@
++/* R&C patch 7052: demand-first order of the asynchronous PSO build queue (KZ3 2048 + R&C 7050 lookahead).
++ *
++ * KZ3 2048's queue is FIFO. With the 7050 lookahead a miss submits up to ~100 speculative builds, and the build of a
++ * draw the walker then waits on queues behind every one of them: ToD ahead-on2-cold (2026-11-11) waited 36 times
++ * for 26.0 s, max 5.1 s, against 181 waits, max 0.81 s, without lookahead (the RE notes s.30).
++ *
++ * Order: each queued job has a priority, its FIFO distance from the walker (the END sequence number of the draw it
++ * was submitted for; lower = sooner). A build the walker waits on (a demand) has priority 0 and goes to the front, so it
++ * runs as soon as a worker is free: it waits only for the builds already running, never for a queued one. Lookahead
++ * submissions keep their distance order, nearest first, also across scans. Equal priorities keep submission order.
++ *
++ * Shared compiles (KZ3 2048 RSX pass 50): the first job that needs a VS/PS blob owns its compile; later jobs wait for
++ * the owner's result in the worker. FIFO made that deadlock-free (an owner was always taken before its dependents);
++ * with a reordered queue the rule becomes: the owner of a pending compile is the job taken first. When a job is
++ * queued or promoted ahead of the queued owner of a compile it needs, the ownership moves to it (rsx_apq_claim), so
++ * no worker ever waits for a compile that sits behind it in the queue.
++ *
++ * Worker count (rsx_apq_workers): 2048 fixed 3 workers (LD_PSO_ASYNC_THREADS). The default is now sized from the host:
++ * logical processors minus the threads the game keeps busy during a load, clamped to [2, 8]. ToD's [perf-thr] in a
++ * level load: the PPU main thread (~1000 ms/s), 4 SPURS SPU threads (up to ~850 ms/s), the RSX walker, d3d12core's
++ * queue thread; a raw SPU and the audio/IO threads come and go: 8 reserved. 20 logical processors (i7-12700KF) -> 8
++ * workers; 12 -> 4; 8 or fewer -> 2. LD_PSO_ASYNC_THREADS still overrides.
++ * Pure C (host test port/rc/tests/run_pso_prio_test.sh). The caller holds its lock around every call. */
++#ifndef RSX_PSO_PRIO_H
++#define RSX_PSO_PRIO_H
++#include <stdint.h>
++
++#define RSX_APQ_DEMAND 0ull
++#define RSX_APQ_GAME_THREADS 8
++#define RSX_APQ_MIN_WORKERS 2
++#define RSX_APQ_MAX_WORKERS 8
++
++typedef struct rsx_apq_node {
++    struct rsx_apq_node* next;
++    uint64_t prio;
++    uint8_t queued;      /* 1 between insert and pop */
++} rsx_apq_node;
++
++typedef struct {
++    rsx_apq_node* head;
++    uint32_t n_queued;
++    uint64_t promoted, claims;   /* demands moved to the front; compile ownerships moved */
++} rsx_apq;
++
++/* Insert after every node of lower or equal priority (stable). */
++static inline void rsx_apq_insert(rsx_apq* q, rsx_apq_node* n, uint64_t prio)
++{
++    rsx_apq_node** pp = &q->head;
++    while (*pp && (*pp)->prio <= prio) pp = &(*pp)->next;
++    n->prio = prio; n->next = *pp; *pp = n; n->queued = 1;
++    q->n_queued++;
++}
++
++/* The next job to run (NULL when empty). */
++static inline rsx_apq_node* rsx_apq_pop(rsx_apq* q)
++{
++    rsx_apq_node* n = q->head;
++    if (!n) return NULL;
++    q->head = n->next; n->next = NULL; n->queued = 0;
++    q->n_queued--;
++    return n;
++}
++
++/* 1 when a is queued strictly ahead of b (both queued). */
++static inline int rsx_apq_before(const rsx_apq* q, const rsx_apq_node* a, const rsx_apq_node* b)
++{
++    for (const rsx_apq_node* n = q->head; n; n = n->next) {
++        if (n == a) return 1;
++        if (n == b) return 0;
++    }
++    return 0;
++}
++
++/* A demand: move a queued node to the front (ahead of every other node, earlier demands included; the walker waits
++ * on one build at a time). Returns 1 when it moved, 0 when it was not queued (running or done). */
++static inline int rsx_apq_promote(rsx_apq* q, rsx_apq_node* n)
++{
++    if (!n->queued) return 0;
++    rsx_apq_node** pp = &q->head;
++    while (*pp && *pp != n) pp = &(*pp)->next;
++    if (!*pp) return 0;
++    *pp = n->next;
++    n->prio = RSX_APQ_DEMAND; n->next = q->head; q->head = n;
++    q->promoted++;
++    return 1;
++}
++
++/* Compile ownership of one shared blob. *owner / *owner_flag: the entry's current owner node and its "I compile it"
++ * flag (NULL owner = the owner was taken by a worker already, or nobody). me / my_flag: a queued job that needs the
++ * blob. When me is queued ahead of the queued owner, me becomes the owner. Returns 1 when ownership moved. */
++static inline int rsx_apq_claim(rsx_apq* q, rsx_apq_node* me, uint8_t* my_flag, void** owner, uint8_t** owner_flag)
++{
++    rsx_apq_node* o = (rsx_apq_node*)*owner;
++    if (*my_flag || !o || o == me || !o->queued || !me->queued || !rsx_apq_before(q, me, o)) return 0;
++    **owner_flag = 0; *my_flag = 1;
++    *owner = me; *owner_flag = my_flag;
++    q->claims++;
++    return 1;
++}
++
++/* Default worker count from the logical processor count. */
++static inline int rsx_apq_workers(int logical)
++{
++    int n = logical - RSX_APQ_GAME_THREADS;
++    if (n < RSX_APQ_MIN_WORKERS) n = RSX_APQ_MIN_WORKERS;
++    if (n > RSX_APQ_MAX_WORKERS) n = RSX_APQ_MAX_WORKERS;
++    return n;
++}
++#endif

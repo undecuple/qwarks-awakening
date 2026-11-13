@@ -37,14 +37,17 @@ struct Game {
     std::string ebootLevel, ebootTag, ebootMsg;   // the engine's EBOOT check (eboot_check: ok|warn|fail, tag, plain message)
     std::string artIcon, artBackground;     // paths (empty = none)
     long long igdbGame = 0; std::string igdbCover, igdbArtwork;   // parsed and kept; nothing is fetched yet
+    // the catalogue's playability in this release (the same fields as the README badges), shown beside Build
+    std::string playability, playabilityNote, playabilityChecked;
+    std::string updLevel, updTag, updMsg;   // update_check: an installed update newer than the tested one
     bool hasBuild = false;
     std::string exe, builtPortVersion, exeSha, builtAt;
+    std::string builtRelease, debugInfo, debugFile;   // build record release none | split | embedded
     bool hasEstimate = false; int estMinutes = 0; double estGb = 0;
     std::vector<Game> children;
     // runtime
     float colour = 0, colourTarget = 0;     // 0 = desaturated "not added" look, 1 = full colour
     ArtTex art;
-    bool buildTemp = false;                 // TEMP: set by the fake build
 };
 
 struct Locations {   // library.json "locations"; empty/absent = default (the engine owns the file, the launcher only reads it)
@@ -58,6 +61,7 @@ struct Library {
     bool empty = false;   // read fine but lists no game (the Library shows "No games added yet")
     Locations loc;
     std::string theme;   // library.json "prefs.theme": "system" (or absent), "light", "dark" (written by the engine's set-pref)
+    std::string debugInfo, updateCheck;   // prefs.debug_info and prefs.update_check: "on" or off (absent)
     std::vector<Game> games;
 };
 
@@ -80,7 +84,10 @@ inline Game parseGame(const Json& j) {
     if (!j["build"].isNull()) {
         g.hasBuild = true; g.exe = j["build"]["exe"].str(); g.builtPortVersion = j["build"]["port_version"].str();
         g.exeSha = j["build"]["exe_sha256"].str(); g.builtAt = j["build"]["built_at"].str();
+        g.builtRelease = j["build"]["release"].str(); g.debugInfo = j["build"]["debug_info"].str(); g.debugFile = j["build"]["debug_file"].str();
     }
+    g.playability = j["playability"].str(); g.playabilityNote = j["playability_note"].str(); g.playabilityChecked = j["playability_checked"].str();
+    g.updLevel = j["update_check"]["level"].str(); g.updTag = j["update_check"]["tag"].str(); g.updMsg = j["update_check"]["message"].str();
     if (!j["estimate"].isNull()) {
         g.hasEstimate = true; g.estMinutes = j["estimate"]["minutes"].num(); g.estGb = j["estimate"]["disk_gb"].dbl();
     }
@@ -105,6 +112,7 @@ inline Library loadLibrary(const std::string& path) {
     lib.loc.rpcs3Auto = l["rpcs3_auto"].boolean(true);
     lib.loc.build = l["build"].str(); lib.loc.saves = l["saves"].str(); lib.loc.logs = l["logs"].str(); lib.loc.artCache = l["art_cache"].str();
     lib.theme = root["prefs"]["theme"].str();
+    lib.debugInfo = root["prefs"]["debug_info"].str(); lib.updateCheck = root["prefs"]["update_check"].str();
     for (auto& g : root["games"].a) lib.games.push_back(parseGame(g));
     std::stable_sort(lib.games.begin(), lib.games.end(), [](const Game& a, const Game& b) { return a.order < b.order; });
     lib.empty = lib.games.empty();   // a valid library with no game: the launcher shows its empty state, not an error

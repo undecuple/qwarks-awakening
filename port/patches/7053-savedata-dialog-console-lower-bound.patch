@@ -1,0 +1,116 @@
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -882,6 +882,45 @@ static s32 savedata_execute_run(const char* dirName, int is_save,
+                                 CellSaveDataFileCallback funcFile,
+                                 void* userdata);
+ 
++/* R&C patch 7053: a List or Fixed savedata call never returns faster than on the console.
++ *
++ * On the console a List/Fixed save or load goes through the system's save data dialog and the HDD, so the call spans
++ * many frames: measured lower bound from the last funcFile to the return, 500 ms when the data was written or deleted,
++ * 100 ms otherwise ([src:rpcs3-savedata], the bounds RPCS3 applies; Jak II relies on the delay there). Here every List/
++ * Fixed call returned within a few milliseconds, and a title that runs the call on a worker thread and polls it once a
++ * frame never saw it busy: A Crack in Time's MainMenu reads its save manager's state (2 = busy, 1 = idle, @0x004C76D0)
++ * once a frame and calls the menu's ReturnFromSave (which starts the new game) only on a busy -> idle change; the save
++ * thread (ListSave2) started and ended inside one frame, the change was never seen, and the screen stayed black after
++ * the brightness screen in 4 runs of 5 (the RE notes s.29). The bound is kept on the calling (worker) thread, as
++ * on the console; PS3_SAVEDATA_FAST=1 turns it off (host tests). Auto saves/loads are not changed here. */
++static _Thread_local int s_savedata_modified;   /* set by savedata_execute_run: a file written/deleted or PARAM.SFO written */
++static uint64_t savedata_now_us(void)
++{
++#ifdef _WIN32
++    LARGE_INTEGER f, c;
++    QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c);
++    return (uint64_t)((double)c.QuadPart * 1e6 / (double)f.QuadPart);
++#else
++    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
++#endif
++}
++static void savedata_console_bound(uint64_t until_us)
++{
++    static int fast = -1;
++    if (fast < 0) { const char* e = getenv("PS3_SAVEDATA_FAST"); fast = (e && *e && *e != '0') ? 1 : 0; }
++    if (fast) return;
++    for (uint64_t now = savedata_now_us(); now < until_us; now = savedata_now_us()) {
++        const uint64_t ms = (until_us - now + 999) / 1000;
++#ifdef _WIN32
++        Sleep((DWORD)ms);
++#else
++        struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
++        nanosleep(&ts, NULL);
++#endif
++    }
++}
++
+ static s32 savedata_execute(const char* dirName, int is_save,
+                              CellSaveDataSetBuf* setBuf,
+                              CellSaveDataStatCallback funcStat,
+@@ -894,6 +933,22 @@ static s32 savedata_execute(const char* dirName, int is_save,
+     return r;
+ }
+ 
++/* The List* and Fixed* entries: savedata_execute plus the console's lower bound (patch 7053 above). */
++static s32 savedata_execute_dialog(const char* dirName, int is_save,
++                                   CellSaveDataSetBuf* setBuf,
++                                   CellSaveDataStatCallback funcStat,
++                                   CellSaveDataFileCallback funcFile,
++                                   void* userdata)
++{
++    s_savedata_modified = 0;
++    const s32 r = savedata_execute(dirName, is_save, setBuf, funcStat, funcFile, userdata);
++    const uint64_t bound = s_savedata_modified ? 500000ull : 100000ull;
++    printf("[cellSaveData] %s dialog call ends; console lower bound %llu ms from the last file op\n",
++           is_save ? "SAVE" : "LOAD", (unsigned long long)(bound / 1000));
++    savedata_console_bound(savedata_now_us() + bound);
++    return r;
++}
++
+ static s32 savedata_execute_run(const char* dirName, int is_save,
+                                 CellSaveDataSetBuf* setBuf,
+                                 CellSaveDataStatCallback funcStat,
+@@ -998,6 +1053,7 @@ static s32 savedata_execute_run(const char* dirName, int is_save,
+         memcpy(&params, statSet.setParam, sizeof(params));
+         params.attribute = ps3_bswap32(params.attribute);
+         write_param_sfo(save_path, &params);
++        s_savedata_modified = 1;   /* patch 7053 */
+     }
+ 
+     /* Each NEXT callback requests one operation. LAST ends the sequence;
+@@ -1016,6 +1072,8 @@ static s32 savedata_execute_run(const char* dirName, int is_save,
+                    fileSet.fileName ? fileSet.fileName : "", fileSet.fileOffset,
+                    fileSet.fileSize, fileSet.fileBufSize, exc);
+             if (exc < 0) { free(fileList); return exc; }
++            if (fileSet.fileOperation != CELL_SAVEDATA_FILEOP_READ)
++                s_savedata_modified = 1;   /* patch 7053 */
+             exc_size = (u32)exc;
+         }
+     }
+@@ -1094,7 +1152,7 @@ s32 cellSaveDataListSave2(u32 version, CellSaveDataSetList* setList,
+         return CELL_SAVEDATA_ERROR_NODATA;
+     }
+ 
+-    s32 result = savedata_execute(selectedDir, 1, setBuf, funcStat, funcFile, userdata);
++    s32 result = savedata_execute_dialog(selectedDir, 1, setBuf, funcStat, funcFile, userdata);
+     free(dirList);
+     return result;
+ }
+@@ -1154,7 +1212,7 @@ s32 cellSaveDataListLoad2(u32 version, CellSaveDataSetList* setList,
+         return CELL_SAVEDATA_ERROR_NODATA;
+     }
+ 
+-    s32 result = savedata_execute(selectedDir, 0, setBuf, funcStat, funcFile, userdata);
++    s32 result = savedata_execute_dialog(selectedDir, 0, setBuf, funcStat, funcFile, userdata);
+     free(dirList);
+     return result;
+ }
+@@ -1241,7 +1299,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
+     memcpy(directory, name, len + 1);
+     printf("[cellSaveData] %s: proceeding with dir='%s' (%u listed)\n",
+            __func__, directory, listed);
+-    return savedata_execute(directory, is_save, setBuf, funcStat, funcFile,
++    return savedata_execute_dialog(directory, is_save, setBuf, funcStat, funcFile,
+                             (void*)(uintptr_t)vm_read32(cb + 16));
+ }
+ 

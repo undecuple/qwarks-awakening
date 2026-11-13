@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "profiles": [
+    {"id": "tods", "catalog_id": "tods", "bin": "tods", "elf_name": "EBOOT.elf", "exe": "tods", "code_end": "0x83a50c", "toc": "0x88ff38", "aliases": []},
+    {"id": "acit", "catalog_id": "acit", "bin": "acit", "elf_name": "EBOOT.elf", "exe": "acit", "code_end": "0xa4aebc", "toc": "0xd349c8", "aliases": []},
+    {"id": "nexus", "catalog_id": "nexus", "bin": "nexus", "elf_name": "EBOOT.elf", "exe": "nexus", "code_end": "0xb60114", "toc": "0xd8ee08", "aliases": []},
+    {"id": "acit120", "catalog_id": "acit", "bin": "acit120", "elf_name": "EBOOT.elf", "exe": "acit", "code_end": "0xa4ab94", "toc": "0xd347b0", "aliases": []},
+    {"id": "nexus101", "catalog_id": "nexus", "bin": "nexus101", "elf_name": "EBOOT.elf", "exe": "nexus", "code_end": "0xb61d44", "toc": "0xd8ee18", "aliases": []},
+    {"id": "ffa", "catalog_id": "ffa", "bin": "ffa105", "elf_name": "EBOOT.elf", "exe": "ffa", "code_end": "0xc3a1ac", "toc": "0xe6ef98", "aliases": ["ffa105"]},
+    {"id": "a4o", "catalog_id": "a4o", "bin": "a4o103", "elf_name": "EBOOT.elf", "exe": "a4o", "code_end": "0xbd2c48", "toc": "0xdfd988", "aliases": ["a4o103"]},
+    {"id": "qfb", "catalog_id": "qfb", "bin": "qfb", "elf_name": "EBOOT.elf", "exe": "qfb", "code_end": "0x77af2c", "toc": "0x8400e8", "aliases": []},
+    {"id": "dlhd", "catalog_id": "dlhd", "bin": "dlhd", "elf_name": "EBOOT.elf", "exe": "dlhd", "code_end": "0x8891d4", "toc": "0x9bcd58", "aliases": []},
+    {"id": "collection", "catalog_id": "collection", "bin": "collection", "elf_name": "EBOOT.elf", "exe": "collection", "code_end": "0x1444dc", "toc": "0x214f78", "aliases": []},
+    {"id": "collection_rc1", "catalog_id": "rc1", "bin": "collection", "elf_name": "RC1.ppu.elf", "exe": "rc1", "code_end": "0x69e674", "toc": "0x772350", "aliases": ["rc1"]},
+    {"id": "collection_rc2", "catalog_id": "rc2", "bin": "collection", "elf_name": "RC2.ppu.elf", "exe": "rc2", "code_end": "0x12266cc", "toc": "0x131d100", "aliases": ["rc2"]},
+    {"id": "collection_rc3", "catalog_id": "rc3", "bin": "collection", "elf_name": "RC3.ppu.elf", "exe": "rc3", "code_end": "0xaf0c34", "toc": "0xc0a4f0", "aliases": ["rc3"]}
+  ]
+}

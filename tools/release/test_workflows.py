@@ -6,7 +6,7 @@ ports' tools/release/test_workflows.py (same author, MIT).
   - every `uses:` of an action is pinned to a full 40-hex commit SHA with its version in a comment; every checkout
     keeps no credentials (persist-credentials: false); top-level permissions are set; no secret beyond the run's own
     token; no privileged trigger (pull_request_target, workflow_run);
-  - release.yml: a vX.Y.Z tag push or workflow_dispatch only; read-only by default and every job sets its own
+  - release.yml: a launcher-vX.Y.Z or <catalogue game id>-vX.Y.Z tag push or workflow_dispatch only; read-only by default and every job sets its own
     permissions; only the publish job can write, it runs on tag pushes only and checks out no code; concurrency per
     ref without cancel-in-progress; the tag must be v + names.VERSION in the build and in publish; the notes come from
     the CHANGELOG (release_notes.py) before the toolchain is fetched and travel in the artifact as release-body.md;
@@ -103,26 +103,38 @@ def test_release():
     check("adapted from Project Helghast" in head and "Killzone 3" in head and "MIT" in head,
           "release.yml: header credits the Killzone 3 port's workflow (MIT)")
     on = t[t.index("\non:"):t.index("\npermissions:")]
-    check('tags: ["v[0-9]+.[0-9]+.[0-9]+"]' in on and "workflow_dispatch:" in on and "branches" not in on
-          and "pull_request" not in on, "release.yml: runs on a vX.Y.Z tag or a dispatch only", on)
+    tags = re.findall(r'^      - "([^"]+)"', on, re.M)
+    with open(os.path.join(ROOT, "data", "titles", "catalog.json"), encoding="utf-8") as f:
+        cat = json.load(f)
+    ids = [g["id"] for e in cat["games"] for g in [e] + list(e.get("children", [])) if not g.get("children")]
+    check(tags == [f"{i}-v[0-9]+.[0-9]+.[0-9]+" for i in ["launcher"] + ids] and "workflow_dispatch:" in on
+          and "branches" not in on and "pull_request" not in on,
+          "release.yml: runs on launcher-vX.Y.Z, <catalogue game id>-vX.Y.Z (every id, in catalogue order) or a dispatch only",
+          (tags, ids))
     check(re.search(r"^permissions:\n  contents: read", t, re.M) is not None, "release.yml: read-only by default")
     check(re.search(r"^concurrency:\n  group: release-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false", t, re.M)
           is not None, "release.yml: one run per ref, never cancelled half-way")
     js = jobs(t)
-    check(set(js) == {"launcher", "publish"}, "release.yml: launcher and publish jobs", list(js))
+    check(set(js) == {"launcher", "publish", "game-notes", "game-publish"},
+          "release.yml: launcher, publish, game-notes and game-publish jobs", list(js))
     for job, body in js.items():
         check(re.search(r"^    permissions:", body, re.M) is not None, f"release.yml: job {job} sets its own permissions")
     writers = [j for j, b in js.items() if re.search(r"contents:\s*write", b)]
-    check(writers == ["publish"], "release.yml: only the publish job can write", writers)
+    check(sorted(writers) == ["game-publish", "publish"], "release.yml: only the two publish jobs can write", writers)
     lj, pub = js.get("launcher", ""), js.get("publish", "")
     check("contents: write" not in lj and "actions: write" not in lj, "release.yml: the build job is read-only")
-    check("if: github.event_name == 'push' && github.ref_type == 'tag'" in pub and "actions/checkout" not in pub
-          and "needs: launcher" in pub, "release.yml: publish runs on tag pushes only, after the build, with no checkout")
+    check("if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'launcher-v')" in pub
+          and "actions/checkout" not in pub and "needs: launcher" in pub,
+          "release.yml: publish runs on launcher tag pushes only, after the build, with no checkout")
+    check("if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')" in lj,
+          "release.yml: the launcher builds on a launcher tag or the dry run only (a game tag builds nothing)")
+    test_game_jobs(js.get("game-notes", ""), js.get("game-publish", ""))
     check("runs-on: windows-latest" in lj and "git config --global core.autocrlf false" in lj
           and lj.index("core.autocrlf") < lj.index("actions/checkout"), "release.yml: Windows runner, LF kept before checkout")
     # version: tag == names.VERSION in both jobs
     check('if [ "$v" != "$want" ]' in lj and "names.VERSION" in lj, "release.yml: build job checks tag == names.VERSION")
-    check('[ "$GITHUB_REF_NAME" = "v$VERSION" ]' in pub, "release.yml: publish checks tag == v + VERSION")
+    check('[ "$GITHUB_REF_NAME" = "launcher-v$VERSION" ]' in pub, "release.yml: publish checks tag == launcher-v + VERSION")
+    check('release_notes.py --tag "launcher-v$VERSION"' in lj, "release.yml: launcher notes from release_notes.py --tag launcher-vX.Y.Z")
     # notes early and in the artifact
     check("release_notes.py" in lj and lj.index("release_notes.py") < lj.index("fetch_toolchain.py"),
           "release.yml: the notes are written before the toolchain and the build")
@@ -130,27 +142,41 @@ def test_release():
     paths = upload_paths(lj)
     check(paths != [], "release.yml: the build uploads an artifact with a path list", paths)
     need = {"release-body.md": "release-body.md", '"$ZIP"': "${{ steps.ver.outputs.zip }}",
-            '"$ZIP.sha256"': "${{ steps.ver.outputs.zip }}.sha256"}
+            '"$ZIP.sha256"': "${{ steps.ver.outputs.zip }}.sha256",
+            '"$BUILD_ZIP"': "${{ steps.ver.outputs.build_zip }}",
+            '"$BUILD_ZIP.sha256"': "${{ steps.ver.outputs.build_zip }}.sha256",
+            '"$SYMBOLS_ZIP"': "${{ steps.ver.outputs.symbols_zip }}",
+            '"$SYMBOLS_ZIP.sha256"': "${{ steps.ver.outputs.symbols_zip }}.sha256"}
     for used, path in need.items():
         check(used in pub and any(p.endswith(path) for p in paths),
               f"release.yml: publish uses {used}, and the artifact carries it", paths)
     check("--name \"$ARTIFACT\"" in pub and "artifact: ${{ steps.ver.outputs.artifact }}" in lj
           and "name: ${{ steps.ver.outputs.artifact }}" in lj, "release.yml: publish downloads the artifact the build named")
-    check("ZIP: ${{ needs.launcher.outputs.zip }}" in pub and "zip: ${{ steps.ver.outputs.zip }}" in lj,
-          "release.yml: the zip name travels as a job output")
+    check("ZIP: ${{ needs.launcher.outputs.zip }}" in pub and "zip: ${{ steps.ver.outputs.zip }}" in lj
+          and "BUILD_ZIP: ${{ needs.launcher.outputs.build_zip }}" in pub and "build_zip: ${{ steps.ver.outputs.build_zip }}" in lj
+          and "SYMBOLS_ZIP: ${{ needs.launcher.outputs.symbols_zip }}" in pub
+          and "symbols_zip: ${{ steps.ver.outputs.symbols_zip }}" in lj
+          and "names.symbols_zip_name(sys.argv[1])" in lj,
+          "release.yml: all three zip names (names.py) travel as job outputs")
     # the release command
     cmd = re.search(r"gh release create ((?:[^\n]*\\\n)*[^\n]*)", c)
     rc = cmd.group(1) if cmd else ""
-    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft \$pre --verify-tag --title "\$GITHUB_REF_NAME" '
+    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft \$pre \$latest --verify-tag --title "Launcher v\$VERSION" '
                                        r"--notes-file release-body\.md", rc) is not None,
-          "release.yml: gh release create TAG --draft $pre --verify-tag --title TAG --notes-file release-body.md", rc)
-    check(re.search(r'"\$ZIP" "\$ZIP\.sha256" SHA256SUMS\s*$', rc) is not None, "release.yml: assets are the zip, its .sha256, SHA256SUMS", rc)
+          "release.yml: gh release create TAG --draft $pre $latest --verify-tag --title 'Launcher vX.Y.Z' --notes-file release-body.md", rc)
+    check('pre=""; latest="--latest"; case "$VERSION" in 0.*) pre="--prerelease"; latest="" ;; esac' in pub,
+          "release.yml: the launcher release is latest from 1.0.0 on; a 0.x one is a pre-release (never latest on GitHub)")
+    check(re.search(r'"\$ZIP" "\$ZIP\.sha256" "\$BUILD_ZIP" "\$BUILD_ZIP\.sha256" "\$SYMBOLS_ZIP" "\$SYMBOLS_ZIP\.sha256" '
+                    r"SHA256SUMS\s*$", rc) is not None,
+          "release.yml: assets are the launcher, build and symbols zips, their .sha256 and SHA256SUMS", rc)
     check('0.*) pre="--prerelease"' in pub, "release.yml: a 0.x version is a pre-release")
     check(not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)|git push", c),
           "release.yml: no clobber, upload, edit or delete; no tag or push")
     check("gh release view" in pub and pub.index("gh release view") < pub.rindex("gh release create"),
           "release.yml: an existing release is refused before anything is created")
-    check('sha256sum -c "$ZIP.sha256"' in pub and "sha256sum -c SHA256SUMS" in pub
+    check('sha256sum -c "$ZIP.sha256"' in pub and 'sha256sum -c "$BUILD_ZIP.sha256"' in pub
+          and 'sha256sum -c "$SYMBOLS_ZIP.sha256"' in pub
+          and 'sha256sum "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS' in pub and "sha256sum -c SHA256SUMS" in pub
           and pub.index("sha256sum -c SHA256SUMS") < pub.rindex("gh release create"),
           "release.yml: the .sha256 and SHA256SUMS are verified before the release")
     check("> SHA256SUMS" in pub, "release.yml: SHA256SUMS written beside the assets")
@@ -160,8 +186,14 @@ def test_release():
     # toolchain and inputs
     check("fetch_toolchain.py --check --strict" in lj, "release.yml: the toolchain manifest is checked --strict")
     check("bump_version.py --agree" in lj, "release.yml: shared version checker covers the catalog mirror")
-    check("git submodule update --init --depth 1 third_party/imgui" in lj and "submodules:" not in code(lj)
-          and "ps3recomp-patched.sh" not in c, "release.yml: only the imgui submodule; no ps3recomp toolkit")
+    check("git submodule update --init --depth 1 third_party/imgui third_party/ps3recomp" in lj
+          and "submodules:" not in code(lj) and "bash tools/ps3recomp-patched.sh" in lj,
+          "release.yml: the imgui and ps3recomp submodules only; the patched ps3recomp is the build kit's toolkit")
+    kit = "pack_zip.py --make-kit-manifest build/kit/kit.json"
+    check(kit in lj and "LAUNCHER_KIT_MANIFEST: build/kit/kit.json" in lj
+          and lj.index("ps3recomp-patched.sh") < lj.index(kit) < lj.index("build_launcher.sh")
+          and "--kit-manifest build/kit/kit.json --toolkit work/ps3recomp-patched" in lj,
+          "release.yml: kit.json is made before the launcher, which is built with it, and the full zip is packed with it")
     check(not re.search(r"EBOOT|\.elf\b|\.self\b|\.psarc|library/", c), "release.yml: no game file named")
     # version mirrors: the version goes into the regular expressions with its dots escaped
     greps = re.findall(r'grep -qE? "((?:[^"\\]|\\.)*)"', lj)
@@ -173,13 +205,41 @@ def test_release():
     pe = "python3 tools/release/pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe"
     check(pe in lj and lj.index("build_launcher.sh") < lj.index(pe) < lj.index("pack_zip.py --exe"),
           "release.yml: the built exe's imports are checked (system DLLs + SDL3.dll) before it is zipped")
-    check(re.search(r"fetch_toolchain\.py --only llvm-mingw,sdl3,cmake,ninja,python\n", lj) is not None,
+    check(re.search(r"fetch_toolchain\.py --only llvm-mingw,sdl3,cmake,ninja,python,[a-z0-9,.-]+\n", lj) is not None,
           "release.yml: fetches the Windows-host toolchain only")
     check(re.search(r"#[^\n]*14 days[^\n]*\n(?:\s*#[^\n]*\n)*\s*retention-days: 14", lj) is not None,
           "release.yml: the 14-day artifact retention is explained")
+    check('LAUNCHER_SYMBOLS: "1"' in lj and "--symbols build/launcher-release/launcher.exe.debug" in lj
+          and lj.index("pe_imports.py") < lj.index("pack_zip.py --exe"),
+          "release.yml: the launcher is built with its debug file split off and the symbols zip is packed from it")
     check("--python work/release/toolchain-cache/trees/python" in lj and "Python Software Foundation" in t[:t.index("\nname:")],
           "release.yml: the zip bundles the pinned Python embeddable package, credited to the PSF in the header")
     check("for t in test_names" in lj and "test_workflows" in lj, "release.yml: host tests of the release tools run")
+
+
+def test_game_jobs(gn, gp):
+    """Game tags: notes only, a read-only notes job and a write job with no checkout; never latest; no asset."""
+    cond = "if: github.event_name == 'push' && github.ref_type == 'tag' && !startsWith(github.ref_name, 'launcher-v')"
+    check(cond in gn and cond in gp and "needs: game-notes" in gp, "release.yml: game jobs run on game tag pushes only")
+    check("contents: read" in gn and "contents: write" not in gn and "actions/checkout" not in gp,
+          "release.yml: game-notes is read-only; game-publish checks out no code")
+    check('if [ "$v" != "$want" ]' in gn and "names.VERSION" in gn,
+          "release.yml: a game tag's version must equal names.VERSION (the release whose kit builds it)")
+    check('release_notes.py --tag "$GITHUB_REF_NAME"' in gn and "--title-out build/release-out/release-title.txt" in gn,
+          "release.yml: game notes and title from release_notes.py --tag")
+    paths = upload_paths(gn)
+    check(paths == ["build/release-out/release-body.md", "build/release-out/release-title.txt"]
+          and "--name game-release-notes" in gp and "name: game-release-notes" in gn,
+          "release.yml: the game notes travel in their own artifact", paths)
+    c = code(gp)
+    cmd = re.search(r"gh release create ((?:[^\n]*\\\n)*[^\n]*)", c)
+    rc = re.sub(r"\\\n\s*", "", cmd.group(1)) if cmd else ""
+    check(rc.strip() == '"$GITHUB_REF_NAME" --draft --prerelease --latest=false --verify-tag --title "$title" '
+                        '--notes-file release-body.md',
+          "release.yml: a game release is a draft pre-release, never latest, notes only, no asset", rc)
+    check("gh release view" in gp and gp.index("gh release view") < gp.rindex("gh release create")
+          and not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)", c),
+          "release.yml: game-publish refuses an existing release; no clobber, upload, edit, delete, tag or push")
 
 
 def test_version_step(lj):
@@ -224,13 +284,17 @@ def test_version_step(lj):
             r = subprocess.run([bash, "-e", "step.sh"], cwd=d, env=env, capture_output=True, text=True, timeout=60)
             return r.returncode, r.stdout + r.stderr
 
-    rc, out = run(lambda v: v, lambda v: "v" + v)
+    rc, out = run(lambda v: v, lambda v: "launcher-v" + v)
     check(rc == 0, "release.yml version step: matching tag and mirrors pass", out)
-    rc, out = run(lambda v: v.replace(".", "x"), lambda v: "v" + v)
+    rc, out = run(lambda v: v.replace(".", "x"), lambda v: "launcher-v" + v)
     check(rc != 0 and "launcher/CMakeLists.txt" in out, "release.yml version step: 0x2x0 is not 0.2.0 (dots escaped)", out)
-    rc, out = run(lambda v: v, lambda v: "v9" + v)
+    rc, out = run(lambda v: v, lambda v: "launcher-v9" + v)
     check(rc != 0, "release.yml version step: a tag that is not names.VERSION fails", out)
-    rc, out = run(lambda v: v, lambda v: "v" + v, lambda v: "0.0.0")
+    rc, out = run(lambda v: v, lambda v: "v" + v)
+    check(rc != 0 and "launcher-v" in out, "release.yml version step: a bare vX.Y.Z tag fails", out)
+    rc, out = run(lambda v: v, lambda v: "tods-v" + v)
+    check(rc != 0, "release.yml version step: a game tag does not build the launcher", out)
+    rc, out = run(lambda v: v, lambda v: "launcher-v" + v, lambda v: "0.0.0")
     check(rc != 0 and "catalog.json" in out, "release.yml version step: stale catalog mirror refused", out)
 
 

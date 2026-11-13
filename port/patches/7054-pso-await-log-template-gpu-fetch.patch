@@ -1,0 +1,149 @@
+R&C patch 7054: per-await log (diagnostic, off by default) and GPU-fetch pipelines in the exported template
+(load stalls, the RE notes s.30).
+1. LD_PSO_AWAIT_LOG=1 prints one [pso-await] line per build the walker waits on: frame, key, src (M = a miss the
+   lookahead never submitted, A = a lookahead submission, P = an earlier walker submission), state when the wait began
+   (q = queued, r = running or finished, not merged), wait, age (submission to the wait), queue length, in-flight, the
+   walker's END count and the last scan's END count, horizon and stop reason. It attributes each post-load gap to its
+   pipelines (the static reading of prio-on-cold could only count them). PSO entries keep their submission time.
+2. Template export (KZ3 2071 LD_PSO_TEMPLATE_OUT): 2076 skipped GPU-fetch draws, expecting their packed record, which
+   the walker never builds with LD_VTX_GPU=1 (R&C's default), so a ToD template would have held no GPU-fetch pipeline
+   (the 7051 bug, in the template). A GPU-fetch draw now notes its packed record (key from the same key head with
+   packed mode 1, vgpu off); the prewarm derives the GPU-fetch variant as 2076 intended and rejects a record whose key
+   does not reproduce ([pso-tmpl] failed_key), which the template A/B checks.
+No host test: (1) is a log line; (2) needs the walker's translator and key tail (Windows build), checked by the
+prewarm's own key check in the run.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 782918d..f8ba3ec 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -448,7 +448,7 @@ typedef struct {
+     u32 quiet, written, skip_frame;   /* patch 2033, as texcache_t */
+     u32 dyn;   /* patch 2046, as texcache_t (content change seen) */
+ } vtexcache_t;
+-typedef struct { u64 key; ID3D12PipelineState* pso; u8 preloaded; u8 pending; u8 ahead; } psocache_t;   /* patch 2031: preloaded until first use; patch 2048: pending = an asynchronous build in flight */
++typedef struct { u64 key; ID3D12PipelineState* pso; u8 preloaded; u8 pending; u8 ahead; long long t_sub; } psocache_t;   /* R&C 7054: t_sub = QPC at submission */   /* patch 2031: preloaded until first use; patch 2048: pending = an asynchronous build in flight */
+ typedef struct {
+     u64 hash;
+     u32 source_length;
+@@ -8811,6 +8811,7 @@ static void ld_pl_drain(void)
+         g.psos[g.n_psos].pso = pso;
+         g.psos[g.n_psos].preloaded = g_ld_pl.staged[s].src ? g_ld_pl.staged[s].src : 1;
+         g.psos[g.n_psos].ahead = 0;   /* R&C patch 7050 */
++        g.psos[g.n_psos].t_sub = 0;   /* R&C patch 7054 */
+         g.n_psos++;
+     }
+     g_ld_pl.n_staged = 0;
+@@ -9988,16 +9989,36 @@ static void ld_apso_drain(void)
+  * keeps its content across frames. KZ3's text is such a target: glyphs are rendered once (stencil-then-cover) into
+  * the glyph cache at 0x3A00000 and sampled from there afterwards, so a glyph whose draws were skipped stayed blank
+  * (whole menu lists, capital C/A) or kept the glyph that held its slot before (arrows in "For less"). */
++/* R&C patch 7054 (diagnostic, default off): LD_PSO_AWAIT_LOG=1 prints one [pso-await] line per build the walker waits
++ * on: frame, key, src (M = a miss the lookahead never submitted, A = submitted by the lookahead, P = submitted earlier
++ * by the walker), state when the wait began (q = still queued, r = running or finished but not merged), the wait,
++ * age = submission to the wait's start, the queue length, the walker's END count and the last scan's END count, horizon
++ * and stop reason (0 put, 1 flip, 2 acquire, 3 park, 4 unmapped, 5 ret, 6 limit, 7 stopped, 8 unknown; -1 = none). */
++static char g_ld_await_src = 'M';
++static int g_ld_await_last_why = -1;
++static u64 g_ld_await_last_seq, g_ld_await_last_horizon;
++static u64 g_ld_end_seq;   /* every END the walker dispatches (sink_end_impl), the lookahead's horizon unit (R&C 7050) */
++static int ld_apso_await_log_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_PSO_AWAIT_LOG"); on = (e && atoi(e) != 0) ? 1 : 0; }
++    return on;
++}
+ static ID3D12PipelineState* ld_apso_await(u32 idx)
+ {
+     LARGE_INTEGER t0, t1, f; QueryPerformanceCounter(&t0);
++    const char src = g_ld_await_src; g_ld_await_src = 'M';
+     ld_apso_drain();
+     if (!g.psos[idx].pending) return g.psos[idx].pso;
+-    if (ld_apso_prio_on()) {   /* R&C patch 7052: the build the walker waits on runs next */
++    char state = 'r';
++    u32 queued = 0;
++    if (ld_apso_prio_on() || ld_apso_await_log_on()) {   /* R&C patch 7052: the build the walker waits on runs next */
+         EnterCriticalSection(&g_apso.cs);
++        queued = g_apso.q.n_queued;
+         for (rsx_apq_node* n = g_apso.q.head; n; n = n->next)
+             if (((ld_apso_job*)n)->key == g.psos[idx].key) {
+-                if (rsx_apq_promote(&g_apso.q, n)) ld_apso_claim_locked((ld_apso_job*)n);
++                state = 'q';
++                if (ld_apso_prio_on() && rsx_apq_promote(&g_apso.q, n)) ld_apso_claim_locked((ld_apso_job*)n);
+                 break;
+             }
+         LeaveCriticalSection(&g_apso.cs);
+@@ -10011,6 +10032,14 @@ static ID3D12PipelineState* ld_apso_await(u32 idx)
+     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&f);
+     const u64 us = (u64)((t1.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart);
+     g_apso.awaits++; g_apso.await_us += us; if (us > g_apso.max_await_us) g_apso.max_await_us = us;
++    if (ld_apso_await_log_on()) {   /* R&C patch 7054 */
++        const double age = g.psos[idx].t_sub ? (double)(t0.QuadPart - g.psos[idx].t_sub) * 1e3 / (double)f.QuadPart : -1.0;
++        fprintf(stderr, "[pso-await] frame=%u key=%016llx src=%c state=%c wait=%.1f ms age=%.1f ms queued=%u in-flight=%ld"
++                        " seq=%llu scan-seq=%llu horizon=%llu stop=%d\n",
++                g_ld_frames, (unsigned long long)g.psos[idx].key, src, state, us / 1e3, age, queued, (long)g_apso.in_flight,
++                (unsigned long long)g_ld_end_seq, (unsigned long long)g_ld_await_last_seq,
++                (unsigned long long)g_ld_await_last_horizon, g_ld_await_last_why);
++    }
+     return g.psos[idx].pso;
+ }
+ 
+@@ -10237,7 +10266,6 @@ static struct { u32 loc, off, size, hvalid, hmode; u64 hseed, h; u8 bytes[0x1000
+ static ID3D12PipelineState* get_pso(const rsx_vertex_layout_plan* masked_layout, int packed_payload);
+ extern int gcm_walker_ahead(int (*on_method)(void* u, u32 method, u32 arg), void* u, u32 max_words);
+ static int g_ld_ahead_active;
+-static u64 g_ld_end_seq;   /* every END the walker dispatches (sink_end_impl), the lookahead's horizon unit */
+ static struct { u64 scans, skipped, draws, same_surface, submitted, used, us, horizon, stops[9], backlog; } g_ld_ahead;
+ static int ld_ahead_on(void)
+ {
+@@ -10305,6 +10333,7 @@ static void ld_ahead_scan(void)
+     g_ld_current_pso = cur; g_ld_fp_units_cur = fp_units; g.fp_constants = fpc; g.fp_alpha_ref = alpha_ref;
+     g_ld_ahead_active = 0;
+     g_ld_ahead.horizon = seq + (c.first_other ? c.first_other : c.draws);
++    g_ld_await_last_seq = seq; g_ld_await_last_horizon = g_ld_ahead.horizon; g_ld_await_last_why = why;   /* R&C patch 7054 */
+     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&f);
+     g_ld_ahead.scans++; g_ld_ahead.us += (u64)((t1.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart);
+     if (why >= 0 && why < 9) g_ld_ahead.stops[why]++;
+@@ -10609,6 +10638,7 @@ static ID3D12PipelineState* get_pso(
+         if (wsf.aa_sx != 1u || wsf.aa_sy != 1u) xi.wpos_aa = wsf.aa_sx | (wsf.aa_sy << 8);
+     }
+     u64 kl_pre_rs = 0;
++    const u64 key_head = key;   /* R&C patch 7054: the tail's input, for the packed record of a GPU-fetch draw */
+     key = ld_pso_key_tail(key, &xi, packed_payload, &kl_pre_rs);   /* patch 2071: shared with the prewarm */
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_note_fp_variants(
+@@ -10616,6 +10646,13 @@ static ID3D12PipelineState* get_pso(
+ #endif
+     if (g_pt.out_on && packed_payload != 2)   /* patch 2076: the template holds the packed record */
+         ld_pt_note(key, &xi, masked_layout && packed_payload, g.depth != NULL);
++    else if (g_pt.out_on && masked_layout) {
++        /* R&C patch 7054: a GPU-fetch draw (LD_VTX_GPU=1, R&C's default) never builds its packed variant, so 2076's
++         * export never saw a packed record and the template held no GPU-fetch pipeline. Note the packed record here
++         * (its key as the walker derives it with GPU fetch off); the prewarm derives the GPU-fetch variant from it. */
++        ld_xl_in xp = xi; xp.vgpu = 0;
++        ld_pt_note(ld_pso_key_tail(key_head, &xp, 1, NULL), &xp, 1, g.depth != NULL);
++    }
+     LDW_ADD(RSX_PERF_W_PSO_KEY_T, gp_t2);
+     LDW_T0(gp_t3);
+     g_ld_current_pso.valid = 1;
+@@ -10653,6 +10690,7 @@ static ID3D12PipelineState* get_pso(
+ #endif
+             if (g.psos[i].preloaded) { if (g.psos[i].preloaded == 2) g_pt.used++; g.psos[i].preloaded = 0; g_ld_pl_used++; }
+             LDW_ADD(RSX_PERF_W_PSO_FIND_T, gp_t3);
++            g_ld_await_src = g.psos[i].ahead ? 'A' : 'P';   /* R&C patch 7054: lookahead / earlier submission */
+             if (g.psos[i].ahead && !g_ld_ahead_active) { g.psos[i].ahead = 0; g_ld_ahead.used++; }   /* R&C patch 7050 */
+             if (g.psos[i].pending) return g_ld_ahead_active ? NULL : ld_apso_await(i);   /* RSX pass 57: wait, never skip; 7050: the lookahead only submits */
+             return g.psos[i].pso;
+@@ -10797,10 +10835,12 @@ static ID3D12PipelineState* get_pso(
+     g.psos[g.n_psos].pso = pso;
+     g.psos[g.n_psos].pending = (u8)apso_pending;   /* patch 2048 */
+     g.psos[g.n_psos].ahead = (u8)(g_ld_ahead_active != 0);   /* R&C patch 7050 */
++    { LARGE_INTEGER q; QueryPerformanceCounter(&q); g.psos[g.n_psos].t_sub = q.QuadPart; }   /* R&C patch 7054 */
+     g.n_psos++;
+     if (apso_pending) {
+         if (g_ld_ahead_active) return NULL;   /* R&C patch 7050: a lookahead draw only submits */
+         ld_ahead_scan();                      /* R&C patch 7050: queue the upcoming misses before waiting */
++        g_ld_await_src = 'M';                 /* R&C patch 7054: a miss the lookahead did not submit */
+         return ld_apso_await(g.n_psos - 1u);  /* RSX pass 57: the draw waits for its build */
+     }
+     return pso;

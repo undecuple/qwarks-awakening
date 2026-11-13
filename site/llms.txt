@@ -2,11 +2,13 @@
 
 > Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): the PS3 games recompiled into native Windows programs from your own copy.
 
-Status: early work, not playable yet. Version 0.2.1, a pre-release of
-2026-11-04: the source and a launcher preview for Windows. Tools of Destruction starts and can be played by hand from
-its first level, with known bugs, and has not been played through. In scripted runs of the current source it plays
-about 11 minutes of its first level without a crash, and Ratchet & Clank 1, 2 and 3 from the Collection reach
-their first levels.
+Status: early work, not playable yet. Version 0.3.0, a pre-release of
+2026-11-13: the source, and a launcher that builds the games from your own copy (Windows, not tried there yet).
+Tools of Destruction starts and can be played by hand from its first level, with known bugs, and has not been played
+through. In scripted runs of the source of 2026-11-10 it plays about 11 minutes of its first level without a crash,
+Quest for Booty reaches its ship deck, and Ratchet & Clank 1, 2 and 3 from the Collection reach their first
+levels, and A Crack in Time reaches its first level. Deadlocked HD builds, and a scripted new game plays its intro.
+No game is online yet (ONLINE.md).
 
 Qwark's Awakening is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
@@ -17,6 +19,7 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 - [Repository](https://github.com/undecuple/qwarks-awakening)
 - [Building from source](https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md)
 - [Roadmap](https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md)
+- [Online play](https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md)
 - [Requirements](https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md)
 - [Changelog](https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md)
 - [Licence and credits](https://github.com/undecuple/qwarks-awakening/blob/main/NOTICE.md)
@@ -25,12 +28,12 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 
 - Ratchet & Clank Future: Tools of Destruction (2007): first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet
 - Ratchet & Clank Future: Quest for Booty (2008): builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable
-- Ratchet & Clank Future: A Crack in Time (2009): builds (1.20 update); a scripted new game reaches its first save, then the screen goes black in most runs; not playable
+- Ratchet & Clank Future: A Crack in Time (2009): builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable
 - Ratchet & Clank: All 4 One (2011): builds (1.03 update); scripted menus reach the first level, then the game stops; not playable
 - Ratchet & Clank: Full Frontal Assault (2012): builds and installs its data (1.05 update); the screen stays black; not playable
 - Ratchet & Clank: Into the Nexus (2013): builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable
 - Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) (2012): each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable
-- Ratchet: Deadlocked HD (PS2 remaster) (2013): coming soon: a different engine; PPU code lifted, not built yet
+- Ratchet: Deadlocked HD (PS2 remaster) (2013): builds; a scripted new game plays its intro, then stops before the first level; not playable
 
 ## Reuse
 

@@ -1,0 +1,178 @@
+R&C patch 7051: the PSO preload key file records the GPU-fetch pipelines (load stalls, the RE notes s.30).
+KZ3 patch 2031 records each PSO the walker builds in <shader cache dir>\pso_keys.bin so the next session's preload
+recreates it before the walker asks. KZ3 2076 left out the GPU-fetch variant (packed payload mode 2), to be derived
+from the packed (mode 1) record by the template prewarm. With LD_VTX_GPU=1 (R&C's default, rc_settings.h) the walker
+never builds the mode 1 pipeline of a covered draw, so no mode 1 record exists, and the template prewarm runs only with
+LD_PSO_TEMPLATE: the GPU-fetch pipelines were never preloaded. ToD stall-cold (2026-11-10, exe 196c72c2): 181 PSOs
+built, 179 stored in the pipeline library, 20 keys in pso_keys.bin; stall-warm preloaded 20 and the walker awaited 161.
+- A mode 2 build is recorded with the new LD_PL_FLAG_VGPU (its own key, VS hash and layout); the preload worker passes
+  the record's packed mode to ld_pso_desc_fill (mode 2: one R32_UINT VGIDX input) and skips mode 2 records when
+  LD_VTX_GPU is off this session. LD_PL_VERSION 3 -> 4: older builds (RSX_TRANSLATOR_ID is 0 in R&C) must not read
+  mode 2 records as mode 1; a v3 file is discarded once with its pipeline library.
+- The record flags and the append move to libs/video/rsx_pso_keys_rec.h (pure C). The append was already per key
+  (open, write, close); it now reports a failed write. Host test port/rc/tests/run_pso_keys_rec_test.sh: flags, a
+  writer SIGKILLed after 1/7/50/333 keys keeps them all with no torn record, and a negative control (one buffered FILE
+  kept open) loses them on the same kill.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index d502173..7c73445 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -232,6 +232,7 @@ static uint8_t* ld_prompt_remap_cells(const uint8_t* cur, uint32_t w, uint32_t h
+ #include "rsx_pso_template.h"   /* patch 2071 */
+ #include "rsx_pace.h"           /* patch 2072 */
+ #include "rsx_pso_keys_hdr.h"   /* patch 2141: key file header with the translator id */
++#include "rsx_pso_keys_rec.h"   /* R&C patch 7051: record flags (GPU-fetch records) and the per-key append */
+ #include "rsx_tex_lru.h"        /* patch 2075 */
+ #include "rsx_gpupass.h"        /* patch 2086 */
+ #include "rsx_d3d12_device.h"   /* patch 2099: WARP fallback */
+@@ -8436,9 +8437,7 @@ static ID3DBlob* ld_pstat_disk_load(u32 stage, const char* source, u32 source_le
+  * turns the preload and the library off (recording stays on, so an A/B run still produces the key file).
+  * Recording is first-build-wins like the in-memory cache: the DSV format of a PSO follows the depth surface bound
+  * at its first build (apply_render_state's g.depth test), which the key does not include, so the record keeps it. */
+-#define LD_PL_FLAG_LAYOUT 1u
+-#define LD_PL_FLAG_PACKED 2u
+-#define LD_PL_FLAG_DEPTH  4u
++/* LD_PL_FLAG_LAYOUT/PACKED/DEPTH/VGPU: rsx_pso_keys_rec.h (R&C patch 7051) */
+ typedef struct {
+     u64 key, vs_hash, ps_hash;
+     u32 vs_len, ps_len, flags, layout_mask, layout_stride, layout_count;
+@@ -8539,27 +8538,22 @@ static void ld_pl_open(void)
+ /* Walker thread, after a successful build: append the record when the key is new. */
+ static void ld_pl_record(u64 key, const render_state_t* rs, const rsx_vertex_layout_plan* layout, int packed, int depth)
+ {
+-    if (packed == 2) return;   /* patch 2076: the GPU-fetch variant is derived from the packed record at prewarm */
++    /* R&C patch 7051: the GPU-fetch variant (packed 2) is recorded too, with LD_PL_FLAG_VGPU: KZ3 2076 left it to the
++     * template prewarm, which runs only with LD_PSO_TEMPLATE, so with GPU fetch on nothing was preloaded. */
+     if (!g_ld_pl.opened || !g_ld_pl.path[0] || !ld_pl_keyset_add(key)) return;
+     ld_pl_rec r; memset(&r, 0, sizeof r);
+     r.key = key; r.vs_hash = g_ld_pl_last_vs_hash; r.ps_hash = g_ld_pl_last_ps_hash;
+     r.vs_len = g_ld_pl_last_vs_len; r.ps_len = g_ld_pl_last_ps_len;
+-    r.flags = (layout ? LD_PL_FLAG_LAYOUT : 0u) | (layout && packed ? LD_PL_FLAG_PACKED : 0u) | (depth ? LD_PL_FLAG_DEPTH : 0u);
++    r.flags = ld_pl_rec_flags(layout != NULL, packed, depth);   /* R&C patch 7051 */
+     if (layout) {
+         r.layout_mask = layout->mask; r.layout_stride = layout->stride; r.layout_count = layout->count;
+         memcpy(r.attrs, layout->attrs, sizeof r.attrs);
+     }
+     r.rs = *rs;
+-    FILE* f = fopen(g_ld_pl.path, "ab");
+-    if (!f) return;
+-    fseek(f, 0, SEEK_END);   /* MSVCRT: an "a" stream reports position 0 until its first write */
+-    if (ftell(f) == 0) {
+-        ld_pl_hdr h = ld_pl_hdr_make((u32)sizeof(ld_pl_rec), (u32)sizeof(render_state_t), SHADER_DISK_CACHE_VERSION,
+-                                     RSX_TRANSLATOR_ID);   /* patch 2141 */
+-        fwrite(&h, sizeof h, 1, f);
+-    }
+-    fwrite(&r, sizeof r, 1, f);
+-    fclose(f);
++    /* opened, written and closed per key: a killed run keeps every earlier key (R&C patch 7051 host test) */
++    if (!ld_pl_append(g_ld_pl.path, &r, (u32)sizeof(ld_pl_rec), (u32)sizeof(render_state_t), SHADER_DISK_CACHE_VERSION,
++                      RSX_TRANSLATOR_ID))   /* patch 2141 */
++        fprintf(stderr, "[pso-preload] key %016llx not written to '%s'\n", (unsigned long long)key, g_ld_pl.path);
+ }
+ 
+ /* Worker threads: a disk cache file by name, verified by its header and the hash of the stored source. */
+@@ -8712,6 +8706,8 @@ static DWORD WINAPI ld_pl_worker(LPVOID arg)
+         const LONG i = InterlockedIncrement(&g_ld_pl.next) - 1;
+         if (i < 0 || (u32)i >= g_ld_pl.n_recs) break;
+         const ld_pl_rec* r = &g_ld_pl.recs[i];
++        const int pmode = ld_pl_rec_packed_mode(r->flags);   /* R&C patch 7051 */
++        if (pmode == 2 && !ld_vtx_gpu_on()) continue;   /* GPU fetch off this session: the walker never asks for it */
+         const LONGLONG tb = ld_pl_qpc();
+         ID3DBlob* vs = ld_pl_load_blob('V', r->vs_hash, r->vs_len);
+         ID3DBlob* ps = vs ? ld_pl_load_blob('P', r->ps_hash, r->ps_len) : NULL;
+@@ -8725,7 +8721,7 @@ static DWORD WINAPI ld_pl_worker(LPVOID arg)
+         D3D12_GRAPHICS_PIPELINE_STATE_DESC pd;
+         const int masked = (r->flags & LD_PL_FLAG_LAYOUT) != 0;
+         ld_pso_desc_fill(&pd, il, vs, ps, &r->rs, masked ? r->layout_count : RSX_DSP_NUM_VERTEX_ATTR, r->attrs,
+-                         masked, (r->flags & LD_PL_FLAG_PACKED) != 0, (r->flags & LD_PL_FLAG_DEPTH) != 0);
++                         masked, pmode, (r->flags & LD_PL_FLAG_DEPTH) != 0);
+         ID3D12PipelineState* pso = NULL;
+         int lib_hit = 0;
+         const LONGLONG tc = ld_pl_qpc();
+@@ -8791,6 +8787,7 @@ static void ld_pl_start(void)
+     fprintf(stderr, "[pso-preload] start: %u keys on file, library %s (%u bytes on disk), %d threads\n",
+             g_ld_pl.n_recs, g_ld_pl.lib ? "yes" : "no", (unsigned)g_ld_pl.lib_blob_size, nt);
+     if (!g_ld_pl.n_recs) { g_ld_pl.workers_left = 0; return; }
++    (void)ld_vtx_gpu_on();   /* R&C patch 7051: settled before the workers read it for GPU-fetch records */
+     for (int i = 0; i < nt; i++) {
+         g_ld_pl.threads[i] = CreateThread(NULL, 0, ld_pl_worker, NULL, 0, NULL);
+         if (!g_ld_pl.threads[i]) InterlockedDecrement(&g_ld_pl.workers_left);
+diff --git a/libs/video/rsx_pso_keys_hdr.h b/libs/video/rsx_pso_keys_hdr.h
+index 1e8b24c..bd8aa74 100644
+--- a/libs/video/rsx_pso_keys_hdr.h
++++ b/libs/video/rsx_pso_keys_hdr.h
+@@ -18,7 +18,8 @@
+ #endif
+ 
+ #define LD_PL_MAGIC   0x4C505350u   /* "PSPL" */
+-#define LD_PL_VERSION 3u   /* patch 2042: keys hash only the sampled texture units; 2141: translator id in the header */
++#define LD_PL_VERSION 4u   /* patch 2042: keys hash only the sampled texture units; 2141: translator id in the header;
++                              R&C 7051: GPU-fetch (mode 2) records, LD_PL_FLAG_VGPU (rsx_pso_keys_rec.h) */
+ 
+ typedef struct { uint32_t magic, version, rec_size, rs_size, cache_version, reserved, id_lo, id_hi; } ld_pl_hdr;
+ 
+diff --git a/pb/libs/video/rsx_pso_keys_rec.h b/libs/video/rsx_pso_keys_rec.h
+new file mode 100644
+index 0000000..84de293
+--- /dev/null
++++ b/libs/video/rsx_pso_keys_rec.h
+@@ -0,0 +1,58 @@
++/* R&C patch 7051: the PSO preload key file's record flags and its append (pso_keys.bin, KZ3 patches 2031/2141).
++ *
++ * The walker records every PSO it builds so the next session's preload can recreate it before the walker asks.
++ * KZ3 patch 2076 left the GPU-fetch variant (packed payload mode 2, LD_VTX_GPU=1) out of the file, to be derived from
++ * the packed (mode 1) record by the pipeline-template prewarm. With GPU fetch on, the walker never builds the mode 1
++ * pipeline of a covered draw, so no mode 1 record is ever written, and the template prewarm runs only with
++ * LD_PSO_TEMPLATE: the GPU-fetch pipelines (R&C's default, rc_settings.h) were never preloaded. ToD stall-cold
++ * (2026-11-10): 181 PSOs built, 179 stored in the pipeline library, 20 keys in pso_keys.bin; the warm run preloaded
++ * 20 and awaited 161 in the walker. A mode 2 record now carries LD_PL_FLAG_VGPU and its own key, VS hash and layout,
++ * and the preload creates it like any other record.
++ *
++ * The append opens, writes and closes the file once per new key, so a run killed at any point has every key it
++ * built before the last one on disk (host test port/rc/tests/run_pso_keys_rec_test.sh kills a writer midway).
++ * Pure C. */
++#ifndef RSX_PSO_KEYS_REC_H
++#define RSX_PSO_KEYS_REC_H
++#include <stdint.h>
++#include <stdio.h>
++#include "rsx_pso_keys_hdr.h"
++
++#define LD_PL_FLAG_LAYOUT 1u
++#define LD_PL_FLAG_PACKED 2u
++#define LD_PL_FLAG_DEPTH  4u
++#define LD_PL_FLAG_VGPU   8u   /* R&C patch 7051: packed payload mode 2 (GPU vertex fetch, KZ3 patch 2076) */
++
++/* packed: the walker's packed payload mode (0 float4 slots, 1 packed offsets, 2 GPU fetch); it needs a layout. */
++static inline uint32_t ld_pl_rec_flags(int has_layout, int packed, int depth)
++{
++    return (has_layout ? LD_PL_FLAG_LAYOUT : 0u) | (has_layout && packed ? LD_PL_FLAG_PACKED : 0u) |
++           (has_layout && packed == 2 ? LD_PL_FLAG_VGPU : 0u) | (depth ? LD_PL_FLAG_DEPTH : 0u);
++}
++
++/* The packed payload mode a record was built with (what ld_pso_desc_fill takes). */
++static inline int ld_pl_rec_packed_mode(uint32_t flags)
++{
++    if (!(flags & LD_PL_FLAG_LAYOUT) || !(flags & LD_PL_FLAG_PACKED)) return 0;
++    return (flags & LD_PL_FLAG_VGPU) ? 2 : 1;
++}
++
++/* Append one record to the key file, writing the header first when the file is empty. The file is closed before
++ * returning, so the record is in the operating system's hands even if the process is killed right after.
++ * Returns 1 when the record was written whole. */
++static inline int ld_pl_append(const char* path, const void* rec, uint32_t rec_size, uint32_t rs_size,
++                               uint32_t cache_version, uint64_t translator_id)
++{
++    FILE* f = fopen(path, "ab");
++    if (!f) return 0;
++    int ok = 1;
++    fseek(f, 0, SEEK_END);   /* MSVCRT: an "a" stream reports position 0 until its first write */
++    if (ftell(f) == 0) {
++        const ld_pl_hdr h = ld_pl_hdr_make(rec_size, rs_size, cache_version, translator_id);
++        ok = fwrite(&h, sizeof h, 1, f) == 1;
++    }
++    if (ok) ok = fwrite(rec, rec_size, 1, f) == 1;
++    if (fclose(f) != 0) ok = 0;
++    return ok;
++}
++#endif

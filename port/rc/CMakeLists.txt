@@ -10,7 +10,7 @@ if(NOT RC_EXE)
     set(RC_EXE "${RC_GAME}")
 endif()
 project(rc_${RC_GAME}
-    VERSION 0.2.1
+    VERSION 0.3.0
     LANGUAGES C CXX
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )
@@ -228,6 +228,20 @@ if(EXISTS "${RC_CATALOG}")
                         string(JSON RC_GAME_TITLE_ID GET "${RC_CATALOG_JSON}" ${i} title_ids disc ${reg} 0)
                     endif()
                 endforeach()
+            endif()
+            # a digital-only title (dlhd: title_ids.disc is {}): the US digital id, else the first region's first id
+            if(RC_GAME_TITLE_ID STREQUAL "")
+                string(JSON ndreg ERROR_VARIABLE derr LENGTH "${RC_CATALOG_JSON}" ${i} title_ids digital)
+                if(NOT derr AND ndreg GREATER 0)
+                    math(EXPR ndreg1 "${ndreg} - 1")
+                    foreach(r RANGE ${ndreg1})
+                        string(JSON reg MEMBER "${RC_CATALOG_JSON}" ${i} title_ids digital ${r})
+                        string(JSON nid LENGTH "${RC_CATALOG_JSON}" ${i} title_ids digital ${reg})
+                        if(nid GREATER 0 AND (RC_GAME_TITLE_ID STREQUAL "" OR reg STREQUAL "US"))
+                            string(JSON RC_GAME_TITLE_ID GET "${RC_CATALOG_JSON}" ${i} title_ids digital ${reg} 0)
+                        endif()
+                    endforeach()
+                endif()
             endif()
             string(JSON utype TYPE "${RC_CATALOG_JSON}" ${i} update)
             if(utype STREQUAL "OBJECT")

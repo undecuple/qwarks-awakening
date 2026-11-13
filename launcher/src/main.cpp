@@ -1,7 +1,9 @@
 // Qwark's Awakening launcher, phase 3 MVP (UI only). Four screens: Library, Game details, Add game (drawer), Settings.
 // SDL3 + Dear ImGui (SDL3 + SDLRenderer3 backends). No game art is embedded or fetched: tiles are drawn procedurally
 // unless the library entry points at the player's own PNG files.
-// TEMP marks every stub: nothing here talks to the build engine yet (the Build button runs a fake 6 s build).
+// Build and Play run the setup engine (tools/release/catalog.py build / play, which runs firstrun.py) as a child
+// process, one at a time; its LOG / PROGRESS / REASON / RESULT / STARTED / EXITED lines drive the progress bar, the
+// stage words and the Details page's log. TEMP still marks the stubs left (Open saves, Remove build, the drawer's checks).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <atomic>
@@ -22,6 +24,30 @@
 #include "imgui_impl_sdlrenderer3.h"
 #include "model.h"
 #include "theme_tokens.h"
+
+// Launcher phase 4 (CMakeLists.txt, from kit.json): the build kit this launcher accepts and the GitHub addresses it may
+// reach, each only after the player's click or opt-in (public/README.md "What goes online"). Empty = a developer build.
+#ifndef LAUNCHER_KIT_SHA256
+#define LAUNCHER_KIT_SHA256 ""
+#endif
+#ifndef LAUNCHER_KIT_URL
+#define LAUNCHER_KIT_URL ""
+#endif
+#ifndef LAUNCHER_KIT_RELEASE
+#define LAUNCHER_KIT_RELEASE ""
+#endif
+#ifndef LAUNCHER_KIT_BYTES
+#define LAUNCHER_KIT_BYTES 0LL
+#endif
+#ifndef LAUNCHER_KIT_UNPACKED
+#define LAUNCHER_KIT_UNPACKED 0LL
+#endif
+#ifndef LAUNCHER_REPO_API
+#define LAUNCHER_REPO_API ""
+#endif
+#ifndef LAUNCHER_SYMBOLS_URL
+#define LAUNCHER_SYMBOLS_URL ""
+#endif
 
 // ---------------------------------------------------------------------------------------------------------------
 // Colours: the token table in theme_tokens.h, generated from data/theme.json by tools/release/theme_tokens.py
@@ -50,12 +76,44 @@ struct Engine {
     std::atomic<bool> busy{false}, done{false};
     std::mutex m; std::string key, output; int rc = 0;     // key = the row that asked ("g|id|slot" or "l|key"); written by the thread, read after done
 };
-struct Job { int game = -1; float t = 0; };   // TEMP: the fake build
+// The running build or game (the engine's `build` / `play`, streamed line by line on a worker thread). One at a time.
+struct Task {
+    std::mutex m;                            // guards everything below except the atomics
+    std::atomic<bool> running{false}, finished{false};
+    std::string kind, game, title;           // kind "build" | "play"; game = the id asked for (a Collection builds its games in turn)
+    std::string step, curGame, logPath;      // PROGRESS name=, GAME id= (Collection), LOG path=
+    std::vector<std::string> lines, reasons; // the output without PROGRESS lines (capped), and the REASON lines
+    float pct = 0.f;
+    int result = -1;                         // RESULT ok=0|1, -1 = none yet
+    int exitCode = 0; bool exited = false;   // play: EXITED code=
+    int secs = 0, procRc = 0; bool cancelled = false, stopAsked = false;
+    bool replay = false;                     // screenshots: lines fed from a file, no process
+};
 // Display and control settings as the engine's get-settings reports them (values as written in the files).
 struct Settings {
     bool loaded = false, loading = false; std::string err, sharedFolder;
     std::map<std::string, std::string> defaults, shared;                   // "display.mode" -> "borderless"
     std::map<std::string, std::map<std::string, std::string>> games;       // game id -> its own keys only
+};
+// The shared online settings (catalog.py get-online / set-online, docs/ONLINE.md): one method at a time.
+struct OnlinePreset { std::string name, address, player; };
+struct Online {
+    bool loaded = false, loading = false; std::string err, folder, method = "off", server, name, active;
+    std::vector<OnlinePreset> presets;
+    char serverBuf[256] = "", nameBuf[32] = "", pNameBuf[40] = "", pAddrBuf[256] = "";
+};
+// kit.py jobs (one at a time, off the UI thread): kit status / verify, launcher symbols, the release check. Only
+// status and verify stay on this PC; the other two connect, and only after a click or the opt-in switch.
+struct Job {
+    std::atomic<bool> busy{false}, done{false};
+    std::mutex m; std::string key, output; int rc = 0;
+};
+struct KitInfo {
+    std::string state = "unknown", release;   // kit.py status: ready | missing | other | damaged | none (developer build)
+    std::string root, url, api, symbolsUrl;   // install root (the exe's folder), and the addresses (compiled in; tests override)
+    bool allowLocal = false;                  // --kit-allow-local: file:// and 127.0.0.1 for tests (kit.py --allow-local)
+    bool open = false;                        // the "Download the build kit?" dialog
+    std::string pendingGame;                  // the Build that asked for the kit: started once the kit is in place
 };
 
 struct App {
@@ -81,19 +139,31 @@ struct App {
     char discBuf[512] = "", updBuf[512] = "", buildBuf[512] = "";
     // settings (the cover art switch is TEMP: kept in memory only; locations live in library.json)
     char buildFolder[512] = ""; bool artFetch = false;
-    Toast toast; Dialog dlg; Job job; Engine eng;
+    Toast toast; Dialog dlg; Task task; Engine eng;
     Settings set; std::string dataDir;       // display/control settings (engine get-settings); --data DIR for the engine
+    Online online; std::string sharedDir;    // shared online settings; --shared-dir DIR for the engine (tests, screenshots)
+    Job kitJob; KitInfo kit;
+    std::map<std::string, std::pair<std::string, unsigned>> kitMsg;   // a job's last answer, by its key (row message, colour)
+    std::string newRelease, newReleaseUrl;   // the release check found a newer release
     std::vector<std::string> engineCmd;      // argv prefix of the engine command; the verb and its arguments are appended
     std::string busyKey;                     // the row the running engine command belongs to
     std::string errKey, errText;             // last engine failure, shown on the row that asked
     float shotScroll = -1.f;                 // screenshots: scroll the body to this many px (scaled)
     bool shotMode = false; bool firstFrame = true;
+    bool liveShot = false; int liveWait = 0;  // --live SECONDS: a shot whose --keys may start a real build / game; the shot waits for it (end-to-end checks)
     std::map<SDL_JoystickID, SDL_Gamepad*> pads;
     float S(float v) const { return v * scale; }
 };
 static App A;
-static const float kBuildSeconds = 6.f;   // TEMP: fake build length
 static const char* kStages[5] = {"Checking files", "Preparing game files", "Recompiling", "Building", "Finishing"};
+// firstrun.py's step names -> the five stage words the player sees
+static int StageOf(const std::string& step) {
+    if (step.empty() || step == "check" || step == "toolkit") return 0;
+    if (step == "extract") return 1;
+    if (step == "load" || step == "ppu-lift" || step == "spu-lift") return 2;
+    if (step == "configure" || step == "compile") return 3;
+    return 4;
+}
 
 static Game* Sel() { return A.sel >= 0 && A.sel < (int)A.lib.games.size() ? &A.lib.games[A.sel] : nullptr; }
 static void Say(const std::string& t) { A.toast.text = t; A.toast.until = ImGui::GetTime() + 4.0; }
@@ -109,6 +179,15 @@ static void GoPage(App::Screen sc) {
 static bool Playable(const Game& g) { return g.state == State::Built || g.state == State::PortUpdated; }
 static bool InReady(const Game& g) { return g.state == State::ReadyToBuild || g.state == State::Building || Playable(g); }
 
+static const char* PlayWord(const std::string& p, unsigned& col);
+static std::string PlayDisclaimer(const Game& g);
+// the engine's "Update available: rebuild (what changed)" as a line under the state word, which already says it.
+static std::string ChangedWhy(const Game& g) {
+    const std::string p = "Update available: rebuild (";
+    if (g.reason.compare(0, p.size(), p) == 0 && g.reason.back() == ')')
+        return "Changed since this build: " + g.reason.substr(p.size(), g.reason.size() - p.size() - 1) + ".";
+    return g.reason;
+}
 static const char* StateWord(const Game& g, std::string& tmp) {
     switch (g.state) {
         case State::NotAdded: return "Not added";
@@ -117,7 +196,7 @@ static const char* StateWord(const Game& g, std::string& tmp) {
         case State::ReadyToBuild: return "Ready to build";
         case State::Building: return "Building";
         case State::Built: return "Ready";
-        case State::PortUpdated: return "Port updated: rebuild";
+        case State::PortUpdated: return "Update available: rebuild";   // only when this game's build inputs changed
         case State::NeedsAttention: return "Needs attention";
     }
     return "";
@@ -632,22 +711,7 @@ static void Panel(ImVec2 p0, ImVec2 p1, unsigned fill = T->cardBg) {
 static std::string Esc(const std::string& s) { return s.empty() ? "none recorded" : s; }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Fake build and add drawer
-static void StartBuild(int gi) {   // TEMP: no engine yet
-    if (A.job.game >= 0) { Say("A build is already running"); return; }
-    A.job.game = gi; A.job.t = 0;
-    A.lib.games[gi].state = State::Building;
-}
-static void TickBuild(float dt) {
-    if (A.job.game < 0) return;
-    A.job.t += dt;
-    if (A.job.t < kBuildSeconds) return;
-    Game& g = A.lib.games[A.job.game];
-    g.state = State::Built; g.colourTarget = 1.f; g.hasBuild = true; g.buildTemp = true;
-    g.exe = "(TEMP: fake build, no exe)"; g.builtPortVersion = A.lib.portVersion; g.builtAt = "just now"; g.exeSha = "";
-    Say(g.title + " is ready");
-    A.job.game = -1;
-}
+// Add drawer
 static void OpenAdd(const Game& g) {
     A.addOpen = true; A.addJustOpened = true;
     snprintf(A.discBuf, sizeof A.discBuf, "%s", g.disc.c_str());
@@ -715,10 +779,10 @@ static std::vector<std::string> DefaultEngine(const std::string& dir) {
 #endif
     return {"python3", "tools/release/catalog.py"};
 }
-static void EngineThread(std::vector<std::string> argv) {
+static int RunCapture(const std::vector<std::string>& argv, std::string& out) {   // the whole output, then the exit code
     std::vector<const char*> a; for (auto& x : argv) a.push_back(x.c_str());
     a.push_back(nullptr);
-    std::string out; int rc = -1;
+    int rc = -1;
     SDL_PropertiesID pr = SDL_CreateProperties();
     SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)a.data());
     SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
@@ -733,8 +797,101 @@ static void EngineThread(std::vector<std::string> argv) {
         if (d) { out.assign(d, n); SDL_free(d); }
         rc = code; SDL_DestroyProcess(p);
     }
+    return rc;
+}
+static void EngineThread(std::vector<std::string> argv) {
+    std::string out; int rc = RunCapture(argv, out);
     { std::lock_guard<std::mutex> l(A.eng.m); A.eng.output = out; A.eng.rc = rc; }
     A.eng.done = true;
+}
+// kit.py sits beside catalog.py: the engine command with its script swapped (the bundled Python, or --engine's).
+static std::vector<std::string> KitCmd() {
+    std::vector<std::string> a = A.engineCmd;
+    for (auto it = a.rbegin(); it != a.rend(); ++it) {
+        size_t p = it->rfind("catalog.py");
+        if (p != std::string::npos && p + 10 == it->size()) { it->replace(p, 10, "kit.py"); return a; }
+    }
+    a.push_back("tools/release/kit.py");   // an --engine without catalog.py: ASSUMPTION it is a Python interpreter
+    return a;
+}
+static void JobThread(std::vector<std::string> argv) {
+    std::string out; int rc = RunCapture(argv, out);
+    { std::lock_guard<std::mutex> l(A.kitJob.m); A.kitJob.output = out; A.kitJob.rc = rc; }
+    A.kitJob.done = true;
+}
+static bool JobBusy(const std::string& key = "") { return A.kitJob.busy.load() && (key.empty() || A.kitJob.key == key); }
+static bool RunJob(const std::string& key, const std::vector<std::string>& args) {
+    if (A.kitJob.busy.exchange(true)) { Say("The launcher is still busy with the last check"); return false; }
+    A.kitJob.done = false; A.kitJob.key = key; A.kitMsg.erase(key);
+    std::vector<std::string> argv = KitCmd();
+    argv.insert(argv.end(), args.begin(), args.end());
+    if (A.shotMode) { A.kitJob.busy = false; return false; }   // screenshots never start a process
+    std::thread(JobThread, argv).detach();
+    return true;
+}
+static std::string LastLine(const std::string& out, const char* prefix) {   // the last "PREFIX ..." line's text
+    std::string best; size_t s = 0, n = strlen(prefix);
+    while (s < out.size()) {
+        size_t e = out.find('\n', s); if (e == std::string::npos) e = out.size();
+        std::string ln = out.substr(s, e - s); while (!ln.empty() && ln.back() == '\r') ln.pop_back();
+        if (ln.compare(0, n, prefix) == 0) best = ln.substr(n);
+        s = e + 1;
+    }
+    return best;
+}
+static void KitStatus() {
+    if (!*LAUNCHER_KIT_SHA256) { A.kit.state = "none"; return; }
+    RunJob("kit|status", {"status", "--root", A.kit.root, "--expect", LAUNCHER_KIT_SHA256});
+}
+static void CheckRelease(bool quiet) {
+    if (A.kit.api.empty()) { A.kitMsg["upd|check"] = {"This launcher was built without a release address.", T->dimFg}; return; }
+    std::vector<std::string> a = {"check-release", "--api", A.kit.api, "--current", LAUNCHER_VERSION};
+    if (A.kit.allowLocal) a.push_back("--allow-local");
+    RunJob(quiet ? "upd|auto" : "upd|check", a);
+}
+static std::string LauncherExe();
+static void GetSymbols() {
+    if (A.kit.symbolsUrl.empty()) { A.kitMsg["sym|get"] = {"This launcher was built without a release address.", T->dimFg}; return; }
+    std::vector<std::string> a = {"symbols", "--exe", LauncherExe(), "--url", A.kit.symbolsUrl};
+    if (A.kit.allowLocal) a.push_back("--allow-local");
+    RunJob("sym|get", a);
+}
+static void ReloadLibrary();
+static void StartBuild(const Game& g);
+static void PumpJob() {
+    if (!A.kitJob.done.exchange(false)) return;
+    std::string key, out; int rc;
+    { std::lock_guard<std::mutex> l(A.kitJob.m); key = A.kitJob.key; out = A.kitJob.output; rc = A.kitJob.rc; }
+    A.kitJob.busy = false;
+    std::string reason = LastLine(out, "REASON ");
+    Json st; std::string err; bool hasSt = Json::parse(LastLine(out, "STATUS "), st, err) && !st.isNull();
+    if (key == "kit|status" && A.lib.updateCheck == "on" && !A.shotMode) {   // the opt-in release check waits for the kit status
+        A.kitJob.done = false; CheckRelease(true);
+    }
+    if (key == "kit|status" || key == "kit|verify") {
+        if (hasSt) { A.kit.state = st["state"].str("missing"); A.kit.release = st["release"].str(); }
+        else if (key == "kit|status") A.kit.state = "missing";
+        if (key == "kit|verify")
+            A.kitMsg[key] = rc == 0 ? std::make_pair(std::string("Every file of the build kit matches its list."), T->success)
+                                    : std::make_pair(reason.empty() ? std::string("Files of the build kit are missing or changed.") : reason, T->destructive);
+        if (A.kit.state == "ready" && A.kit.open && !A.kit.pendingGame.empty() && !A.task.running.load()) {   // the kit was there after all
+            A.kit.open = false;
+            for (auto& g : A.lib.games) { if (g.id == A.kit.pendingGame) StartBuild(g); for (auto& c : g.children) if (c.id == A.kit.pendingGame) StartBuild(c); }
+            A.kit.pendingGame.clear();
+        }
+    } else if (key == "upd|check" || key == "upd|auto") {
+        if (rc == 0 && hasSt) {
+            std::string latest = st["latest"].str();
+            if (st["newer"].boolean()) {
+                A.newRelease = latest; A.newReleaseUrl = st["url"].str();
+                A.kitMsg["upd|check"] = {"Release " + latest + " is out (you have " + LAUNCHER_VERSION + "). Download it from the release page.", T->accent};
+                if (key == "upd|auto") Say("Release " + latest + " is out: Settings > Updates has the link");
+            } else A.kitMsg["upd|check"] = {latest.empty() ? std::string("No release is listed yet.") : "You have the newest release (" + latest + ").", T->success};
+        } else if (key == "upd|check") A.kitMsg[key] = {reason.empty() ? std::string("The release list could not be read.") : reason, T->destructive};
+    } else if (key == "sym|get") {
+        A.kitMsg[key] = rc == 0 ? std::make_pair(std::string("The launcher's debug information is next to it now."), T->success)
+                                : std::make_pair(reason.empty() ? std::string("The debug information could not be fetched.") : reason, T->destructive);
+    }
 }
 static bool EngineBusy() { return A.eng.busy.load(); }
 static void RunEngine(const std::string& key, const std::vector<std::string>& args) {
@@ -770,7 +927,7 @@ static void SyncBuildFolder() {
     std::string b = !A.lib.loc.build.empty() ? A.lib.loc.build : std::string(base ? base : "") + "games";
     snprintf(A.buildFolder, sizeof A.buildFolder, "%s", b.c_str());
 }
-// Reloads library.json after the engine rewrote it; runtime state (art, the fake build) is carried over by game id.
+// Reloads library.json after the engine rewrote it; runtime state (art) is carried over by game id.
 static void ReloadLibrary() {
     Library nl = loadLibrary(A.libPath);
     if (!nl.error.empty()) { Say("Could not reload the library: " + nl.error); return; }
@@ -778,8 +935,7 @@ static void ReloadLibrary() {
     for (auto& g : nl.games) {
         g.colourTarget = LitState(g) ? 1.f : 0.f; g.colour = g.colourTarget;
         for (auto& o : A.lib.games) if (o.id == g.id) {
-            g.art = o.art; o.art = ArtTex(); g.buildTemp = o.buildTemp;
-            if (o.buildTemp) { g.state = o.state; g.hasBuild = true; g.exe = o.exe; g.builtAt = o.builtAt; g.builtPortVersion = o.builtPortVersion; g.colourTarget = g.colour = o.colourTarget; }
+            g.art = o.art; o.art = ArtTex();
         }
     }
     A.lib = std::move(nl);
@@ -788,14 +944,45 @@ static void ReloadLibrary() {
 }
 static bool ParseSettings(const std::string& out);
 static void LoadSettings();
+// Online settings: the engine's get-online JSON. keepInputs = after a change, the text fields keep what was typed.
+static bool ParseOnline(const std::string& out, bool keepInputs) {
+    size_t b = out.find('{'); if (b == std::string::npos) return false;
+    Json j; std::string err;
+    if (!Json::parse(out.substr(b), j, err)) return false;
+    Online& o = A.online;
+    o.loaded = true; o.loading = false; o.err.clear();
+    o.folder = j["folder"].str(); o.method = j["method"].str("off");
+    o.server = j["repsn"]["server"].str(); o.name = j["repsn"]["name"].str(); o.active = j["community"]["active"].str();
+    o.presets.clear();
+    for (auto& p : j["community"]["presets"].a) o.presets.push_back({p["name"].str(), p["address"].str(), p["player_name"].str()});
+    if (!keepInputs || !*o.serverBuf) snprintf(o.serverBuf, sizeof o.serverBuf, "%s", o.server.c_str());
+    if (!keepInputs || !*o.nameBuf) snprintf(o.nameBuf, sizeof o.nameBuf, "%s", o.name.c_str());
+    return true;
+}
+static void OnlineArgs(std::vector<std::string>& a) { if (!A.sharedDir.empty()) { a.push_back("--shared-dir"); a.push_back(A.sharedDir); } }
+static void LoadOnline() {
+    std::vector<std::string> a = {"get-online"}; OnlineArgs(a);
+    A.online.loading = true; RunEngine("o|load", a);
+}
+static void SetOnline(const std::string& rowKey, std::vector<std::string> args) {
+    std::vector<std::string> a = {"set-online"}; OnlineArgs(a);
+    a.insert(a.end(), args.begin(), args.end());
+    RunEngine(rowKey, a);
+}
 static void PumpEngine() {
     if (!A.eng.done.exchange(false)) return;
     std::string key, out; int rc;
     { std::lock_guard<std::mutex> l(A.eng.m); key = A.eng.key; out = A.eng.output; rc = A.eng.rc; }
     A.eng.busy = false; A.busyKey.clear();
     bool settings = key.compare(0, 2, "s|") == 0;   // get-settings / set-setting: the reply is the settings, not library.json
+    bool online = key.compare(0, 2, "o|") == 0;     // get-online / set-online: the reply is the shared online settings
     if (rc == 0 && settings) {
         if (!ParseSettings(out)) { A.set.loading = false; A.set.err = "The engine's answer could not be read."; }
+        return;
+    }
+    if (rc == 0 && online) {
+        if (!ParseOnline(out, key != "o|load")) { A.online.loading = false; A.online.err = "The engine's answer could not be read."; }
+        else if (key == "o|add") A.online.pNameBuf[0] = A.online.pAddrBuf[0] = 0;   // added: the fields are free again
         return;
     }
     if (rc == 0) { ReloadLibrary(); return; }
@@ -805,6 +992,7 @@ static void PumpEngine() {
     A.errText = out.empty() ? "The engine failed without a message." : (rc == 2 || nl == std::string::npos ? out : out.substr(nl + 1));   // exit 2 = the engine's own message
     if (key == "s|load") { A.set.loading = false; A.set.err = A.errText; }
     else if (settings) LoadSettings();   // a refused change: show the files as they are again
+    else if (key == "o|load") { A.online.loading = false; A.online.err = A.errText; }
 }
 
 // Dialog results for engine actions: tag "ov|<game>|<slot>" or "loc|<key>|<mode>".
@@ -822,6 +1010,153 @@ static void PumpDialog() {
     char* dst = field == 0 ? A.discBuf : field == 1 ? A.updBuf : field == 2 ? A.buildBuf : nullptr;
     if (dst) snprintf(dst, 512, "%s", path.c_str());
 }
+// ---------------------------------------------------------------------------------------------------------------
+// Build and Play: the engine's `build --library F --game ID --stop-file S` and `play --library F --game ID`, one at a
+// time, streamed line by line. Cancel = the stop file firstrun.py watches (it ends the running tool's process tree and
+// leaves that step unmarked, so the next Build resumes there).
+static const size_t kTaskLines = 3000;
+static std::string StopFile() { return FolderOf(A.libPath) + "/.build.stop"; }
+static std::string Field(const std::string& line, const char* key) {   // "k=v" in a space-separated line; the last key may hold spaces (LOG path=)
+    std::string k = std::string(key) + "=";
+    size_t p = line.find(" " + k); if (p == std::string::npos) { if (line.compare(0, k.size(), k) != 0) return ""; p = 0; } else p += 1;
+    p += k.size();
+    if (std::string(key) == "path") return line.substr(p);
+    size_t e = line.find(' ', p);
+    return line.substr(p, e == std::string::npos ? std::string::npos : e - p);
+}
+static void TaskLine(const std::string& raw) {
+    std::string line = raw; while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+    Task& t = A.task;
+    std::lock_guard<std::mutex> l(t.m);
+    if (line.compare(0, 9, "PROGRESS ") == 0) { t.step = Field(line, "name"); t.pct = (float)atof(Field(line, "pct").c_str()); return; }
+    if (line.compare(0, 9, "LOG path=") == 0) t.logPath = line.substr(9);
+    else if (line.compare(0, 7, "REASON ") == 0) t.reasons.push_back(line.substr(7));
+    else if (line.compare(0, 7, "RESULT ") == 0) { t.result = Field(line, "ok") == "1" ? 1 : 0; t.cancelled = Field(line, "step") == "cancelled"; }
+    else if (line.compare(0, 5, "GAME ") == 0) { t.curGame = Field(line, "id"); t.step.clear(); t.pct = 0; }
+    else if (line.compare(0, 7, "EXITED ") == 0) { t.exited = true; t.exitCode = atoi(Field(line, "code").c_str()); t.secs = atoi(Field(line, "seconds").c_str()); }
+    t.lines.push_back(line);
+    if (t.lines.size() > kTaskLines) t.lines.erase(t.lines.begin(), t.lines.begin() + (t.lines.size() - kTaskLines));
+}
+static void TaskThread(std::vector<std::string> argv) {
+    std::vector<const char*> a; for (auto& x : argv) a.push_back(x.c_str());
+    a.push_back(nullptr);
+    SDL_PropertiesID pr = SDL_CreateProperties();
+    SDL_SetPointerProperty(pr, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)a.data());
+    SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(pr, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+    SDL_SetBooleanProperty(pr, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
+    SDL_Process* p = SDL_CreateProcessWithProperties(pr);
+    SDL_DestroyProperties(pr);
+    int rc = -1;
+    if (!p) TaskLine(std::string("REASON The launcher could not start its setup engine (") + SDL_GetError() + ").");
+    else {
+        SDL_IOStream* io = SDL_GetProcessOutput(p);
+        std::string buf; char chunk[4096];
+        while (io) {
+            size_t n = SDL_ReadIO(io, chunk, sizeof chunk);
+            if (n == 0) { if (SDL_GetIOStatus(io) == SDL_IO_STATUS_NOT_READY) { SDL_Delay(20); continue; } break; }
+            buf.append(chunk, n);
+            size_t nl;
+            while ((nl = buf.find('\n')) != std::string::npos) { TaskLine(buf.substr(0, nl)); buf.erase(0, nl + 1); }
+        }
+        if (!buf.empty()) TaskLine(buf);
+        SDL_WaitProcess(p, true, &rc);
+        SDL_DestroyProcess(p);
+    }
+    { std::lock_guard<std::mutex> l(A.task.m); A.task.procRc = rc; }
+    A.task.finished = true;
+}
+static bool TaskRunning() { return A.task.running.load(); }
+static bool BuildingGame(const Game& g) {   // this entry (or a game inside it) is the one being built
+    if (!TaskRunning() || A.task.kind != "build") return false;
+    if (A.task.game == g.id) return true;
+    std::lock_guard<std::mutex> l(A.task.m);
+    return !A.task.curGame.empty() && A.task.curGame == g.id;
+}
+// A release launcher builds only with its build kit in place (kit.py status "ready"); otherwise Build opens the kit
+// dialog, which downloads nothing until the player chooses Download. A developer build (no kit hash) builds as before.
+static bool KitNeeded() { return *LAUNCHER_KIT_SHA256 && A.kit.state != "ready" && A.kit.state != "none"; }
+static void StartTask(const std::string& kind, const Game& g) {
+    if (kind == "build" && KitNeeded()) {
+        A.kit.open = true; A.kit.pendingGame = g.id;
+        if (A.kit.state == "unknown" && !JobBusy()) KitStatus();
+        return;
+    }
+    if (A.task.running.exchange(true)) { Say(A.task.kind == "build" ? "A build is running; one at a time" : A.task.kind == "kit" ? "The build kit is downloading" : "A game is running"); return; }
+    {
+        std::lock_guard<std::mutex> l(A.task.m);
+        A.task.kind = kind; A.task.game = g.id; A.task.title = g.title; A.task.step.clear(); A.task.curGame.clear();
+        A.task.logPath.clear(); A.task.lines.clear(); A.task.reasons.clear(); A.task.pct = 0; A.task.result = -1;
+        A.task.exited = false; A.task.exitCode = 0; A.task.secs = 0; A.task.procRc = 0; A.task.cancelled = false; A.task.stopAsked = false;
+        A.task.replay = false;
+    }
+    A.task.finished = false;
+    std::vector<std::string> argv = A.engineCmd;
+    if (kind == "build") {
+        for (const char* x : {"build", "--library"}) argv.push_back(x);
+        argv.push_back(A.libPath); argv.push_back("--game"); argv.push_back(g.id); argv.push_back("--stop-file"); argv.push_back(StopFile());
+        SDL_RemovePath(StopFile().c_str());
+    } else if (kind == "kit") {   // the player chose Download in the kit dialog
+        argv = KitCmd();
+        for (const std::string& x : {std::string("fetch"), std::string("--root"), A.kit.root, std::string("--expect"), std::string(LAUNCHER_KIT_SHA256),
+                                     std::string("--url"), A.kit.url, std::string("--stop-file"), StopFile()}) argv.push_back(x);
+        if (A.kit.allowLocal) argv.push_back("--allow-local");
+        SDL_RemovePath(StopFile().c_str());
+    } else {
+        for (const char* x : {"play", "--library"}) argv.push_back(x);
+        argv.push_back(A.libPath); argv.push_back("--game"); argv.push_back(g.id);
+    }
+    if (A.shotMode && !A.liveShot) { A.task.running = false; return; }   // screenshots never start a process (unless --live)
+    std::thread(TaskThread, argv).detach();
+}
+static void StartBuild(const Game& g) { StartTask("build", g); }
+static void StartPlay(const Game& g) { StartTask("play", g); }
+static void CancelBuild() {   // a build or the kit download: both watch the stop file
+    if (!TaskRunning() || (A.task.kind != "build" && A.task.kind != "kit")) return;
+    SDL_IOStream* f = SDL_IOFromFile(StopFile().c_str(), "w");
+    if (f) SDL_CloseIO(f);
+    std::lock_guard<std::mutex> l(A.task.m); A.task.stopAsked = true;
+}
+static void PumpTask() {
+    if (A.task.replay || !A.task.finished.exchange(false)) return;
+    A.task.running = false;
+    std::string kind, title, reason; int result, code; bool exited, cancelled;
+    { std::lock_guard<std::mutex> l(A.task.m); kind = A.task.kind; title = A.task.title; result = A.task.result; code = A.task.exitCode;
+      exited = A.task.exited; cancelled = A.task.cancelled; reason = A.task.reasons.empty() ? "" : A.task.reasons[0]; }
+    if (kind == "kit") {   // the dialog shows a failure; a kit in place starts the Build that asked for it
+        if (result == 1) {
+            A.kit.state = "ready"; A.kit.release = LAUNCHER_KIT_RELEASE; A.kit.open = false;
+            Say("The build kit is in place");
+            std::string id = A.kit.pendingGame; A.kit.pendingGame.clear();
+            for (auto& g : A.lib.games) { if (g.id == id) StartBuild(g); for (auto& c : g.children) if (c.id == id) StartBuild(c); }
+        } else if (cancelled) Say("Download stopped. Nothing was installed.");
+        return;
+    }
+    if (kind == "build") {
+        ReloadLibrary();   // the engine recorded the build (or nothing changed)
+        if (result == 1) Say(title + " is built");
+        else if (cancelled) Say("Build stopped. Build again to continue where it stopped.");
+        else Say(reason.empty() ? "The build stopped. The log on the Details page says why." : reason);
+    } else {
+        if (exited) { char b[160]; snprintf(b, sizeof b, "%s closed (exit code %d)", title.c_str(), code); Say(b); }
+        else Say(reason.empty() ? "The game could not be started." : reason);
+    }
+}
+// Screenshots: --replay FILE feeds a recorded engine output into the task as if it streamed (no process); without a
+// RESULT / EXITED line the task is shown as still running.
+static void ReplayTask(const std::string& file, const Game& g, bool kit = false) {   // kit: a kit download (--screen kit)
+    size_t n = 0; char* d = (char*)SDL_LoadFile(file.c_str(), &n);
+    if (!d) { fprintf(stderr, "--replay: cannot read %s\n", file.c_str()); return; }
+    std::string text(d, n); SDL_free(d);
+    bool play = text.find("\nSTARTED ") != std::string::npos || text.compare(0, 8, "STARTED ") == 0;
+    StartTask(kit ? "kit" : play ? "play" : "build", g);
+    size_t s = 0, e;
+    while ((e = text.find('\n', s)) != std::string::npos) { TaskLine(text.substr(s, e - s)); s = e + 1; }
+    if (s < text.size()) TaskLine(text.substr(s));
+    bool done = A.task.result >= 0 || A.task.exited;
+    A.task.replay = true; A.task.running = !done;
+}
+
 // TEMP validation: the path exists, or it is the path the library already recorded. The real checks come from the engine.
 struct Check { bool ok; std::string text; };
 static Check ValidatePath(const char* path, const std::string& recorded, const char* what) {
@@ -881,8 +1216,8 @@ static void AddDrawer(float W, float H) {
     ImGui::PopStyleColor(3); ImGui::PopStyleVar(2);
     if (!open) { A.addOpen = false; return; }
 
-    bool building = A.job.game >= 0 && A.lib.games[A.job.game].id == g.id;
-    bool justDone = !building && Playable(g) && g.buildTemp;
+    bool building = BuildingGame(g);
+    bool justDone = !building && Playable(g) && A.task.kind == "build" && A.task.game == g.id && A.task.result == 1;
     // header
     ImGui::PushFont(A.fHeadBold, A.S(30.f)); ImGui::TextUnformatted(g.state == State::Built || g.state == State::PortUpdated ? "Rebuild game" : "Add game"); ImGui::PopFont();
     ImGui::SameLine(dw - A.S(48.f) - A.S(24.f) - A.S(40.f));
@@ -939,17 +1274,17 @@ static void AddDrawer(float W, float H) {
     // (4) build
     StepHeader(4, "Build", justDone ? 1 : 0);
     ImGui::Indent(A.S(36.f));
-    bool canBuild = c1.ok && c2.ok && !building && A.job.game < 0;
+    bool canBuild = c1.ok && c2.ok && !building && !TaskRunning();
     if (!building && !justDone) {
         ImGui::BeginDisabled(!canBuild);
-        if (Btn(g.state == State::Built || g.state == State::PortUpdated ? "Rebuild##go" : "Build##go", ImVec2(A.S(180.f), A.S(48.f)), true)) StartBuild(A.sel);
+        if (Btn(g.state == State::Built || g.state == State::PortUpdated ? "Rebuild##go" : "Build##go", ImVec2(A.S(180.f), A.S(48.f)), true)) StartBuild(g);
         ImGui::EndDisabled();
-        if (!canBuild && A.job.game >= 0) Dim("Another build is running; this one waits for it.");
+        if (!canBuild && TaskRunning()) Dim(A.task.kind == "build" ? "Another build is running; start this one when it is done." : "A game is running.");
         else if (!canBuild) Dim("Fix the files above to enable Build.");
-        else Dim("TEMP: this runs a fake 6 s build until the engine is connected.");
+        else Dim("Builds on this PC from your files; the Details page shows its log.");
     } else {
-        float p = building ? std::min(1.f, A.job.t / kBuildSeconds) : 1.f;
-        int cur = std::min(4, (int)(p * 5.f));
+        float p; int cur;
+        { std::lock_guard<std::mutex> l(A.task.m); p = building ? std::min(1.f, A.task.pct / 100.f) : 1.f; cur = building ? StageOf(A.task.step) : 5; }
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 b0 = ImGui::GetCursorScreenPos(); float bw = ImGui::GetContentRegionAvail().x, bh = A.S(14.f);
         dl->AddRectFilled(b0, ImVec2(b0.x + bw, b0.y + bh), Col(T->windowBg), bh / 2); dl->AddRect(b0, ImVec2(b0.x + bw, b0.y + bh), Col(T->border), bh / 2);
@@ -969,7 +1304,7 @@ static void AddDrawer(float W, float H) {
             ImGui::Dummy(ImVec2(0, A.S(6.f)));
             Wrapped("Done. The game is ready, and its art has its colour back.", T->success, 16.f);
             ImGui::Dummy(ImVec2(0, A.S(4.f)));
-            if (Btn("Play##d", ImVec2(A.S(160.f), A.S(48.f)), true)) Say("TEMP: Play is not connected yet");
+            if (Btn("Play##d", ImVec2(A.S(160.f), A.S(48.f)), true)) { ImGui::CloseCurrentPopup(); A.addOpen = false; StartPlay(g); }
         }
     }
     ImGui::Unindent(A.S(36.f));
@@ -981,9 +1316,12 @@ static void AddDrawer(float W, float H) {
 // Screens
 static void Action(Game& g, int idx) {
     switch (g.state) {
-        case State::Built: Say("TEMP: Play is not connected yet (no game is started from this preview)"); break;
+        case State::Built:   // a Collection entry: its games are played from the Details page
+            if (!g.children.empty()) { A.sel = idx; GoPage(App::ScDetails); } else StartPlay(g);
+            break;
         case State::NotPorted: break;
-        case State::Building: A.addOpen = true; A.addJustOpened = true; break;
+        case State::Building: A.sel = idx; GoPage(App::ScDetails); break;
+        case State::ReadyToBuild: case State::PortUpdated: A.sel = idx; StartBuild(g); GoPage(App::ScDetails); break;
         case State::NeedsAttention: A.sel = idx; GoPage(App::ScFiles); break;
         default: A.sel = idx; OpenAdd(g); break;
     }
@@ -996,14 +1334,14 @@ static void ManageMenu(Game& g, int idx) {
         auto item = [&](const char* label) { return ImGui::Selectable(label, false, 0, ImVec2(A.S(240.f), A.S(30.f))); };
         if (item("Rebuild")) { if (g.state == State::NotAdded || g.state == State::NotPorted) Say("Nothing to rebuild: the game is not added"); else { A.sel = idx; OpenAdd(g); } }
         if (item("Open game folder")) {
-            std::string dir = g.hasBuild && !g.buildTemp ? FolderOf(g.exe) : !g.disc.empty() ? g.disc : "";
+            std::string dir = g.hasBuild ? FolderOf(g.exe) : !g.disc.empty() ? g.disc : "";
             SDL_PathInfo pi;
             if (dir.empty() || !SDL_GetPathInfo(dir.c_str(), &pi)) Say(dir.empty() ? "No folder recorded for this game yet" : "That folder does not exist on this PC");
             else { std::string url = "file://" + std::string(dir[0] == '/' ? "" : "/"); for (char ch : dir) url += ch == '\\' ? '/' : ch; if (!SDL_OpenURL(url.c_str())) Say(std::string("Could not open the folder: ") + SDL_GetError()); }
         }
         if (item("Open saves")) Say("TEMP: Open saves is not connected yet");
         if (item("Change game files")) { if (g.state == State::NotPorted) Say("Not ported yet: nothing to change"); else { A.sel = idx; GoPage(App::ScFiles); } }
-        if (item("Build log")) Say("TEMP: Build log is not connected yet");
+        if (item("Build log")) { A.sel = idx; GoPage(App::ScDetails); }
         if (item("Remove build")) Say("TEMP: Remove build is not connected yet");
         ImGui::PopFont();
         ImGui::EndPopup();
@@ -1038,26 +1376,38 @@ static void SelectedPanel(float h, bool expanded) {
     (void)sw;
     ImGui::SetCursorScreenPos(ImVec2(tx, sp.y + A.S(34.f)));
     std::string line;
-    if (g.state == State::Building) { char b[64]; snprintf(b, sizeof b, "Building: %s", kStages[std::min(4, (int)(std::min(1.f, A.job.t / kBuildSeconds) * 5))]); line = b; }
+    bool bld = BuildingGame(g) || (g.state == State::Building);
+    if (bld) { std::lock_guard<std::mutex> l(A.task.m); char b[96]; snprintf(b, sizeof b, "Step %d of 5: %s, %d%%", StageOf(A.task.step) + 1, kStages[StageOf(A.task.step)], (int)A.task.pct); line = b; }
     else if (g.state == State::ReadyToBuild && g.hasEstimate) { char b[96]; snprintf(b, sizeof b, "Your files are in place. About %d min, %.1f GB.", g.estMinutes, g.estGb); line = b; }
     else if (g.state == State::NotAdded) line = "No game files found. This only means the launcher has not seen them; it cannot tell whether you own the game.";
     else if (g.state == State::WrongVersion) line = "Your files are version " + g.version + ". The port needs " + g.needsUpdate + ": add the update package.";
     else if (g.state == State::NotPorted) line = g.children.empty() ? "Listed as in the README table; it cannot be built yet." : "Holds Ratchet & Clank, Going Commando and Up Your Arsenal. Not ported yet.";
     else if (g.state == State::Built) line = "Built with port " + g.builtPortVersion + ". Ready to play.";
+    else if (g.state == State::PortUpdated) line = ChangedWhy(g);
     else if (!g.reason.empty()) line = g.reason;
     ImGui::PushTextWrapPos(p1.x - pad - ImGui::GetWindowPos().x + ImGui::GetScrollX());
-    Wrapped(line.c_str(), T->dimFg, 16.f); ImGui::PopTextWrapPos();
+    Wrapped(line.c_str(), T->dimFg, 16.f);
+    if (!bld && (g.state == State::ReadyToBuild || g.state == State::Built || g.state == State::PortUpdated)) {   // 
+        std::string d = PlayDisclaimer(g); unsigned c = 0;
+        if (!d.empty()) { ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y)); PlayWord(g.playability, c); Wrapped(d.c_str(), c == T->accent || c == T->success ? T->dimFg : T->warning, 15.f); }
+    }
+    ImGui::PopTextWrapPos();
 
     // buttons at the bottom of the panel
     float by = p1.y - pad - A.S(50.f);
     ImGui::SetCursorScreenPos(ImVec2(tx, by));
     const char* lab = PrimaryLabel(g);
     ImVec2 bs(std::min(A.S(190.f), std::max(A.S(120.f), p1.x - pad - tx - BtnW("Manage") - BtnW("Details") - A.S(24.f))), A.S(50.f));
-    if (g.state == State::Building) {
-        float pr = std::min(1.f, A.job.t / kBuildSeconds); ImVec2 q = ImGui::GetCursorScreenPos();
+    if (bld) {
+        float pr = std::min(1.f, A.task.pct / 100.f); ImVec2 q = ImGui::GetCursorScreenPos();
         dl->AddRectFilled(q, ImVec2(q.x + A.S(300.f), q.y + A.S(14.f)), Col(T->windowBg), A.S(7.f)); dl->AddRect(q, ImVec2(q.x + A.S(300.f), q.y + A.S(14.f)), Col(T->border), A.S(7.f));
         dl->AddRectFilledMultiColor(q, ImVec2(q.x + A.S(300.f) * pr, q.y + A.S(14.f)), Col(T->accentBg), Col(T->accent), Col(T->accent), Col(T->accentBg));
         ImGui::Dummy(ImVec2(A.S(300.f), A.S(14.f)));
+        ImGui::SameLine(0, A.S(14.f)); ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, q.y - A.S(12.f)));
+        ImGui::BeginDisabled(A.task.stopAsked);
+        if (Btn(A.task.stopAsked ? "Stopping...##cancel" : "Cancel##cancel", ImVec2(BtnW("Stopping..."), A.S(38.f)), false)) CancelBuild();
+        ImGui::EndDisabled();
+        if (!expanded) { ImGui::SameLine(0, A.S(12.f)); if (Btn("Details##d", ImVec2(BtnW("Details"), A.S(38.f)), false)) GoPage(App::ScDetails); }
     } else if (lab) {
         if (Btn((std::string(lab) + "##primary").c_str(), bs, true)) Action(g, A.sel);
         if (ImGui::IsWindowAppearing() || A.firstFrame) ImGui::SetItemDefaultFocus();
@@ -1066,7 +1416,7 @@ static void SelectedPanel(float h, bool expanded) {
         Dim("Nothing to do yet. The entry follows the README table.");
         ImGui::SetCursorScreenPos(ImVec2(tx + A.S(420.f), by));
     }
-    if (g.state != State::Building) {
+    if (!bld) {
         if (Btn("Manage##m", ImVec2(BtnW("Manage"), A.S(50.f)), false)) ImGui::OpenPopup("manage");
         ManageMenu(g, A.sel);
         if (!expanded) { ImGui::SameLine(0, A.S(12.f)); if (Btn("Details##d", ImVec2(BtnW("Details"), A.S(50.f)), false)) GoPage(App::ScDetails); }
@@ -1094,8 +1444,8 @@ static void DrawCard(Game& g, int idx, ImVec2 size, bool& selectMe) {
     if (foc && ImGui::GetCurrentContext()->NavCursorVisible)
         dl->AddRect(ImVec2(a0.x - A.S(6.f), a0.y - A.S(6.f)), ImVec2(a1.x + A.S(6.f), a1.y + A.S(6.f)), Col(T->accent), rr + A.S(6.f), 0, A.S(theme::kFocusRing));
     StateLine(dl, ImVec2(p.x + A.S(2.f), a1.y + A.S(8.f)), g, A.S(15.f));
-    if (g.state == State::Building) {
-        float pr = std::min(1.f, A.job.t / kBuildSeconds);
+    if (BuildingGame(g)) {
+        float pr = std::min(1.f, A.task.pct / 100.f);
         dl->AddRectFilled(ImVec2(a0.x, a1.y - A.S(5.f)), ImVec2(a0.x + size.x * pr, a1.y), Col(T->accentBg));
     }
 }
@@ -1185,6 +1535,230 @@ static bool NoGame() {
     return true;
 }
 
+// Details > Build and play: the running build's stage, progress and Cancel; the last build's result (its REASON lines
+// when it failed); Build / Rebuild / Play; the last game run's exit code; the engine's log lines. A Collection entry
+// lists its games, each with its own Build or Play.
+static void ProgressBar(float w, float frac) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 b0 = ImGui::GetCursorScreenPos(); float bh = A.S(12.f);
+    dl->AddRectFilled(b0, ImVec2(b0.x + w, b0.y + bh), Col(T->windowBg), bh / 2); dl->AddRect(b0, ImVec2(b0.x + w, b0.y + bh), Col(T->border), bh / 2);
+    if (frac > 0.005f) dl->AddRectFilled(b0, ImVec2(b0.x + std::max(bh, w * std::min(1.f, frac)), b0.y + bh), Col(T->accentBg), bh / 2);
+    ImGui::Dummy(ImVec2(w, bh));
+}
+static bool TaskOf(const Game& g) {   // the current or last task belongs to this entry (or a game inside it)
+    if (A.task.kind.empty()) return false;
+    if (A.task.game == g.id) return true;
+    for (auto& c : g.children) if (c.id == A.task.game) return true;
+    return false;
+}
+static void BuildAndPlay(Game& g, float x, float w) {
+    if (g.state == State::NotAdded || g.state == State::NotPorted || g.state == State::WrongVersion) {
+        if (!TaskOf(g)) return;
+    }
+    std::string step, cur, logPath; std::vector<std::string> lines, reasons; float pct; int result, code, secs; bool exited, stopAsked, cancelled;
+    { std::lock_guard<std::mutex> l(A.task.m); step = A.task.step; cur = A.task.curGame; logPath = A.task.logPath; lines = A.task.lines; reasons = A.task.reasons;
+      pct = A.task.pct; result = A.task.result; code = A.task.exitCode; secs = A.task.secs; exited = A.task.exited; stopAsked = A.task.stopAsked; cancelled = A.task.cancelled; }
+    bool mine = TaskOf(g), running = mine && TaskRunning(), building = running && A.task.kind == "build";
+    std::string desc = g.children.empty() ? "The build runs on this PC from your own files; the game starts from here when it is built."
+                                          : "Each game of the collection is built and played on its own.";
+    if (g.hasEstimate && g.children.empty()) { char b[96]; snprintf(b, sizeof b, " A build takes about %d min and %.1f GB.", g.estMinutes, g.estGb); desc += b; }
+    ImGui::SetCursorPosX(x);
+    ImGui::BeginGroup();
+    GroupTitle("Build and play", desc.c_str(), w);
+    BeginBoxedList(w);
+    if (building) {
+        BodyRow([&] {
+            const Game* cg = nullptr; for (auto& c : g.children) if (c.id == cur) cg = &c;
+            char b[200]; snprintf(b, sizeof b, "%s%sStep %d of 5: %s", cg ? cg->title.c_str() : "", cg ? " · " : "", StageOf(step) + 1, kStages[StageOf(step)]);
+            ImGui::PushFont(A.fBodySemi, A.S(17.f)); ImGui::TextUnformatted(b); ImGui::PopFont();
+            float bw = w - A.S(28.f) - BtnW("Stopping...") - A.S(16.f);
+            ImVec2 r0 = ImGui::GetCursorPos();
+            ImGui::Dummy(ImVec2(0, A.S(4.f))); ProgressBar(bw, pct / 100.f);
+            char pc[64]; snprintf(pc, sizeof pc, "%d%%   ·   step %s", (int)pct, step.empty() ? "starting" : step.c_str());
+            Dim(pc, 14.f);
+            ImGui::SetCursorPos(ImVec2(r0.x + bw + A.S(16.f), r0.y - A.S(6.f)));
+            ImGui::BeginDisabled(stopAsked);
+            if (Btn(stopAsked ? "Stopping...##cb" : "Cancel##cb", ImVec2(BtnW("Stopping..."), A.S(38.f)), false)) CancelBuild();
+            ImGui::EndDisabled();
+            std::string st; for (int i = 0; i < 5; i++) { st += (i ? "   ›   " : ""); st += kStages[i]; }
+            ImGui::SetCursorPosX(r0.x);
+            ImGui::Dummy(ImVec2(0, A.S(2.f)));
+            ImGui::PushFont(A.fBody, A.S(14.f));
+            for (int i = 0; i < 5; i++) {
+                if (i) { ImGui::SameLine(0, A.S(6.f)); ImGui::TextColored(ColV(T->dimFg), "›"); ImGui::SameLine(0, A.S(6.f)); }
+                int si = StageOf(step);
+                ImGui::TextColored(i < si ? ColV(T->success) : i == si ? ColV(T->accent) : ColV(T->dimFg), "%s", kStages[i]);
+            }
+            ImGui::PopFont();
+        });
+    } else if (mine && A.task.kind == "build" && result >= 0) {
+        if (result == 1) Row("Last build", "Finished: " + A.task.title + " is built and ready to play.", 0, [] {}, T->success);
+        else if (cancelled) Row("Last build", "Stopped. Build again to continue where it stopped.", 0, [] {});
+        else {
+            std::string why; for (auto& r : reasons) why += (why.empty() ? "" : "\n") + r;
+            Row("Last build did not finish", why.empty() ? "The build stopped. The log below says why." : why, 0, [] {}, T->destructive);
+        }
+    } else if (mine && A.task.kind == "play") {
+        if (running) Row("Playing", "The game is running. The launcher waits until it closes.", 0, [] {}, T->accent);
+        else if (exited) { char b[160]; snprintf(b, sizeof b, "Closed with exit code %d after %d s.", code, secs); Row("Last game run", b, 0, [] {}, code == 0 ? T->success : T->destructive); }
+        else if (!reasons.empty()) Row("Could not start the game", reasons[0], 0, [] {}, T->destructive);
+    }
+    auto actions = [&](Game& e) {   // Build / Rebuild and Play for one game
+        bool can = !TaskRunning();
+        std::string bl = (e.state == State::Built || e.state == State::PortUpdated) ? "Rebuild" : "Build";
+        bool canBuild = e.state == State::ReadyToBuild || e.state == State::Built || e.state == State::PortUpdated || e.state == State::NeedsAttention;
+        bool canPlay = Playable(e);
+        float cw = (canBuild ? BtnW(bl.c_str()) : 0.f) + (canPlay ? BtnW("Play", Ico::None, true) + A.S(10.f) : 0.f);
+        std::string tmp, sub = StateWord(e, tmp);
+        if (e.hasBuild) sub += "  ·  built " + (e.builtAt.empty() ? std::string("?") : e.builtAt.substr(0, 16)) + " with port " + e.builtPortVersion;
+        else if (!e.reason.empty() && e.state != State::ReadyToBuild) sub += ": " + e.reason;
+        if (e.state == State::PortUpdated && e.hasBuild && !e.reason.empty()) sub += "\n" + ChangedWhy(e);   // what changed
+        if (!e.updMsg.empty()) sub += "\n" + e.updMsg;                                               // a newer update than tested
+        std::string disc = PlayDisclaimer(e);                                                        // beside Build
+        if (canBuild && !disc.empty()) sub += "\n" + disc;
+        RowOpt ro; unsigned tc = 0; const char* tw = canBuild ? PlayWord(e.playability, tc) : nullptr;
+        ro.tag = tw; ro.tagCol = tc;
+        RowX(e.title.c_str(), sub, cw, [&] {
+            ImGui::BeginDisabled(!can);
+            if (canBuild && Btn((bl + "##b_" + e.id).c_str(), ImVec2(BtnW(bl.c_str()), A.S(38.f)), !canPlay)) StartBuild(e);
+            if (canBuild && canPlay) ImGui::SameLine(0, A.S(10.f));
+            if (canPlay && PillButton(("Play##p_" + e.id).c_str(), Kind::Suggested, ImVec2(BtnW("Play", Ico::None, true), A.S(38.f)))) StartPlay(e);
+            ImGui::EndDisabled();
+        }, ro);
+    };
+    if (g.children.empty()) actions(g);
+    else for (auto& c : g.children) actions(c);
+    EndBoxedList();
+    if (mine && !lines.empty()) {
+        GroupTitle("Log", "The setup engine's output; the full build log stays in the build folder.", w);
+        BeginBoxedList(w);
+        BodyRow([&] {
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+            ImGui::BeginChild("tasklog", ImVec2(w - A.S(28.f), A.S(230.f)), 0, ImGuiWindowFlags_HorizontalScrollbar);
+            ImGui::PushFont(A.fMono, A.S(13.f));
+            size_t from = lines.size() > 400 ? lines.size() - 400 : 0;
+            for (size_t i = from; i < lines.size(); i++) {
+                const std::string& ln = lines[i];
+                unsigned c = ln.compare(0, 7, "REASON ") == 0 || ln.compare(0, 5, "FAIL ") == 0 ? T->destructive
+                           : ln.compare(0, 7, "RESULT ") == 0 || ln.compare(0, 7, "STAGED ") == 0 || ln.compare(0, 7, "EXITED ") == 0 ? T->accent
+                           : ln.compare(0, 5, "WARN ") == 0 ? T->warning : T->windowFg;
+                ImGui::PushStyleColor(ImGuiCol_Text, ColV(c)); ImGui::TextUnformatted(ln.c_str()); ImGui::PopStyleColor();
+            }
+            ImGui::PopFont();
+            if (running || A.shotMode) ImGui::SetScrollHereY(1.f);
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            if (!logPath.empty()) { if (Btn("Open log folder##lf", ImVec2(BtnW("Open log folder"), A.S(36.f)), false)) OpenFolderOf(logPath); }
+        });
+        EndBoxedList();
+    }
+    ImGui::EndGroup();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The build kit dialog (launcher phase 4): opened by Build when the kit is not next to the launcher. It says what would
+// be downloaded, how big, from where, and how it is checked, and downloads only when the player chooses Download.
+static std::string HostOf(const std::string& url) {
+    size_t s = url.find("://"); if (s == std::string::npos) return url;
+    s += 3; size_t e = url.find('/', s);
+    return url.substr(s, e == std::string::npos ? std::string::npos : e - s);
+}
+static std::string Megabytes(long long b) {
+    char t[48];
+    if (b >= 1000LL * 1000 * 1000) snprintf(t, sizeof t, "%.1f GB", b / 1e9); else snprintf(t, sizeof t, "%lld MB", (b + 500000) / 1000000);
+    return t;
+}
+static void KitDialog(float W, float H) {
+    if (!ImGui::IsPopupOpen("kit")) ImGui::OpenPopup("kit");
+    float dw = std::min(A.S(640.f), W - A.S(32.f));
+    ImGui::SetNextWindowPos(ImVec2(W * 0.5f, H * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(dw, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(A.S(24.f), A.S(20.f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, A.S(theme::kRadiusCard));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ColV(T->dialogBg)); ImGui::PushStyleColor(ImGuiCol_Border, ColV(T->border));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ColV(0x00000666u));
+    bool open = ImGui::BeginPopupModal("kit", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleColor(3); ImGui::PopStyleVar(2);
+    if (!open) { A.kit.open = false; return; }
+    float w = dw - A.S(48.f);
+    bool mine = A.task.kind == "kit", running = mine && TaskRunning();
+    int result; float pct; bool stopAsked, cancelled; std::string step; std::vector<std::string> reasons;
+    { std::lock_guard<std::mutex> l(A.task.m); result = A.task.result; pct = A.task.pct; stopAsked = A.task.stopAsked; cancelled = A.task.cancelled; step = A.task.step; reasons = A.task.reasons; }
+    bool failed = mine && !running && result == 0 && !cancelled;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + w);
+    ImGui::PushFont(A.fHeadBold, A.S(26.f)); ImGui::TextUnformatted(running ? "Downloading the build kit" : "Download the build kit?"); ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, A.S(4.f)));
+    const std::string& st = A.kit.state;
+    std::string why = st == "other" ? "The build kit next to the launcher belongs to another release (" + (A.kit.release.empty() ? std::string("unknown") : A.kit.release) +
+                                      "). This launcher needs the one of release " LAUNCHER_KIT_RELEASE "."
+                    : st == "damaged" ? std::string("Files of the build kit next to the launcher are missing. Downloading it again puts them back.")
+                    : st == "unknown" ? std::string("Checking the launcher's folder for the build kit...")
+                    : std::string("Building a game on this PC needs the build kit: the port's source code, the recompiler, a compiler (llvm-mingw), CMake "
+                                  "and Ninja. It is not next to the launcher yet.");
+    Wrapped(why.c_str(), T->windowFg, 16.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f)));
+    BeginBoxedList(w);
+    PropRow("Download", Megabytes(LAUNCHER_KIT_BYTES) + " (about), once; " + Megabytes(LAUNCHER_KIT_UNPACKED) + " on disk after unpacking");
+    PropRow("From", HostOf(A.kit.url) + (A.kit.allowLocal ? "  (test address)" : "  (this project's release page, GitHub)"));
+    PropRow("Address", A.kit.url, true);
+    PropRow("Checked", "Against a fingerprint built into this launcher. A download that does not match is refused and deleted; nothing of it is kept.");
+    EndBoxedList();
+    ImGui::Dummy(ImVec2(0, A.S(6.f)));
+    Wrapped("Nothing is downloaded unless you choose Download, and nothing about you or your games is sent. You can also get the "
+            "build download from the release page yourself and unpack it into the launcher's folder.", T->dimFg, 14.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f)));
+    if (running) {
+        ProgressBar(w, pct / 100.f);
+        char b[96]; snprintf(b, sizeof b, "%d%%   ·   %s", (int)pct, step.empty() ? "starting" : step == "download" ? "downloading" : step == "verify" ? "checking" : step == "install" ? "installing" : step.c_str());
+        Dim(b, 14.f);
+        ImGui::Dummy(ImVec2(0, A.S(6.f)));
+        ImGui::BeginDisabled(stopAsked);
+        if (Btn(stopAsked ? "Stopping...##kc" : "Cancel##kc", ImVec2(BtnW("Stopping..."), A.S(42.f)), false)) CancelBuild();
+        ImGui::EndDisabled();
+    } else {
+        if (failed) {
+            std::string r; for (auto& x : reasons) r += (r.empty() ? "" : "\n") + x;
+            Wrapped(r.empty() ? "The download did not finish. Nothing was installed." : r.c_str(), T->destructive, 15.f);
+            ImGui::Dummy(ImVec2(0, A.S(6.f)));
+        } else if (mine && cancelled) { Wrapped("Download stopped. Nothing was installed.", T->dimFg, 15.f); ImGui::Dummy(ImVec2(0, A.S(6.f))); }
+        const char* go = failed ? "Try again##kd" : "Download##kd";
+        ImGui::BeginDisabled(TaskRunning() || A.kit.url.empty() || st == "unknown");
+        if (Btn(go, ImVec2(BtnW("Try again") + A.S(20.f), A.S(42.f)), true)) {
+            Game* gp = nullptr;
+            for (auto& g : A.lib.games) { if (g.id == A.kit.pendingGame) gp = &g; for (auto& c : g.children) if (c.id == A.kit.pendingGame) gp = &c; }
+            if (gp) StartTask("kit", *gp);
+        }
+        ImGui::EndDisabled();
+        if (A.firstFrame || ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+        ImGui::SameLine(0, A.S(10.f));
+        if (Btn("Not now##kn", ImVec2(BtnW("Not now") + A.S(12.f), A.S(42.f)), false) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+            A.kit.open = false; A.kit.pendingGame.clear(); ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+}
+
+// the catalogue's playability in this release, shown beside every Build (badges.py's words and colours).
+static const char* PlayWord(const std::string& p, unsigned& col) {
+    col = T->warning;
+    if (p == "boots") return "Boots";
+    if (p == "menus") return "Menus";
+    if (p == "in_game") { col = T->accent; return "In game"; }
+    if (p == "playable") { col = T->success; return "Playable"; }
+    if (p == "completed") { col = T->success; return "Completed"; }
+    if (p == "not_built") { col = T->dimFg; return "Not built"; }
+    return nullptr;
+}
+static std::string PlayDisclaimer(const Game& g) {
+    unsigned c; const char* w = PlayWord(g.playability, c);
+    if (!w) return "";
+    std::string s = std::string("In this release: ") + w;
+    if (!g.playabilityNote.empty()) s += ", " + g.playabilityNote;
+    if (!g.playabilityChecked.empty()) s += " (checked " + g.playabilityChecked + ")";
+    return s + ".";
+}
+
 static void SettingGroups(const std::string& scope, float w);
 static void DetailsScreen() {
     if (NoGame()) return;
@@ -1193,6 +1767,7 @@ static void DetailsScreen() {
     ImGui::BeginChild("detpanel", ImVec2(w, A.S(250.f)), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
     SelectedPanel(A.S(236.f), true);
     ImGui::EndChild();
+    BuildAndPlay(g, x, w);
     // boxed lists of key/value rows: two columns when the pane is wide, one when it is narrow
     bool two = w >= A.S(820.f);
     float gap = A.S(18.f), cw = two ? (w - gap) / 2 : w;
@@ -1645,6 +2220,194 @@ static void SetThemePref(const std::string& v) {
     RunEngine("l|theme", {"set-pref", "--library", A.libPath, "theme", v});
 }
 
+static std::string LauncherExe() {   // the running launcher: the release zip's name, else the build's own
+    SDL_PathInfo pi; std::string b = BaseDir();
+    for (const char* n : {"Qwarks-Awakening-launcher.exe", "launcher.exe", "launcher"})
+        if (SDL_GetPathInfo((b + n).c_str(), &pi) && pi.type == SDL_PATHTYPE_FILE) return b + n;
+    return b + "launcher.exe";
+}
+static bool JobMsg(const std::string& key, std::string& msg, unsigned& col) {
+    if (JobBusy(key)) { msg = key == "kit|verify" ? "Checking every file..." : key == "kit|status" ? "Checking..." : "Asking GitHub..."; col = T->accent; return true; }
+    auto it = A.kitMsg.find(key);
+    if (it == A.kitMsg.end()) return false;
+    msg = it->second.first; col = it->second.second; return true;
+}
+static void SetPref(const char* key, bool on) { RunEngine(std::string("l|") + key, {"set-pref", "--library", A.libPath, key, on ? "on" : "off"}); }
+
+// Building (and the build kit): Release builds by default; "Debug information" (off by default) makes each build
+// also write <game>.exe.debug beside the game, for the player's own crash reports, never uploaded. The launcher's own
+// symbols are an optional release asset fetched only on request.
+static void BuildingGroup(float w) {
+    GroupTitle("Building", "How the launcher builds your games on this PC.", w);
+    BeginBoxedList(w);
+    {
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("l|debug_info", msg, col);
+        Row("Debug information", has ? msg : "Off: games are built without debug information (smaller). On: each build also writes "
+                                              "the game's debug information to a .debug file beside it, for your own crash reports. It "
+                                              "stays on this PC and is never uploaded. Takes effect at the next build.",
+            A.S(48.f), [&] {
+            bool on = A.lib.debugInfo == "on";
+            ImGui::BeginDisabled(EngineBusy());
+            if (Switch("##debuginfo", &on)) SetPref("debug_info", on);
+            ImGui::EndDisabled();
+        }, col);
+    }
+    if (*LAUNCHER_KIT_SHA256) {
+        const std::string& st = A.kit.state;
+        std::string msg; unsigned col = 0;
+        bool has = JobMsg("kit|verify", msg, col);
+        std::string sub = st == "ready" ? (A.kit.release.empty() ? std::string("In place.") : "In place (release " + A.kit.release + ").") : st == "other" ? "Next to the launcher, but of another release: Build offers the right one."
+                        : st == "damaged" ? "Files are missing: Build offers to download it again." : st == "unknown" ? "Checking..." : "Not next to the launcher: Build offers to download it.";
+        Row("Build kit", has ? msg : sub, BtnW("Check files"), [&] {
+            ImGui::BeginDisabled(JobBusy() || st == "missing" || st == "unknown");
+            if (PillButton("Check files##kv", Kind::Normal, ImVec2(BtnW("Check files"), 0), false))
+                RunJob("kit|verify", {"verify", "--root", A.kit.root, "--expect", LAUNCHER_KIT_SHA256});
+            ImGui::EndDisabled();
+        }, col);
+    }
+    {
+        std::string msg; unsigned col = 0;
+        bool has = JobMsg("sym|get", msg, col);
+        Row("Launcher debug information", has ? msg : "For reporting a launcher crash: downloads the launcher's own symbols from this project's "
+                                                      "GitHub release, only when you choose Download. Not needed to play.",
+            BtnW("Download"), [&] {
+            ImGui::BeginDisabled(JobBusy() || A.kit.symbolsUrl.empty());
+            if (PillButton("Download##sym", Kind::Normal, ImVec2(BtnW("Download"), 0), false)) GetSymbols();
+            ImGui::EndDisabled();
+        }, col);
+    }
+    EndBoxedList();
+}
+
+// Updates: the opt-in release check (one anonymous request to GitHub's release list at start, off by default). The
+// launcher never downloads a release or a game update by itself; title updates come from the player's own copy.
+static void UpdatesGroup(float w) {
+    GroupTitle("Updates", "Game updates come from your own copy (Files). The launcher never downloads an update by itself.", w);
+    BeginBoxedList(w);
+    {
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("l|update_check", msg, col);
+        Row("Check for new releases", has ? msg : "Off by default. When on, the launcher asks GitHub once at start which release of the port "
+                                                   "is newest (one request, no account; nothing about you or your games is sent) and tells you here.",
+            A.S(48.f), [&] {
+            bool on = A.lib.updateCheck == "on";
+            ImGui::BeginDisabled(EngineBusy());
+            if (Switch("##updcheck", &on)) SetPref("update_check", on);
+            ImGui::EndDisabled();
+        }, col);
+    }
+    {
+        std::string msg; unsigned col = 0;
+        bool has = JobMsg("upd|check", msg, col);
+        bool newer = !A.newReleaseUrl.empty();
+        float cw = BtnW("Check now") + (newer ? BtnW("Open release page") + A.S(6.f) : 0.f);
+        Row("Launcher " LAUNCHER_VERSION, has ? msg : "Check once now, without turning the switch on.", cw, [&] {
+            ImGui::BeginDisabled(JobBusy());
+            if (PillButton("Check now##uc", Kind::Normal, ImVec2(BtnW("Check now"), 0), false)) CheckRelease(false);
+            ImGui::EndDisabled();
+            if (newer) {
+                ImGui::SameLine(0, A.S(6.f));
+                if (PillButton("Open release page##ur", Kind::Suggested, ImVec2(BtnW("Open release page"), 0), false)) {
+                    if (A.newReleaseUrl.rfind("https://github.com/", 0) == 0) SDL_OpenURL(A.newReleaseUrl.c_str());
+                }
+            }
+        }, col);
+    }
+    EndBoxedList();
+}
+
+// Online (docs/ONLINE.md): the shared repsn.ini / community.ini every game of this port reads. Off by default;
+// one method at a time; the launcher only writes the files (no game code changes) and connects to nothing itself.
+static void OnlineGroup(float w) {
+    GroupTitle("Online", "Shared by every game, in a folder other ports read too. Off by default. The games of this port do not go online "
+                         "yet: these settings are kept for when they do.", w);
+    Online& o = A.online;
+    if (!o.loaded) {
+        if (!o.loading && !EngineBusy() && o.err.empty()) LoadOnline();
+        BeginBoxedList(w);
+        if (!o.err.empty()) Row("The online settings could not be read", o.err, 0, [] {}, T->destructive);
+        else Row("Reading the online settings...", "", 0, [] {});
+        EndBoxedList();
+        return;
+    }
+    BeginBoxedList(w);
+    {
+        static const std::vector<std::string> kLabels = {"Off", "re-psn", "Community server"};
+        static const char* kVals[3] = {"off", "repsn", "community"};
+        int cur = o.method == "repsn" ? 1 : o.method == "community" ? 2 : 0;
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("o|method", msg, col);
+        std::string sub = o.method == "both" ? "Both files turn a method on; choose one." : cur == 0 ? "No game connects to any server."
+                        : cur == 1 ? "Games use the re-psn server below." : "Games use the chosen community server. Port-exclusive features do not work there.";
+        Row("Online play", has ? msg : sub, ToggleGroupW(kLabels), [&] {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - A.S(1.f));
+            ImGui::BeginDisabled(EngineBusy());
+            if (ToggleGroup("onlinemethod", kLabels, &cur)) SetOnline("o|method", {"--method", kVals[cur]});
+            ImGui::EndDisabled();
+        }, col);
+    }
+    {
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("o|repsn", msg, col);
+        float iw = std::min(A.S(240.f), w * 0.3f), bw = BtnW("Save");
+        Row("re-psn", has ? msg : "Server (host or host:port) and your online name (3 to 16 letters, digits, - or _).", iw * 2 + bw + A.S(12.f), [&] {
+            ImGui::SetNextItemWidth(iw); ImGui::InputTextWithHint("##rserver", "server", o.serverBuf, sizeof o.serverBuf);
+            ImGui::SameLine(0, A.S(6.f));
+            ImGui::SetNextItemWidth(iw); ImGui::InputTextWithHint("##rname", "online name", o.nameBuf, sizeof o.nameBuf);
+            ImGui::SameLine(0, A.S(6.f));
+            ImGui::BeginDisabled(EngineBusy() || (!*o.serverBuf && !*o.nameBuf));
+            if (PillButton("Save##rs", Kind::Normal, ImVec2(bw, 0), false)) {
+                std::vector<std::string> a;
+                if (*o.serverBuf) { a.push_back("--server"); a.push_back(o.serverBuf); }
+                if (*o.nameBuf) { a.push_back("--name"); a.push_back(o.nameBuf); }
+                SetOnline("o|repsn", a);
+            }
+            ImGui::EndDisabled();
+        }, col);
+    }
+    for (auto& p : o.presets) {
+        ImGui::PushID(p.name.c_str());
+        bool act = p.name == o.active;
+        std::string key = "o|p|" + p.name, msg; unsigned col = 0;
+        bool has = RowMsg(key, msg, col);
+        RowOpt ro; ro.tag = act ? "In use" : nullptr; ro.tagCol = T->accent; ro.mono = !has;
+        if (has) ro.subCol = col;
+        float cw = (act ? 0.f : BtnW("Use") + A.S(6.f)) + BtnW("Remove");
+        RowX(p.name.c_str(), has ? msg : p.address + (p.player.empty() ? "" : "  ·  " + p.player), cw, [&] {
+            ImGui::BeginDisabled(EngineBusy());
+            if (!act) { if (PillButton("Use##pu", Kind::Normal, ImVec2(BtnW("Use"), 0), false)) SetOnline(key, {"--active", p.name}); ImGui::SameLine(0, A.S(6.f)); }
+            if (PillButton("Remove##pr", Kind::Flat, ImVec2(BtnW("Remove"), 0), false)) SetOnline(key, {"--delete-preset", p.name});
+            ImGui::EndDisabled();
+        }, ro);
+        ImGui::PopID();
+    }
+    {
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("o|add", msg, col);
+        float iw = std::min(A.S(200.f), w * 0.26f), bw = BtnW("Add");
+        Row(o.presets.empty() ? "Community server" : "Add a community server", has ? msg : "A short name (a-z, 0-9, - or _) and the server's address.",
+            iw * 2 + bw + A.S(12.f), [&] {
+            ImGui::SetNextItemWidth(iw); ImGui::InputTextWithHint("##pname", "name", o.pNameBuf, sizeof o.pNameBuf);
+            ImGui::SameLine(0, A.S(6.f));
+            ImGui::SetNextItemWidth(iw); ImGui::InputTextWithHint("##paddr", "address", o.pAddrBuf, sizeof o.pAddrBuf);
+            ImGui::SameLine(0, A.S(6.f));
+            ImGui::BeginDisabled(EngineBusy() || !*o.pNameBuf || !*o.pAddrBuf);
+            if (PillButton("Add##pa", Kind::Normal, ImVec2(bw, 0), false)) {
+                std::vector<std::string> a = {"--preset", o.pNameBuf, "--address", o.pAddrBuf};
+                if (o.presets.empty()) { a.push_back("--active"); a.push_back(o.pNameBuf); }   // the first one is the one in use
+                SetOnline("o|add", a);
+            }
+            ImGui::EndDisabled();
+        }, col);
+    }
+    {
+        float bw = BtnW("Open", Ico::Open);
+        Row("Folder", o.folder, bw, [&] { if (PillButton("Open##of", Kind::Normal, ImVec2(bw, 0), false, Ico::Open)) OpenFolderOf(o.folder + "/repsn.ini"); }, 0, true);
+    }
+    EndBoxedList();
+}
+
 static void SettingsScreen() {
     float side = A.S(24.f), avail = ImGui::GetContentRegionAvail().x;
     float w = std::min(avail - side * 2, A.S(760.f)), x = std::max(side, (avail - w) / 2);
@@ -1720,11 +2483,15 @@ static void SettingsScreen() {
     }
     EndBoxedList();
 
+    BuildingGroup(w);
+    OnlineGroup(w);
+    UpdatesGroup(w);
+
     GroupTitle("Cover art", nullptr, w);
     BeginBoxedList(w);
     Row("Fetch cover art from the internet",
         "Off by default. When on, cover images are downloaded from IGDB.com by their id and kept in the art cache; no account is "
-        "needed. Until then the launcher makes no network connections and uses your own disc art. Preview: not wired yet, nothing is fetched.",
+        "needed. Until then no art is fetched and the launcher uses your own disc art. Preview: not wired yet, nothing is fetched.",
         A.S(48.f), [&] { Switch("##artfetch", &A.artFetch); });
     EndBoxedList();
 
@@ -1869,11 +2636,18 @@ static void Footer(float x0, float W, float H) {
     ImVec2 ls = A.fBodySemi->CalcTextSizeA(px, FLT_MAX, 0, b);
     dl->AddText(A.fBodySemi, px, ImVec2(wp.x + x0 + A.S(20.f), y + (fh - ls.y) / 2), Col(T->windowFg), b);
     std::string q = "Build queue: empty";
-    if (A.job.game >= 0) { char c[160]; snprintf(c, sizeof c, "Building %s: %s, %d%%", A.lib.games[A.job.game].id.c_str(), kStages[std::min(4, (int)(A.job.t / kBuildSeconds * 5))], (int)(std::min(1.f, A.job.t / kBuildSeconds) * 100)); q = c; }
+    bool busy = TaskRunning();
+    if (busy) {
+        std::lock_guard<std::mutex> l(A.task.m); char c[200];
+        if (A.task.kind == "build") snprintf(c, sizeof c, "Building %s · step %d of 5 · %d%%", (A.task.curGame.empty() ? A.task.game : A.task.curGame).c_str(), StageOf(A.task.step) + 1, (int)A.task.pct);
+        else if (A.task.kind == "kit") snprintf(c, sizeof c, "Downloading the build kit · %d%%", (int)A.task.pct);
+        else snprintf(c, sizeof c, "Playing %s", A.task.game.c_str());
+        q = c;
+    }
     ImVec2 qs = A.fBodySemi->CalcTextSizeA(px, FLT_MAX, 0, q.c_str());
     float room = W - x0 - A.S(40.f) - ls.x;
     if (qs.x + A.S(20.f) <= room)
-        dl->AddText(A.fBodySemi, px, ImVec2(wp.x + W - A.S(20.f) - qs.x, y + (fh - qs.y) / 2), A.job.game >= 0 ? Col(T->accent) : Col(T->dimFg), q.c_str());
+        dl->AddText(A.fBodySemi, px, ImVec2(wp.x + W - A.S(20.f) - qs.x, y + (fh - qs.y) / 2), busy ? Col(T->accent) : Col(T->dimFg), q.c_str());
     const char* mid = "Enter / A: choose     Esc / B: back     arrows / D-pad: move     F10 / Start: menu";
     ImVec2 ms = A.fBody->CalcTextSizeA(px, FLT_MAX, 0, mid);
     float cx = wp.x + x0 + (W - x0 - ms.x) / 2;
@@ -1921,7 +2695,8 @@ static void Frame(float dt) {
     if (std::fabs(ns - A.scale) > 0.01f) { A.scale = ns; ApplyStyle(); }
     PumpDialog();
     PumpEngine();
-    TickBuild(dt);
+    PumpTask();
+    PumpJob();
     for (auto& g : A.lib.games) {   // art regains colour: a short fade, the one motion that matters
         float d = g.colourTarget - g.colour, step = dt / 0.9f;
         g.colour = A.shotMode && A.firstFrame ? g.colourTarget : (std::fabs(d) < step ? g.colourTarget : g.colour + (d > 0 ? step : -step));
@@ -1929,6 +2704,7 @@ static void Frame(float dt) {
     A.collapsed = W < A.S(kCollapseW);
     static int frameNo = 0;   // the first two frames: ImGui's own focus of a new window (its first item, the sidebar) runs too, so ask again
     if (frameNo++ < 2) { A.focusReq = App::FocusContent; focusAge = 0; A.focusShow = true; A.focusFrame = -1; }
+    if (A.kit.open) A.focusReq = App::FocusNone;   // the kit dialog is modal: nothing behind it takes keyboard focus
     A.sidebarIds.clear(); A.navLabels.clear();
     DrawBackdrop(W, H);
     ImGui::SetNextWindowPos(ImVec2(0, 0)); ImGui::SetNextWindowSize(ImVec2(W, H));
@@ -1988,6 +2764,7 @@ static void Frame(float dt) {
     }
     ImGui::End();
     if (A.addOpen) AddDrawer(W, H);
+    if (A.kit.open) KitDialog(W, H);
     DrawToast(W, H);
     if (A.firstFrame) ImGui::SetNavCursorVisible(true);
     A.firstFrame = false;
@@ -2013,7 +2790,7 @@ static ImFont* LoadFont(const char* file) {
 // the environment is read with SDL_getenv (UTF-8) rather than getenv (ANSI on Windows).
 // test_launcher_src.py keeps SDL_main.h included, SDL_MAIN_HANDLED undefined and getenv unused.
 int main(int argc, char** argv) {
-    std::string shot, screenName = "library", selectId, engine, themeArg, keyList; int W = 1280, H = 720; float progress = -1.f;
+    std::string shot, screenName = "library", selectId, engine, themeArg, keyList, replay, kitUrl, relApi, symUrl, kitState; int W = 1280, H = 720; float progress = -1.f;
     const char* base = SDL_GetBasePath();
     A.libPath = std::string(base ? base : "") + "library.json";
     for (int i = 1; i < argc; i++) {
@@ -2023,18 +2800,31 @@ int main(int argc, char** argv) {
         else if (a == "--screen") screenName = next();
         else if (a == "--select") selectId = next();
         else if (a == "--size") sscanf(next().c_str(), "%dx%d", &W, &H);
-        else if (a == "--progress") progress = (float)atof(next().c_str());   // screenshots: show the fake build at this fraction
+        else if (a == "--progress") progress = (float)atof(next().c_str());   // screenshots (--screen add): a build at this fraction
+        else if (a == "--live") { A.liveShot = true; A.liveWait = atoi(next().c_str()); }
+        else if (a == "--replay") replay = next();   // screenshots: feed a recorded engine output (build or play) into the selected game's task
         else if (a == "--fonts") A.fontDir = next();
         else if (a == "--engine") engine = next();
         else if (a == "--scroll") A.shotScroll = (float)atof(next().c_str());   // screenshots: scroll the screen down by this many px (at 720 high)
         else if (a == "--keys") keyList = next();
+        else if (a == "--shared-dir") A.sharedDir = next();   // the shared online folder for the engine (tests, screenshots)
+        else if (a == "--kit-root") A.kit.root = next();      // where the build kit goes (default: the exe's folder)
+        else if (a == "--kit-url") kitUrl = next();           // tests: another address for the full build zip (needs --kit-allow-local unless GitHub)
+        else if (a == "--release-api") relApi = next();      // tests: another release list address
+        else if (a == "--symbols-url") symUrl = next();       // tests: another launcher symbols address
+        else if (a == "--kit-allow-local") A.kit.allowLocal = true;   // tests: file:// and 127.0.0.1 (kit.py --allow-local)
+        else if (a == "--kit-state") kitState = next();       // screenshots: ready|missing|other|damaged (no kit.py status run)
         else if (a == "--data") A.dataDir = next();   // the games' data folder for the engine's settings commands (default: the engine's rule)   // screenshots: press these keys first (comma list), then print where focus is
         else if (a == "--theme") { themeArg = next(); if (themeArg != "system" && themeArg != "light" && themeArg != "dark") { fprintf(stderr, "--theme: system, light or dark\n"); return 2; } }
-        else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--data DIR] [--screenshot OUT.png --screen library|details|add|settings|locations|files|about|sidebar [--select ID] [--size WxH] [--progress F] [--scroll PX] [--keys up,down,left,right,enter,esc,tab,f10,...]] [--theme system|light|dark]\n"); return 2; }
+        else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--data DIR] [--shared-dir DIR] [--kit-root DIR] [--kit-url URL] [--release-api URL] [--symbols-url URL] [--kit-allow-local] [--screenshot OUT.png --screen library|details|add|settings|locations|files|about|sidebar|kit [--kit-state S] [--select ID] [--size WxH] [--progress F] [--replay FILE] [--live SECONDS] [--scroll PX] [--keys up,down,left,right,enter,esc,tab,f10,...]] [--theme system|light|dark]\n"); return 2; }
     }
     if (engine.empty()) { const char* e = SDL_getenv("RC_LAUNCHER_ENGINE"); if (e && *e) engine = e; }
     A.engineCmd = engine.empty() ? DefaultEngine(base ? base : "") : SplitCommand(engine);
     A.shotMode = !shot.empty();
+    if (A.kit.root.empty()) A.kit.root = base ? base : ".";
+    A.kit.url = !kitUrl.empty() ? kitUrl : LAUNCHER_KIT_URL;
+    A.kit.api = !relApi.empty() ? relApi : LAUNCHER_REPO_API;
+    A.kit.symbolsUrl = !symUrl.empty() ? symUrl : LAUNCHER_SYMBOLS_URL;
     if (A.fontDir.empty()) {
         std::string d = std::string(base ? base : "") + "fonts"; SDL_PathInfo pi;
         A.fontDir = SDL_GetPathInfo((d + "/AdwaitaSans-Regular.ttf").c_str(), &pi) ? d : LAUNCHER_FONT_DIR;
@@ -2087,16 +2877,37 @@ int main(int argc, char** argv) {
         else if (screenName == "add") {
             if (selectId.empty()) for (size_t i = 0; i < A.lib.games.size(); i++) if (A.lib.games[i].state == State::ReadyToBuild) { A.sel = (int)i; break; }
             if (!A.lib.games.empty()) OpenAdd(A.lib.games[A.sel]);
-            if (progress >= 0 && !A.lib.games.empty()) { StartBuild(A.sel); A.job.t = progress * kBuildSeconds; }
+            if (progress >= 0 && !A.lib.games.empty()) {   // a build at this fraction, no process (the stage from the fraction)
+                static const char* kStep[5] = {"check", "extract", "ppu-lift", "compile", "stage"};
+                StartBuild(A.lib.games[A.sel]);
+                A.task.replay = true; A.task.running = true; A.task.pct = progress * 100.f; A.task.step = kStep[std::min(4, (int)(progress * 5.f))];
+            }
         }
     }
 
+    // the build kit: kit.py status at start (read only, this PC); screenshots take --kit-state instead
+    if (A.shotMode) A.kit.release = LAUNCHER_KIT_RELEASE;
+    if (A.shotMode) A.kit.state = !kitState.empty() ? kitState : !*LAUNCHER_KIT_SHA256 ? "none" : screenName == "kit" ? "missing" : "ready";
+    else {
+        KitStatus();
+        if (A.kit.state == "none" && A.lib.updateCheck == "on") CheckRelease(true);   // opt-in (Settings > Updates), off by default
+    }
+    if (A.shotMode && screenName == "kit" && !A.lib.games.empty()) {   // the dialog as Build opens it (--progress F: downloading)
+        A.kit.open = true; A.kit.pendingGame = A.lib.games[A.sel].id;
+        if (progress >= 0) { StartTask("kit", A.lib.games[A.sel]); A.task.replay = true; A.task.running = true; A.task.pct = progress * 100.f; A.task.step = progress < 0.9f ? "download" : "install"; }
+    }
+    if (A.shotMode && !replay.empty() && !A.lib.games.empty()) ReplayTask(replay, A.lib.games[A.sel], screenName == "kit");
     // A shot of a page with settings reads them first: get-settings is read only, the one engine command a screenshot runs.
     if (A.shotMode && (A.screen == App::ScSettings || A.screen == App::ScDetails)) {
         std::vector<std::string> argv = A.engineCmd; argv.push_back("get-settings"); SettingsArgs(argv);
         A.eng.busy = true; A.busyKey = "s|load"; A.set.loading = true;
         { std::lock_guard<std::mutex> l(A.eng.m); A.eng.key = "s|load"; }
         EngineThread(argv);
+        if (A.screen == App::ScSettings) {   // and the shared online settings (get-online, read only)
+            PumpEngine();
+            std::vector<std::string> o = A.engineCmd; o.push_back("get-online"); OnlineArgs(o);
+            std::string out; if (RunCapture(o, out) == 0) ParseOnline(out, false); else A.online.err = out;
+        }
     }
 
     // --keys: one key every 6 frames from frame 8 (down on the first, up on the next), the shot 8 frames after the last
@@ -2134,11 +2945,25 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(A.ren, (T->windowBg >> 24) & 255, (T->windowBg >> 16) & 255, (T->windowBg >> 8) & 255, 255); SDL_RenderClear(A.ren);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), A.ren);
         frames++;
-        if (A.shotMode && frames >= shotFrame) {
+        // --live: after the keys, wait (up to liveWait s) for a task they started to end, then 30 frames more
+        static Uint64 liveT0 = 0; static int liveDone = -1;
+        bool liveHold = false;
+        if (A.shotMode && A.liveShot && frames >= shotFrame) {
+            if (!liveT0) liveT0 = SDL_GetTicks();
+            if (TaskRunning() && SDL_GetTicks() - liveT0 < (Uint64)A.liveWait * 1000) { liveHold = true; SDL_Delay(50); }
+            else if (liveDone < 0) liveDone = frames;
+            if (liveDone >= 0 && frames < liveDone + 30) liveHold = true;
+        }
+        if (A.shotMode && frames >= shotFrame && !liveHold) {
             if (!keys.empty()) {
                 auto it = A.navLabels.find(ImGui::GetFocusID());
                 printf("nav: screen=%s sidebar_page=%d collapsed=%d focus=%s\n", PageTitle(), A.showSidebar ? 1 : 0, A.collapsed ? 1 : 0,
                        it == A.navLabels.end() ? "(none)" : it->second.c_str());
+            }
+            if (A.liveShot) {   // --live: what the task did, for the end-to-end check's log
+                std::lock_guard<std::mutex> l(A.task.m);
+                printf("live: task=%s result=%d proc=%d lines=%zu\n", A.task.kind.empty() ? "(none)" : A.task.kind.c_str(), A.task.result, A.task.procRc, A.task.lines.size());
+                for (size_t i = A.task.lines.size() > 8 ? A.task.lines.size() - 8 : 0; i < A.task.lines.size(); i++) printf("live: %s\n", A.task.lines[i].c_str());
             }
             SDL_Surface* s = SDL_RenderReadPixels(A.ren, nullptr);
             if (!s || !SDL_SavePNG(s, shot.c_str())) { fprintf(stderr, "screenshot failed: %s\n", SDL_GetError()); rc = 1; }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Lift every SPU image of a title into work/spu/<game>/lift, the SPU_DIR tools/build-rc.sh points the build at.
-#   nix develop .#re --command tools/sandbox.sh -- tools/spu/lift_spu.sh [GAME]      (GAME: tods (default), acit, nexus, acit120, nexus101, ffa, a4o, qfb, collection_rc1, collection_rc2, collection_rc3; dlhd and collection, the Collection's launcher, have tables but are not built yet)
+#   nix develop .#re --command tools/sandbox.sh -- tools/spu/lift_spu.sh [GAME]      (GAME: tods (default), acit, nexus, acit120, nexus101, ffa, a4o, qfb, collection_rc1, collection_rc2, collection_rc3, dlhd; collection, the Collection's launcher, has tables but is not built yet)
 # 1. tools/spu/spu_lift.py GAME: the WWS job modules, the EDGE inflate ELF (when the title has one), the policy module, spu_workloads.c,
 #    jobmods_register.c (it recreates the lift dir, so it runs first); tables: data/titles/<game>_spu_{config,jobs,code}.json
 #    and the optional lift table named in the config;

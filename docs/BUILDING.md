@@ -2,12 +2,14 @@
 
 The port's program is generated from **your own copy** of the game: the game's code is lifted to C from your
 decrypted EBOOT and compiled on your machine. Nothing of the game is in this repository, and nothing is downloaded.
-Only one game, *Ratchet & Clank Future: Tools of Destruction*, is being ported so far.
+The steps below are written for the first target, *Ratchet & Clank Future: Tools of Destruction*; how far each other
+game gets is in the README's status table.
 
 **Status: early work.** The game starts and can be played by hand from its first level, with known bugs; it has not
 been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux. The
-releases carry no game program and there is no installer (v0.2.0 adds a launcher preview that does not build games
-yet): the only way to get a build is the developer build from source with [Nix](https://nixos.org/), described below.
+releases carry no game program and there is no installer. Since v0.3.0 the launcher can build a game from your own copy
+(checked on Linux only, not tried on Windows); the developer build from source with [Nix](https://nixos.org/),
+described below, is the way every test build was made.
 
 ## What you need
 

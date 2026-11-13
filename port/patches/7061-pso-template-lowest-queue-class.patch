@@ -1,0 +1,399 @@
+R&C patch 7061: template prewarm jobs run in the async PSO queue's lowest class (load stalls, the RE notes s.30).
+KZ3 2071's prewarm ran its own threads (LD_PSO_TEMPLATE_THREADS, default 3) beside the 7052 workers. In ToD's cold
+level load most of the template's programs only appear in guest memory with the level (fragment programs 18/87 found
+before it, 66/87 at 239 s), so its builds land in the same seconds as the walker's demand and lookahead builds and
+compete with them: tmpl-on-cold (2026-11-11) built 292 template pipelines, the walker used 26, and the first
+Metropolis frame took 16.6 s against 13.0 s for tmpl-off-cold on the same exe.
+Now each template record is a job of the 7052 queue (rsx_pso_prio.h) in the lowest class: priority RSX_APQ_TEMPLATE,
+after every lookahead build and every demand, never promoted, owning no shared compile of the queue. A worker takes one
+only when no build is queued, and at most min(LD_PSO_TEMPLATE_THREADS or 3, workers - 1) run at once, so a worker is
+always free for the next demand (one worker, LD_PSO_ASYNC_THREADS=1 only: cap 0, 2071's own threads instead). A pop declined at that cap spends the worker's semaphore count; a finished template
+job releases one while templates are still queued. n_queued (the lookahead backlog cap, the [pso-await] queue column)
+counts builds only. The queue starts once from whichever comes first, the walker's first submission or the prewarm's
+start (InitOnce). LD_PSO_TEMPLATE_QUEUE=0 or LD_PSO_ASYNC=0 keeps 2071's own threads.
+Host test port/rc/tests/run_pso_prio_test.sh section 6: templates queued first still come after the lookahead builds
+and the demand; the cap; a build is taken at the cap; fuzz with a semaphore model (no template taken while a build is
+queued, never above the cap, no template stranded). Mutants (class ignored, no cap, no release) each fail it.
+2026-11-11 (code review of rc-int-1600): nothing joined a running template job any more, so at exit one could still be in
+ld_pl_create when ld_pl_shutdown released the pipeline library and device (the 2048 build jobs had the same gap):
+ld_apso_quiesce now stops the workers taking jobs and waits for the running ones (builds and templates) before
+ld_pt_shutdown / ld_pl_shutdown, at most 10 s (the library is kept if one still runs). And the cap clamped one worker up
+to 1, so a template job could hold the only worker; it is 0 now and the prewarm keeps 2071's threads in that case.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index cf80b49..352a7d4 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -8828,7 +8828,7 @@ static void ld_pl_tick(void)
+         ld_pl_save_library(0);
+ }
+ 
+-static void ld_pl_shutdown(void)
++static void ld_pl_shutdown(int jobs_running)   /* R&C patch 7061: jobs_running = async PSO jobs still in flight */
+ {
+     if (!g_ld_pl.started) return;
+     for (u32 i = 0; i < g_ld_pl.n_threads; i++)
+@@ -8838,6 +8838,8 @@ static void ld_pl_shutdown(void)
+     ld_pl_drain();
+     fprintf(stderr, "[pso-preload] used %u of the preloaded PSOs, %u duplicates of walker builds, walker library hits %u\n",
+             g_ld_pl_used, g_ld_pl.n_dup, g_ld_pl.n_lib_hit_walker);
++    /* R&C patch 7061: an async job still inside ld_pl_create holds the library; the process ends, so it is not released. */
++    if (jobs_running) { fprintf(stderr, "[pso-preload] pipeline library kept: %d async PSO job(s) still running\n", jobs_running); return; }
+     if (g_ld_pl.lib) { g_ld_pl.lib->lpVtbl->Release(g_ld_pl.lib); g_ld_pl.lib = NULL; }
+     if (g_ld_pl.dev1) { g_ld_pl.dev1->lpVtbl->Release(g_ld_pl.dev1); g_ld_pl.dev1 = NULL; }
+     free(g_ld_pl.lib_blob); g_ld_pl.lib_blob = NULL;
+@@ -9123,6 +9125,8 @@ static struct {
+     LONGLONG t0, qpf;
+     volatile LONG built, failed_xlate, failed_blob, failed_pso, failed_key, lib_hits, staged;
+     volatile LONG used;                          /* walker lookups that found a template pipeline ready */
++    int queued_mode;                             /* R&C patch 7061: jobs of the async PSO queue, lowest class */
++    struct ld_pt_job* jobs;                      /* R&C patch 7061: one queue node per record */
+     unsigned passes; unsigned long long scan_us, xlate_us, compile_us, create_us;
+ } g_pt;
+ 
+@@ -9309,6 +9313,24 @@ static void ld_pt_build(u32 ri, char* vs_hlsl, char* ps_hlsl, rsx_fp_constant_bl
+     InterlockedIncrement(&g_pt.staged);
+ }
+ 
++/* R&C patch 7061: the template's records become the lowest class of the async PSO queue (rsx_pso_prio.h). */
++typedef struct ld_pt_job { rsx_apq_node qn; u32 ri; } ld_pt_job;   /* qn first, as in ld_apso_job */
++static int ld_apso_on(void);
++static int ld_apso_init(void);
++static void ld_apso_queue_templates(ld_pt_job* const* jobs, u32 n);
++static u32 ld_apso_template_cap(int requested);
++
++/* R&C patch 7061: one template record on an async queue worker (buffers per worker, allocated at its first job). */
++static void ld_pt_run_job(ld_pt_job* tj)
++{
++    static __thread char *vs, *ps; static __thread rsx_fp_constant_block* cb;
++    if (g_pt.stop) return;
++    if (!vs) vs = (char*)malloc(256u * 1024u);
++    if (!ps) ps = (char*)malloc(256u * 1024u);
++    if (!cb) cb = (rsx_fp_constant_block*)malloc(sizeof *cb);
++    if (vs && ps && cb) ld_pt_build(tj->ri, vs, ps, cb);
++}
++
+ static DWORD WINAPI ld_pt_worker(LPVOID arg)
+ {
+     (void)arg;
+@@ -9410,7 +9432,14 @@ static DWORD WINAPI ld_pt_scout(LPVOID arg)
+             g_pt.q[g_pt.q_tail++] = i; newq++; queued++;
+         }
+         LeaveCriticalSection(&g_pt.cs);
+-        if (newq) ReleaseSemaphore(g_pt.sem, (LONG)newq, NULL);
++        if (newq && g_pt.queued_mode) {   /* R&C patch 7061: into the async queue, after every build */
++            ld_pt_job* batch[64]; u32 nb = 0;
++            while (g_pt.q_head != g_pt.q_tail) {
++                batch[nb++] = &g_pt.jobs[g_pt.q[g_pt.q_head++]];
++                if (nb == 64u) { ld_apso_queue_templates(batch, nb); nb = 0; }
++            }
++            if (nb) ld_apso_queue_templates(batch, nb);
++        } else if (newq) ReleaseSemaphore(g_pt.sem, (LONG)newq, NULL);
+         if (g_pt.passes <= 3 || g_pt.vp_found != last_vp || g_pt.fp_found != last_fp)
+             fprintf(stderr, "[pso-template] scan %u at %.1f s: %.0f MB in %.0f ms; programs found vp %u/%u fp %u/%u; "
+                             "%u/%u pipelines queued (+%u)\n",
+@@ -9505,9 +9534,23 @@ static void ld_pt_start(void)
+     if (nt < 1) nt = 1;
+     if (nt > 8) nt = 8;
+     g_pt.in_on = 1;
+-    fprintf(stderr, "[pso-template] prewarm on: '%s' %u pipelines (%u dropped), %u vertex / %u fragment programs to find, %d threads\n",
+-            g_pt.in_path, g_pt.n_in, g_pt.n_dropped, g_pt.n_vp, g_pt.n_fp, nt);
+-    for (int k = 0; k < nt; k++) {
++    /* R&C patch 7061: with the async PSO queue on, the records are its lowest class (they run on its workers only when
++     * no demand or lookahead build is queued, at most min(LD_PSO_TEMPLATE_THREADS or 3, workers - 1) at once);
++     * LD_PSO_TEMPLATE_QUEUE=0 or LD_PSO_ASYNC=0 keeps 2071's own threads. */
++    { const char* tq = getenv("LD_PSO_TEMPLATE_QUEUE");
++      g_pt.jobs = (ld_pt_job*)calloc(g_pt.n_in + 1u, sizeof(ld_pt_job));
++      /* A cap of 0 (one worker: a template job would hold the only worker a demand needs) keeps 2071's threads. */
++      u32 cap = 0;
++      if (!(tq && tq[0] == '0') && g_pt.jobs && ld_apso_on() && ld_apso_init() > 0 &&
++          (cap = ld_apso_template_cap(te && *te ? atoi(te) : 0)) > 0) {
++          for (u32 j = 0; j < g_pt.n_in; j++) g_pt.jobs[j].ri = j;
++          nt = (int)cap;
++          g_pt.queued_mode = 1;
++      } }
++    fprintf(stderr, "[pso-template] prewarm on: '%s' %u pipelines (%u dropped), %u vertex / %u fragment programs to find, %s %d\n",
++            g_pt.in_path, g_pt.n_in, g_pt.n_dropped, g_pt.n_vp, g_pt.n_fp,
++            g_pt.queued_mode ? "async queue, lowest class, at once at most" : "own threads", nt);
++    for (int k = 0; k < nt && !g_pt.queued_mode; k++) {
+         g_pt.workers[g_pt.n_workers] = CreateThread(NULL, 0, ld_pt_worker, NULL, 0, NULL);
+         if (g_pt.workers[g_pt.n_workers]) g_pt.n_workers++;
+     }
+@@ -9776,6 +9819,8 @@ static struct {
+     u64 submitted, finished, failed, compile_us, create_us, latency_us, max_latency_us, merged;
+     u64 awaits, await_us, max_await_us;   /* RSX pass 57: walker waits for a pending build (no draw is skipped) */
+     u32 max_in_flight;
++    int stopping;                         /* R&C patch 7061: exit (ld_apso_quiesce): workers take no more jobs */
++    u32 running;                          /* R&C patch 7061: jobs a worker has taken and not finished (builds and templates) */
+ } g_apso;
+ 
+ static int ld_apso_on(void)
+@@ -9837,19 +9882,81 @@ static void ld_apso_claim_locked(ld_apso_job* j)
+     if (j->ps_e && !j->ps_own) rsx_apq_claim(&g_apso.q, &j->qn, &j->ps_own, &j->ps_e->owner, &j->ps_e->owner_flag);
+ }
+ 
++static DWORD WINAPI ld_apso_worker(LPVOID arg);
++/* Start the queue and its workers once (R&C patch 7061: from the walker's first submission or the template prewarm's
++ * start, whichever comes first, so it runs under a one-time initialisation). Returns the worker count. */
++static BOOL CALLBACK ld_apso_init_once(PINIT_ONCE once, PVOID p, PVOID* ctx)
++{
++    (void)once; (void)p; (void)ctx;
++    g_apso.started = 1;
++    InitializeCriticalSection(&g_apso.cs);
++    InitializeConditionVariable(&g_apso.cv);
++    g_apso.sem = CreateSemaphoreA(NULL, 0, 0x7FFFFFFF, NULL);
++    const char* e = getenv("LD_PSO_ASYNC_THREADS");
++    /* R&C patch 7052: default from the host's logical processors less the game's busy threads (rsx_pso_prio.h);
++     * KZ3 2048 fixed 3, which ran at ~1000 ms/s each through ToD's level load. */
++    SYSTEM_INFO si; GetSystemInfo(&si);
++    int nt = e ? atoi(e) : rsx_apq_workers((int)si.dwNumberOfProcessors); if (nt < 1) nt = 1; if (nt > 8) nt = 8;
++    (void)ld_apso_prio_on();
++    g_apso.q.tmpl_cap = rsx_apq_template_cap(0, nt);
++    for (int i = 0; i < nt && g_apso.sem; i++) {
++        HANDLE h = CreateThread(NULL, 0, ld_apso_worker, NULL, 0, NULL);
++        if (h) { CloseHandle(h); g_apso.n_threads++; }
++    }
++    fprintf(stderr, "[pso-async] %d worker threads (%s, %lu logical processors)\n", g_apso.n_threads,
++            e ? "LD_PSO_ASYNC_THREADS" : "default", (unsigned long)si.dwNumberOfProcessors);
++    return TRUE;
++}
++static int ld_apso_init(void)
++{
++    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
++    InitOnceExecuteOnce(&once, ld_apso_init_once, NULL, NULL);
++    return g_apso.n_threads;
++}
++
++/* R&C patch 7061: the template jobs allowed at once (rsx_apq_template_cap), set before the first is queued. */
++static u32 ld_apso_template_cap(int requested)
++{
++    EnterCriticalSection(&g_apso.cs);
++    g_apso.q.tmpl_cap = rsx_apq_template_cap(requested, g_apso.n_threads);
++    const u32 c = g_apso.q.tmpl_cap;
++    LeaveCriticalSection(&g_apso.cs);
++    return c;
++}
++
++/* R&C patch 7061: queue template records (scout thread); each gets one semaphore count like a build. */
++static void ld_apso_queue_templates(ld_pt_job* const* jobs, u32 n)
++{
++    EnterCriticalSection(&g_apso.cs);
++    for (u32 i = 0; i < n; i++) rsx_apq_insert_template(&g_apso.q, &jobs[i]->qn);
++    LeaveCriticalSection(&g_apso.cs);
++    ReleaseSemaphore(g_apso.sem, (LONG)n, NULL);
++}
++
+ static DWORD WINAPI ld_apso_worker(LPVOID arg)
+ {
+     (void)arg;
+     for (;;) {
+         WaitForSingleObject(g_apso.sem, INFINITE);
+         EnterCriticalSection(&g_apso.cs);
+-        ld_apso_job* j = (ld_apso_job*)rsx_apq_pop(&g_apso.q);   /* R&C patch 7052 */
+-        if (j) {   /* taken: a later job can no longer be queued ahead of this owner */
++        ld_apso_job* j = g_apso.stopping ? NULL : (ld_apso_job*)rsx_apq_pop(&g_apso.q);   /* R&C patch 7052; 7061: exit */
++        if (j) g_apso.running++;   /* R&C patch 7061 */
++        if (j && j->qn.cls != RSX_APQ_CLS_TEMPLATE) {   /* taken: a later job can no longer be queued ahead of this owner */
+             if (j->vs_e && j->vs_own) { j->vs_e->owner = NULL; j->vs_e->owner_flag = NULL; }
+             if (j->ps_e && j->ps_own) { j->ps_e->owner = NULL; j->ps_e->owner_flag = NULL; }
+         }
+         LeaveCriticalSection(&g_apso.cs);
+         if (!j) continue;
++        if (j->qn.cls == RSX_APQ_CLS_TEMPLATE) {   /* R&C patch 7061: a template record, only when no build is queued */
++            ld_pt_run_job((ld_pt_job*)j);
++            EnterCriticalSection(&g_apso.cs);
++            const int more = rsx_apq_template_done(&g_apso.q);
++            g_apso.running--;
++            LeaveCriticalSection(&g_apso.cs);
++            WakeAllConditionVariable(&g_apso.cv);   /* ld_apso_quiesce may wait for it */
++            if (more) ReleaseSemaphore(g_apso.sem, 1, NULL);
++            continue;
++        }
+         LARGE_INTEGER q0, q1, q2, f; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&q0);
+         /* Owned blobs first (always compiled and published, even when the other stage failed: dependents wait on
+          * them), then the ones another job compiles (RSX pass 50: one in-flight compile per blob). */
+@@ -9872,35 +9979,35 @@ static DWORD WINAPI ld_apso_worker(LPVOID arg)
+         EnterCriticalSection(&g_apso.cs);
+         j->next = g_apso.done; g_apso.done = j;
+         InterlockedExchange(&g_apso.done_flag, 1);
++        g_apso.running--;   /* R&C patch 7061 */
+         LeaveCriticalSection(&g_apso.cs);
+         WakeAllConditionVariable(&g_apso.cv);   /* RSX pass 57: a walker may wait for this build (ld_apso_await) */
+     }
+     return 0;
+ }
+ 
++/* R&C patch 7061: exit. The workers take no more jobs, and this waits for the ones they run (builds and template
++ * records: both end in ld_pl_create on the pipeline library, which ld_pl_shutdown then saves and releases). 2071's
++ * template threads were joined before the library went; the queue's workers are never joined, so they are drained
++ * here. Waits at most 10 s (RC_CLOSE_WATCHDOG ends the process at 15 s); returns the jobs still running. */
++static u32 ld_apso_quiesce(void)
++{
++    if (!g_apso.sem) return 0;   /* the queue never started (ld_apso_init_once creates it last) */
++    EnterCriticalSection(&g_apso.cs);
++    g_apso.stopping = 1;
++    const ULONGLONG t0 = GetTickCount64();
++    while (g_apso.running && GetTickCount64() - t0 < 10000) SleepConditionVariableCS(&g_apso.cv, &g_apso.cs, 500);
++    const u32 left = g_apso.running;
++    LeaveCriticalSection(&g_apso.cs);
++    if (left) fprintf(stderr, "[pso-async] exit: %u job(s) still running after 10 s\n", left);
++    return left;
++}
++
+ /* Walker: queue the build of `key`. 0 = not queued (the caller builds synchronously). */
+ static int ld_apso_submit(const char* vs_hlsl, const char* ps_hlsl, const render_state_t* rs,
+                           const rsx_vertex_layout_plan* masked_layout, int packed, u64 key)
+ {
+-    if (!g_apso.started) {
+-        g_apso.started = 1;
+-        InitializeCriticalSection(&g_apso.cs);
+-        InitializeConditionVariable(&g_apso.cv);
+-        g_apso.sem = CreateSemaphoreA(NULL, 0, 0x7FFFFFFF, NULL);
+-        const char* e = getenv("LD_PSO_ASYNC_THREADS");
+-        /* R&C patch 7052: default from the host's logical processors less the game's busy threads (rsx_pso_prio.h);
+-         * KZ3 2048 fixed 3, which ran at ~1000 ms/s each through ToD's level load. */
+-        SYSTEM_INFO si; GetSystemInfo(&si);
+-        int nt = e ? atoi(e) : rsx_apq_workers((int)si.dwNumberOfProcessors); if (nt < 1) nt = 1; if (nt > 8) nt = 8;
+-        (void)ld_apso_prio_on();
+-        for (int i = 0; i < nt && g_apso.sem; i++) {
+-            HANDLE h = CreateThread(NULL, 0, ld_apso_worker, NULL, 0, NULL);
+-            if (h) { CloseHandle(h); g_apso.n_threads++; }
+-        }
+-        fprintf(stderr, "[pso-async] %d worker threads (%s, %lu logical processors)\n", g_apso.n_threads,
+-                e ? "LD_PSO_ASYNC_THREADS" : "default", (unsigned long)si.dwNumberOfProcessors);
+-    }
+-    if (!g_apso.n_threads) return 0;
++    if (ld_apso_init() <= 0) return 0;
+     ld_apso_job* j = (ld_apso_job*)calloc(1, sizeof *j);
+     if (!j) return 0;
+     j->vs_len = (u32)strlen(vs_hlsl); j->ps_len = (u32)strlen(ps_hlsl);
+@@ -10064,7 +10171,7 @@ static ID3D12PipelineState* ld_apso_await(u32 idx)
+     if (ld_apso_prio_on() || ld_apso_await_log_on()) {   /* R&C patch 7052: the build the walker waits on runs next */
+         EnterCriticalSection(&g_apso.cs);
+         queued = g_apso.q.n_queued;
+-        for (rsx_apq_node* n = g_apso.q.head; n; n = n->next)
++        for (rsx_apq_node* n = g_apso.q.head; n && n->cls != RSX_APQ_CLS_TEMPLATE; n = n->next)   /* 7061: builds first */
+             if (((ld_apso_job*)n)->key == g.psos[idx].key) {
+                 state = 'q';
+                 if (ld_apso_prio_on() && rsx_apq_promote(&g_apso.q, n)) ld_apso_claim_locked((ld_apso_job*)n);
+@@ -20553,8 +20660,9 @@ void rsx_live_draw_shutdown(void)
+                 (unsigned long long)g_ld_shader_disk_writes[1],
+                 (unsigned long long)g_ld_shader_disk_rejects);
+     }
++    const u32 apso_left = ld_apso_quiesce();   /* R&C patch 7061: no async build or template job runs past here */
+     ld_pt_shutdown();   /* patch 2071: before the library goes */
+-    ld_pl_shutdown();   /* patch 2031 */
++    ld_pl_shutdown((int)apso_left);   /* patch 2031 */
+     for (u32 i = 0; i < g.n_psos; i++) if (g.psos[i].pso) g.psos[i].pso->lpVtbl->Release(g.psos[i].pso);
+     shader_blob_cache_release(&g.vs_blobs);
+     shader_blob_cache_release(&g.ps_blobs);
+diff --git a/libs/video/rsx_pso_prio.h b/libs/video/rsx_pso_prio.h
+index 78185c5..9a1268d 100644
+--- a/libs/video/rsx_pso_prio.h
++++ b/libs/video/rsx_pso_prio.h
+@@ -20,12 +20,27 @@
+  * level load: the PPU main thread (~1000 ms/s), 4 SPURS SPU threads (up to ~850 ms/s), the RSX walker, d3d12core's
+  * queue thread; a raw SPU and the audio/IO threads come and go: 8 reserved. 20 logical processors (i7-12700KF) -> 8
+  * workers; 12 -> 4; 8 or fewer -> 2. LD_PSO_ASYNC_THREADS still overrides.
++ *
++ * Template prewarm jobs (R&C patch 7061): KZ3 2071's prewarm ran its own threads (LD_PSO_TEMPLATE_THREADS, 3) beside
++ * these workers, so in ToD's cold level load its 292 builds competed with the walker's demand and lookahead builds
++ * (tmpl-on-cold 2026-11-11: first frame 16.6 s against 12.6 s without the template, the RE notes s.30). They are
++ * now jobs of this queue in the lowest class (RSX_APQ_CLS_TEMPLATE, priority RSX_APQ_TEMPLATE, after every build):
++ * a worker takes one only when no demand or lookahead build is queued, and at most tmpl_cap of them run at once
++ * (default min(3, workers - 1)), so a worker is always free for the next demand. With one worker the cap is 0: no
++ * template job is ever taken (the caller keeps 2071's own threads instead; LD_PSO_ASYNC_THREADS=1 only). A template job is never promoted
++ * and owns no shared compile of this queue. n_queued counts builds only (the lookahead backlog and the await log
++ * read it); n_tmpl counts queued template jobs. When pop declines a template at the cap the worker's semaphore count
++ * is spent: rsx_apq_template_done tells the caller to release one when a template is still queued.
++ *
+  * Pure C (host test port/rc/tests/run_pso_prio_test.sh). The caller holds its lock around every call. */
+ #ifndef RSX_PSO_PRIO_H
+ #define RSX_PSO_PRIO_H
+ #include <stdint.h>
+ 
+ #define RSX_APQ_DEMAND 0ull
++#define RSX_APQ_TEMPLATE 0xFFFFFFFFFFFFFFFFull   /* R&C patch 7061: after every build */
++#define RSX_APQ_CLS_BUILD 0u
++#define RSX_APQ_CLS_TEMPLATE 1u
+ #define RSX_APQ_GAME_THREADS 8
+ #define RSX_APQ_MIN_WORKERS 2
+ #define RSX_APQ_MAX_WORKERS 8
+@@ -34,33 +49,63 @@ typedef struct rsx_apq_node {
+     struct rsx_apq_node* next;
+     uint64_t prio;
+     uint8_t queued;      /* 1 between insert and pop */
++    uint8_t cls;         /* R&C patch 7061: RSX_APQ_CLS_BUILD (0) or RSX_APQ_CLS_TEMPLATE */
+ } rsx_apq_node;
+ 
+ typedef struct {
+     rsx_apq_node* head;
+-    uint32_t n_queued;
++    uint32_t n_queued;           /* queued builds (demand and lookahead) */
+     uint64_t promoted, claims;   /* demands moved to the front; compile ownerships moved */
++    uint32_t n_tmpl, tmpl_running, tmpl_cap;   /* R&C patch 7061: template jobs queued / running / allowed at once */
+ } rsx_apq;
+ 
+-/* Insert after every node of lower or equal priority (stable). */
++/* Insert after every node of lower or equal priority (stable). A build sorts before every template job. */
+ static inline void rsx_apq_insert(rsx_apq* q, rsx_apq_node* n, uint64_t prio)
+ {
++    if (n->cls == RSX_APQ_CLS_TEMPLATE) prio = RSX_APQ_TEMPLATE;
++    else if (prio >= RSX_APQ_TEMPLATE) prio = RSX_APQ_TEMPLATE - 1u;
+     rsx_apq_node** pp = &q->head;
+     while (*pp && (*pp)->prio <= prio) pp = &(*pp)->next;
+     n->prio = prio; n->next = *pp; *pp = n; n->queued = 1;
+-    q->n_queued++;
++    if (n->cls == RSX_APQ_CLS_TEMPLATE) q->n_tmpl++; else q->n_queued++;
++}
++
++/* R&C patch 7061: queue a template prewarm job (lowest class). */
++static inline void rsx_apq_insert_template(rsx_apq* q, rsx_apq_node* n)
++{
++    n->cls = RSX_APQ_CLS_TEMPLATE;
++    rsx_apq_insert(q, n, RSX_APQ_TEMPLATE);
+ }
+ 
+-/* The next job to run (NULL when empty). */
++/* The next job to run (NULL when empty, or when only template jobs are queued and tmpl_cap of them run). */
+ static inline rsx_apq_node* rsx_apq_pop(rsx_apq* q)
+ {
+     rsx_apq_node* n = q->head;
+     if (!n) return NULL;
++    if (n->cls == RSX_APQ_CLS_TEMPLATE && q->tmpl_running >= q->tmpl_cap) return NULL;   /* cap 0: none */
+     q->head = n->next; n->next = NULL; n->queued = 0;
+-    q->n_queued--;
++    if (n->cls == RSX_APQ_CLS_TEMPLATE) { q->n_tmpl--; q->tmpl_running++; } else q->n_queued--;
+     return n;
+ }
+ 
++/* R&C patch 7061: a template job finished. 1 = a template job is still queued and may run now (the caller releases
++ * one semaphore count for it: a pop declined at the cap spent one). */
++static inline int rsx_apq_template_done(rsx_apq* q)
++{
++    if (q->tmpl_running) q->tmpl_running--;
++    return q->n_tmpl > 0;
++}
++
++/* R&C patch 7061: template jobs allowed at once: the requested count (0 = 3), at most workers - 1. 0 with one worker:
++ * a template job would hold the only worker and the next demand would wait for it. */
++static inline uint32_t rsx_apq_template_cap(int requested, int workers)
++{
++    int c = requested > 0 ? requested : 3;
++    if (c > workers - 1) c = workers - 1;
++    if (c < 0) c = 0;
++    return (uint32_t)c;
++}
++
+ /* 1 when a is queued strictly ahead of b (both queued). */
+ static inline int rsx_apq_before(const rsx_apq* q, const rsx_apq_node* a, const rsx_apq_node* b)
+ {
+@@ -75,7 +120,7 @@ static inline int rsx_apq_before(const rsx_apq* q, const rsx_apq_node* a, const
+  * on one build at a time). Returns 1 when it moved, 0 when it was not queued (running or done). */
+ static inline int rsx_apq_promote(rsx_apq* q, rsx_apq_node* n)
+ {
+-    if (!n->queued) return 0;
++    if (!n->queued || n->cls == RSX_APQ_CLS_TEMPLATE) return 0;   /* 7061: nothing waits on a template job */
+     rsx_apq_node** pp = &q->head;
+     while (*pp && *pp != n) pp = &(*pp)->next;
+     if (!*pp) return 0;

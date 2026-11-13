@@ -1,0 +1,161 @@
+diff --git a/libs/network/sceNp.c b/libs/network/sceNp.c
+--- a/libs/network/sceNp.c
++++ b/libs/network/sceNp.c
+@@ -15,6 +15,19 @@
+ #include "np_psnr.h"
+ #include "../system/cellSysutil.h"
+ #include "../filesystem/edat.h"
++#include <sys/stat.h>   /* R&C 7046: is the DRM file installed */
++/* The type is the S_IFMT field, not one bit: S_IFSOCK (0140000) and S_IFLNK (0120000) also contain the S_IFREG (0100000)
++ * bit, so `st_mode & S_IFREG` counted a socket as a regular file. MinGW-w64 and glibc both define both macros; the
++ * fallbacks are for a target that lacks them. */
++#ifndef S_IFMT
++#define S_IFMT  0170000
++#endif
++#ifndef S_IFREG
++#define S_IFREG 0100000
++#endif
++/* R&C 7046: guest path -> host path, the same mapping the lv2 file calls use (runtime/syscalls/sys_fs.c; declared
++ * here because sys_fs.h pulls in the PPU context and windows.h). */
++void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_size);
+ 
+ 
+ /* ---------------------------------------------------------------------------
+@@ -415,6 +428,20 @@
+     const char* path = GUEST_PTR(drm_path, const char*);
+     /* A NULL klicensee is legal for content that needs none; nothing to record. */
+     if (k) edat_add_klicensee(k);
++    /* R&C patch 7046: a licence check of a file that is not installed fails with the file system's error, as on the
++     * console ([src:rpcs3-scenp]: the check opens drm_path first and returns the open's error). Answering CELL_OK for
++     * a missing file told A Crack in Time 1.20 that the pre-order DLC preorder_discovery.edat was owned (path table
++     * @0x00C204D4: 7 title ids x preorder_{discovery,power,bolt,space}.edat), so a new game unlocked a "Discovery
++     * Package" that a console without the DLC never shows. A NULL path stays CELL_OK as before (no caller seen). */
++    if (path) {
++        char host[1024];
++        struct stat st;
++        sys_fs_translate_path(path, host, (int)sizeof host);
++        if (stat(host, &st) != 0 || (st.st_mode & S_IFMT) != S_IFREG) {
++            fprintf(stderr, "[sceNp] DRM availability check: %s -> not installed (CELL_ENOENT)\n", path);
++            return CELL_ENOENT;
++        }
++    }
+     fprintf(stderr, "[sceNp] DRM availability check: %s\n", path ? path : "(null)");
+     return CELL_OK;
+ }
+diff --git a/libs/filesystem/tests/test_edat_guest_klicensee.c b/libs/filesystem/tests/test_edat_guest_klicensee.c
+--- a/libs/filesystem/tests/test_edat_guest_klicensee.c
++++ b/libs/filesystem/tests/test_edat_guest_klicensee.c
+@@ -18,6 +18,14 @@
+ s32 sceNpDrmIsAvailable(const u8* k_licensee, const char* drm_path);
+ s32 sceNpDrmIsAvailable2(const u8* k_licensee, const char* drm_path);
+ extern uint8_t* vm_base;
++extern const char* g_test_drm_dir;   /* R&C 7046, test_edat_guest_klicensee_np.c */
++#ifndef _WIN32
++#include <errno.h>
++#include <sys/stat.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++#endif
+ 
+ #define BLOCK  0x400u
+ #define FSIZE  2500u          /* 3 blocks, the last 452 bytes */
+@@ -116,6 +124,7 @@
+     memcpy(vm_base + klic_ea, KLIC, 16);
+     memcpy(vm_base + other_ea, OTHER, 16);
+     strcpy((char*)vm_base + path_ea, "/dev_hdd0/game/TEST00000/USRDIR/data.edat");
++    g_test_drm_dir = dir;   /* R&C 7046: the DRM check needs the file to exist */
+ 
+     int rc = edat_decrypt_file(in, out);
+     snprintf(what, sizeof what, "no klicensee from the guest: -6 (got %d)", rc);
+@@ -145,6 +154,52 @@
+         check(n == FSIZE && memcmp(got, plain, FSIZE) == 0, what);
+     }
+ 
++    /* R&C 7046: a file that is not installed is not licensed: the file system's error, as on the console. */
++    strcpy((char*)vm_base + path_ea, "/dev_hdd0/game/TEST00000/USRDIR/missing.edat");
++    r = sceNpDrmIsAvailable((const u8*)(uintptr_t)klic_ea, (const char*)(uintptr_t)path_ea);
++    snprintf(what, sizeof what, "sceNpDrmIsAvailable(missing file) = 0x%08X, CELL_ENOENT", (unsigned)r);
++    check((u32)r == 0x80010006u, what);
++    r = sceNpDrmIsAvailable2((const u8*)(uintptr_t)klic_ea, (const char*)(uintptr_t)path_ea);
++    snprintf(what, sizeof what, "sceNpDrmIsAvailable2(missing file) = 0x%08X, CELL_ENOENT", (unsigned)r);
++    check((u32)r == 0x80010006u, what);
++
++#ifndef _WIN32   /* a directory, FIFO and socket entry (the Windows host has no FIFO/socket files and a one-argument mkdir) */
++    /* A file system entry that exists but is not a regular file is not an installed DRM file either. */
++    {
++        static const char* const names[] = { "adir.edat", "afifo.edat", "asock.edat" };
++        char host[1100], guest[160];
++        snprintf(host, sizeof host, "%s/adir.edat", dir);
++        int made = mkdir(host, 0700) == 0 || errno == EEXIST;
++        check(made, "created a directory entry");
++        snprintf(host, sizeof host, "%s/afifo.edat", dir);
++        check(mkfifo(host, 0600) == 0, "created a FIFO entry");
++        {
++            struct sockaddr_un sa; memset(&sa, 0, sizeof sa); sa.sun_family = AF_UNIX;
++            snprintf(host, sizeof host, "%s/asock.edat", dir);
++            int sfd = socket(AF_UNIX, SOCK_STREAM, 0);
++            int bound = strlen(host) < sizeof sa.sun_path;
++            if (bound) { strcpy(sa.sun_path, host); bound = bind(sfd, (struct sockaddr*)&sa, sizeof sa) == 0; }
++            check(sfd >= 0 && bound, "created a socket entry");
++            if (sfd >= 0) close(sfd);   /* the socket file stays on disk */
++        }
++        for (int i = 0; i < 3; i++) {
++            snprintf(guest, sizeof guest, "/dev_hdd0/game/TEST00000/USRDIR/%s", names[i]);
++            strcpy((char*)vm_base + path_ea, guest);
++            r = sceNpDrmIsAvailable((const u8*)(uintptr_t)klic_ea, (const char*)(uintptr_t)path_ea);
++            snprintf(what, sizeof what, "sceNpDrmIsAvailable(%s) = 0x%08X, CELL_ENOENT", names[i], (unsigned)r);
++            check((u32)r == 0x80010006u, what);
++            r = sceNpDrmIsAvailable2((const u8*)(uintptr_t)klic_ea, (const char*)(uintptr_t)path_ea);
++            snprintf(what, sizeof what, "sceNpDrmIsAvailable2(%s) = 0x%08X, CELL_ENOENT", names[i], (unsigned)r);
++            check((u32)r == 0x80010006u, what);
++        }
++        for (int i = 0; i < 3; i++) {
++            snprintf(host, sizeof host, "%s/%s", dir, names[i]);
++            unlink(host);
++            rmdir(host);
++        }
++    }
++#endif
++
+     remove(out); remove(in);
+     free(vm_base);
+     if (s_failed) { printf("FAIL (%d failed)\n", s_failed); return 1; }
+diff --git a/libs/filesystem/tests/test_edat_guest_klicensee_np.c b/libs/filesystem/tests/test_edat_guest_klicensee_np.c
+--- a/libs/filesystem/tests/test_edat_guest_klicensee_np.c
++++ b/libs/filesystem/tests/test_edat_guest_klicensee_np.c
+@@ -16,3 +16,15 @@
+ int np_psnr_enabled(void) { return 0; }
+ const char* np_psnr_online_id(void) { return "PS3Player"; }
+ s32 cellSysutilQueueGuestCallbackArgs(u32 opd, const u64 args[8]) { (void)opd; (void)args; return 0; }
++int ps3_net_np_signed_in(void) { return 0; }   /* R&C 7046: sceNp.c's np_signed_in (KZ3 4003) */
++/* R&C 7046: the DRM check stats the file. The test's /dev_hdd0/game/TEST00000/USRDIR/ is its scratch directory. */
++const char* g_test_drm_dir = ".";
++void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_size)
++{
++    const char* pre = "/dev_hdd0/game/TEST00000/USRDIR/";
++    size_t n = strlen(pre);
++    if (strncmp(ps3_path, pre, n) == 0)
++        snprintf(host_path, (size_t)host_path_size, "%s/%s", g_test_drm_dir, ps3_path + n);
++    else
++        snprintf(host_path, (size_t)host_path_size, "%s", ps3_path);
++}
+diff --git a/libs/network/tests/test_np_basic_after_np_init_np.c b/libs/network/tests/test_np_basic_after_np_init_np.c
+--- a/libs/network/tests/test_np_basic_after_np_init_np.c
++++ b/libs/network/tests/test_np_basic_after_np_init_np.c
+@@ -17,3 +17,4 @@
+ const char* np_psnr_online_id(void) { return "PS3Player"; }
+ s32 cellSysutilQueueGuestCallbackArgs(u32 opd, const u64 args[8]) { (void)opd; (void)args; return 0; }
+ void edat_add_klicensee(const uint8_t klic[16]) { (void)klic; }   /* sceNpDrmIsAvailable (#274) */
++void sys_fs_translate_path(const char* p, char* h, int n) { snprintf(h, (size_t)n, "%s", p); }   /* R&C 7046 */
+diff --git a/libs/network/tests/test_np_manager_offline.c b/libs/network/tests/test_np_manager_offline.c
+--- a/libs/network/tests/test_np_manager_offline.c
++++ b/libs/network/tests/test_np_manager_offline.c
+@@ -34,6 +34,7 @@
+     return 0;
+ }
+ void edat_add_klicensee(const uint8_t klic[16]) { (void)klic; }
++void sys_fs_translate_path(const char* p, char* h, int n) { snprintf(h, (size_t)n, "%s", p); }   /* R&C 7046 */
+ 
+ #define NPID   0x1000u
+ #define SVC    0x1100u

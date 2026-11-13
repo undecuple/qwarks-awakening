@@ -136,11 +136,68 @@ def test_split_view():
         check("lib.empty = lib.games.empty()" in f.read(), "model.h: a library with no game is empty, not an error")
 
 
+def test_build_play():
+    """Phase 2 wiring (2026-11-10): Build and Play run the engine's build / play as a child process, one at a time,
+    streamed; Cancel is firstrun.py's stop file; no fake build is left."""
+    with open(os.path.join(ROOT, "launcher", "src", "main.cpp"), encoding="utf-8") as f:
+        code = re.sub(r"//[^\n]*", "", f.read())
+    check('{"build", "--library"}' in code and '"--stop-file"' in code and '{"play", "--library"}' in code,
+          "main.cpp: Build runs `build --library F --game ID --stop-file S`, Play runs `play --library F --game ID`")
+    check("SDL_GetProcessOutput" in code and "SDL_ReadIO" in code, "main.cpp: the engine's output is read as it streams")
+    check("A.task.running.exchange(true)" in code, "main.cpp: one build or game at a time")
+    for tag in ('"PROGRESS "', '"REASON "', '"RESULT "', '"LOG path="', '"EXITED "', '"GAME "'):
+        check(tag in code, f"main.cpp: parses the engine's {tag.strip(chr(34)).strip()} lines")
+    check("kBuildSeconds" not in code and "A.job" not in code and "buildTemp" not in code, "main.cpp: the fake build is gone")
+    m = re.search(r"static void DetailsScreen\(\) \{(.*?)\n\}", code, re.S)
+    check(m is not None and "BuildAndPlay(" in m.group(1), "main.cpp: the Details page has Build and play")
+
+
+def test_phase4():
+    """Launcher phase 4 (2026-11-10): the build kit, D30-the online settings and the opt-in release check. Nothing
+    may connect without the player's click or opt-in: the only process that fetches is kit.py, started from the kit
+    dialog's Download, the symbols Download, Check now, or at start only when prefs.update_check is on."""
+    with open(os.path.join(ROOT, "launcher", "src", "main.cpp"), encoding="utf-8") as f:
+        code = re.sub(r"//[^\n]*", "", f.read())
+    with open(os.path.join(ROOT, "launcher", "CMakeLists.txt"), encoding="utf-8") as f:
+        cm = f.read()
+    check("file(SHA256 \"${LAUNCHER_KIT_MANIFEST}\" LAUNCHER_KIT_SHA256)" in cm and "LAUNCHER_KIT_URL=" in cm
+          and "releases/download/" in cm, "CMakeLists.txt: the kit hash and GitHub release URL come from kit.json")
+    for verb in ("fetch", "symbols", "check-release"):
+        n = len(re.findall(r'"%s"' % verb, code))
+        check(n == 1, f"main.cpp: kit.py {verb} is started from one place only", n)
+    m = re.search(r"static void StartTask\(.*?\n\}", code, re.S)
+    check(m is not None and "KitNeeded()" in m.group(0) and "A.kit.open = true" in m.group(0)
+          and m.group(0).index("KitNeeded()") < m.group(0).index("A.task.running.exchange(true)"),
+          "main.cpp: Build without the kit opens the kit dialog before anything starts")
+    m = re.search(r"static void KitDialog\(.*?\n\}", code, re.S)
+    body = m.group(0) if m else ""
+    check('StartTask("kit"' in body and "Download##kd" in body and "Not now##kn" in body and "LAUNCHER_KIT_BYTES" in body
+          and "A.kit.url" in body, "main.cpp: the kit dialog shows size and address and downloads only on Download")
+    check(code.count('StartTask("kit"') == 2 and 'screenName == "kit"' in code,
+          "main.cpp: the kit download starts from the dialog (and a screenshot, which starts no process)")
+    m = re.search(r"CheckRelease\(true\)", code)
+    check(len(re.findall(r"CheckRelease\(true\)", code)) == 2 and len(re.findall(r'updateCheck == "on"', code)) >= 2,
+          "main.cpp: the release check at start runs only with prefs.update_check on")
+    check('PlayDisclaimer(e)' in code and 'PlayDisclaimer(g)' in code and '"In this release: "' in code,
+          "main.cpp: disclaimer beside Build (Details rows and the selected panel)")
+    check('"Update available: rebuild"' in code and '"Port updated: rebuild"' not in code, "main.cpp: wording")
+    check('"set-pref", "--library", A.libPath, key' in code and '"debug_info"' in code and '"update_check"' in code,
+          "main.cpp: Debug information and Check for new releases are prefs written by the engine")
+    check('"get-online"' in code and '"set-online"' in code and '"--method"' in code,
+          "main.cpp: Online settings only through the engine's get-online / set-online")
+    with open(os.path.join(ROOT, "launcher", "src", "model.h"), encoding="utf-8") as f:
+        mh = f.read()
+    check('j["playability"]' in mh and 'j["playability_note"]' in mh and 'root["prefs"]["debug_info"]' in mh
+          and 'root["prefs"]["update_check"]' in mh, "model.h: reads playability and the phase 4 prefs")
+
+
 def main():
     test_catalog_imports()
     test_main_cpp()
     test_theme()
     test_split_view()
+    test_build_play()
+    test_phase4()
     print("test_launcher_src:", "FAIL" if FAILS else "PASS")
     return 1 if FAILS else 0
 

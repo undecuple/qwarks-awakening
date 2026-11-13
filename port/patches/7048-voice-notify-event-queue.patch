@@ -1,0 +1,380 @@
+diff --git a/libs/audio/cellVoice.c b/libs/audio/cellVoice.c
+index 2a50981..63077d6 100644
+--- a/libs/audio/cellVoice.c
++++ b/libs/audio/cellVoice.c
+@@ -22,6 +22,32 @@ typedef struct {
+ 
+ static VoicePort s_ports[CELL_VOICE_PORT_MAX];
+ 
++/* Notify event queues attached with cellVoiceSetNotifyEventQueue (RPCS3
++ * cellVoice.cpp semantics: queue_keys, one entry per attached source; the
++ * same key may be attached more than once with different sources). The host
++ * has no voice device, but the service itself starts and stops, and those two
++ * transitions are the only events sent: SERVICE_ATTACHED when Start moves the
++ * service from stopped to started, SERVICE_DETACHED when Stop or End moves it
++ * back. Nothing else is ever reported (no port or data events are faked). */
++#define VOICE_NOTIFY_MAX 32
++typedef struct { u64 key; u64 source; } VoiceNotify;
++static VoiceNotify s_notify[VOICE_NOTIFY_MAX];
++static int s_notify_count = 0;
++static u32 s_source_next = 0;
++
++extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
++extern uint32_t sys_event_find_queue_by_key(uint64_t key);
++extern int sys_event_queue_push_by_id(uint32_t queue_id, uint64_t source, uint64_t data1,
++                                      uint64_t data2, uint64_t data3);
++
++static void voice_notify_all(u64 event)
++{
++    for (int i = 0; i < s_notify_count; i++) {
++        uint32_t qid = sys_event_find_queue_by_key(s_notify[i].key);
++        if (qid) sys_event_queue_push_by_id(qid, s_notify[i].source, event, 0, 0);
++    }
++}
++
+ /* API */
+ 
+ s32 cellVoiceInit(const CellVoiceInitParam* param)
+@@ -31,6 +57,7 @@ s32 cellVoiceInit(const CellVoiceInitParam* param)
+     if (s_initialized)
+         return (s32)CELL_VOICE_ERROR_ALREADY_INITIALIZED;
+     memset(s_ports, 0, sizeof(s_ports));
++    s_notify_count = 0;
+     s_initialized = 1;
+     s_started = 0;
+     return CELL_OK;
+@@ -39,6 +66,8 @@ s32 cellVoiceInit(const CellVoiceInitParam* param)
+ s32 cellVoiceEnd(void)
+ {
+     printf("[cellVoice] End()\n");
++    if (s_initialized && s_started) voice_notify_all(CELLVOICE_EVENT_SERVICE_DETACHED);
++    s_notify_count = 0;
+     s_initialized = 0;
+     s_started = 0;
+     return CELL_OK;
+@@ -87,7 +116,10 @@ s32 cellVoiceStart(void)
+ {
+     printf("[cellVoice] Start()\n");
+     if (!s_initialized) return (s32)CELL_VOICE_ERROR_NOT_INITIALIZED;
+-    s_started = 1;
++    if (!s_started) {
++        s_started = 1;
++        voice_notify_all(CELLVOICE_EVENT_SERVICE_ATTACHED);
++    }
+     return CELL_OK;
+ }
+ 
+@@ -95,7 +127,10 @@ s32 cellVoiceStop(void)
+ {
+     printf("[cellVoice] Stop()\n");
+     if (!s_initialized) return (s32)CELL_VOICE_ERROR_NOT_INITIALIZED;
+-    s_started = 0;
++    if (s_started) {
++        s_started = 0;
++        voice_notify_all(CELLVOICE_EVENT_SERVICE_DETACHED);
++    }
+     return CELL_OK;
+ }
+ 
+@@ -214,3 +249,51 @@ s32 cellVoiceGetSignalState(CellVoicePortId portId, u32 attr, void* attrValue)
+     /* RPCS3 reports a detached microphone and does not write attrValue. */
+     return (s32)CELL_VOICE_ERROR_DEVICE_NOT_PRESENT;
+ }
++
++/* cellVoiceCreateNotifyEventQueue(sys_event_queue_t* id, u64* key)
++ *
++ * RPCS3 creates a FIFO PPU event queue of depth 0x40 under the first free key
++ * of 0x80004d494f323285 + 0..9 and writes the id and key; all ten taken is
++ * CELL_VOICE_ERROR_EVENT_QUEUE. It needs cellVoiceInit first. RPCS3 does not
++ * check the two pointers (it would fault); a null pointer is reported as
++ * ARGUMENT_INVALID here. ASSUMPTION: the argument error, and EVENT_QUEUE when
++ * the lv2 queue table is full. */
++s32 cellVoiceCreateNotifyEventQueue(u32* id, u64* key)
++{
++    if (!s_initialized) return (s32)CELL_VOICE_ERROR_NOT_INITIALIZED;
++    if (!id || !key) return (s32)CELL_VOICE_ERROR_ARGUMENT_INVALID;
++
++    for (u64 i = 0; i < 10; i++) {
++        u64 k = 0x80004d494f323285ull + i;
++        if (sys_event_find_queue_by_key(k)) continue;      /* EEXIST: try the next key */
++        uint32_t qid = sys_event_queue_create_direct(k, 0x40);
++        if (!qid) return (s32)CELL_VOICE_ERROR_EVENT_QUEUE;
++        vm_write32((u32)(uintptr_t)id, qid);
++        vm_write64((u32)(uintptr_t)key, k);
++        printf("[cellVoice] CreateNotifyEventQueue -> id=%u key=0x%llX\n",
++               qid, (unsigned long long)k);
++        return CELL_OK;
++    }
++    return (s32)CELL_VOICE_ERROR_EVENT_QUEUE;
++}
++
++/* cellVoiceSetNotifyEventQueue(u64 key, u64 source)
++ *
++ * Attaches an existing queue (by key) to the voice service. Attaching the same
++ * key again is allowed (a second source is queued); an unknown key is
++ * CELL_VOICE_ERROR_EVENT_QUEUE. A zero source gets a generated id, like a
++ * sys_event_port_send from an unnamed port. ASSUMPTION: the generated value
++ * ((1 << 32) | 0x0e000000 + n; RPCS3 uses the process id and its event port id
++ * counter), and RESOURCE_INSUFFICIENT when more than 32 sources are attached.
++ * No event is sent here: SERVICE_ATTACHED goes out from cellVoiceStart. */
++s32 cellVoiceSetNotifyEventQueue(u64 key, u64 source)
++{
++    if (!s_initialized) return (s32)CELL_VOICE_ERROR_NOT_INITIALIZED;
++    if (!sys_event_find_queue_by_key(key)) return (s32)CELL_VOICE_ERROR_EVENT_QUEUE;
++    if (s_notify_count >= VOICE_NOTIFY_MAX) return (s32)CELL_VOICE_ERROR_RESOURCE_INSUFFICIENT;
++    if (!source) source = (1ull << 32) | (u64)(0x0e000000u + s_source_next++);
++    s_notify[s_notify_count].key = key;
++    s_notify[s_notify_count].source = source;
++    s_notify_count++;
++    return CELL_OK;
++}
+diff --git a/libs/audio/cellVoice.h b/libs/audio/cellVoice.h
+index 8f6472d..41fff57 100644
+--- a/libs/audio/cellVoice.h
++++ b/libs/audio/cellVoice.h
+@@ -27,6 +27,12 @@ extern "C" {
+ #define CELL_VOICE_ERROR_ARGUMENT_INVALID    0x80310805
+ #define CELL_VOICE_ERROR_TOPOLOGY            0x80310807
+ #define CELL_VOICE_ERROR_DEVICE_NOT_PRESENT  0x80310812
++#define CELL_VOICE_ERROR_RESOURCE_INSUFFICIENT 0x80310808
++#define CELL_VOICE_ERROR_EVENT_QUEUE         0x8031080f
++
++/* Notify event ids (data1 of the queue event) */
++#define CELLVOICE_EVENT_SERVICE_ATTACHED     (1u << 3)
++#define CELLVOICE_EVENT_SERVICE_DETACHED     (1u << 4)
+ 
+ /* Constants */
+ #define CELL_VOICE_PORT_MAX          16
+@@ -91,6 +97,10 @@ s32 cellVoiceResetPort(CellVoicePortId portId);
+ s32 cellVoiceUpdatePort(CellVoicePortId portId, const CellVoicePortParam* param);
+ s32 cellVoiceGetSignalState(CellVoicePortId portId, u32 attr, void* attrValue);
+ 
++/* Notify event queue (sys_event_queue_t* id, u64* key; u64 key, u64 source) */
++s32 cellVoiceCreateNotifyEventQueue(u32* id, u64* key);
++s32 cellVoiceSetNotifyEventQueue(u64 key, u64 source);
++
+ s32 cellVoiceSetCallback(CellVoiceEventCallback callback, void* arg);
+ 
+ #ifdef __cplusplus
+diff --git a/b/libs/audio/tests/test_voice_notify_queue.c b/libs/audio/tests/test_voice_notify_queue.c
+new file mode 100644
+index 0000000..cf626be
+--- /dev/null
++++ b/libs/audio/tests/test_voice_notify_queue.c
+@@ -0,0 +1,99 @@
++/*
++ * test_voice_notify_queue - cellVoiceCreateNotifyEventQueue and
++ * cellVoiceSetNotifyEventQueue.
++ *
++ * Both were unresolved NIDs (Deadlocked HD, Ratchet & Clank 3): the default
++ * CELL_OK handed the game no queue id, so it waited on an id it never owned.
++ * The functions are declared weak so a build without them reports them missing.
++ *
++ *   cc -std=gnu17 -I include -o test_voice_notify_queue libs/audio/tests/test_voice_notify_queue.c
++ * Driven by tools/test_voice_notify_queue.py.
++ */
++#include "../cellVoice.h"
++s32 cellVoiceCreateNotifyEventQueue(u32*, u64*) __attribute__((weak));
++s32 cellVoiceSetNotifyEventQueue(u64, u64) __attribute__((weak));
++#include "../cellVoice.c"
++#include <stdlib.h>
++#include "voice_event_stubs.h"
++
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++
++static int fails = 0;
++#define CHECK(c, ...) do { int ok_ = (c); printf(ok_ ? "[PASS] " : "[FAIL] "); printf(__VA_ARGS__); \
++                           printf("\n"); if (!ok_) fails++; } while (0)
++
++enum { MEM = 1 << 16, INIT = 0x100, ID = 0x200, KEY = 0x208 };
++#define U(x) ((u32)(x))
++
++int main(void)
++{
++    vm_base = calloc(1, MEM);
++    ppu_vm_size = MEM;
++    if (!cellVoiceCreateNotifyEventQueue || !cellVoiceSetNotifyEventQueue) {
++        CHECK(0, "cellVoiceCreateNotifyEventQueue/SetNotifyEventQueue are defined");
++        return 1;
++    }
++
++    /* Before cellVoiceInit: LIBVOICE_NOT_INIT. */
++    CHECK(U(cellVoiceCreateNotifyEventQueue((u32*)(uintptr_t)ID, (u64*)(uintptr_t)KEY)) == 0x80310801u,
++          "Create before Init -> NOT_INIT");
++    CHECK(U(cellVoiceSetNotifyEventQueue(0x80004d494f323285ull, 0)) == 0x80310801u,
++          "Set before Init -> NOT_INIT");
++    CHECK(sys_event_find_queue_by_key(0x80004d494f323285ull) == 0, "no queue created before Init");
++
++    CHECK(cellVoiceInit((const CellVoiceInitParam*)(uintptr_t)INIT) == CELL_OK, "Init");
++
++    /* Bad arguments. */
++    CHECK(U(cellVoiceCreateNotifyEventQueue(NULL, (u64*)(uintptr_t)KEY)) == 0x80310805u, "Create(id NULL)");
++    CHECK(U(cellVoiceCreateNotifyEventQueue((u32*)(uintptr_t)ID, NULL)) == 0x80310805u, "Create(key NULL)");
++    CHECK(U(cellVoiceSetNotifyEventQueue(0x1234, 0)) == 0x8031080fu, "Set(unknown key) -> EVENT_QUEUE");
++    CHECK(U(cellVoiceSetNotifyEventQueue(0, 0)) == 0x8031080fu, "Set(key 0) -> EVENT_QUEUE");
++
++    /* Create: a queue of depth 0x40 under the first key, id and key written. */
++    CHECK(cellVoiceCreateNotifyEventQueue((u32*)(uintptr_t)ID, (u64*)(uintptr_t)KEY) == CELL_OK, "Create");
++    u32 qid = vm_read32(ID);
++    u64 key = vm_read64(KEY);
++    CHECK(qid != 0 && key == 0x80004d494f323285ull, "Create wrote id=%u key=0x%llx", qid, (unsigned long long)key);
++    CHECK(qid && g_stub_q[qid - 1].depth == 0x40, "queue depth 0x40");
++    CHECK(sys_event_find_queue_by_key(key) == qid, "queue found by key");
++
++    /* A second queue gets the next key. */
++    CHECK(cellVoiceCreateNotifyEventQueue((u32*)(uintptr_t)ID, (u64*)(uintptr_t)KEY) == CELL_OK, "Create #2");
++    CHECK(vm_read64(KEY) == 0x80004d494f323286ull && vm_read32(ID) != qid, "Create #2 -> next key, new id");
++
++    /* Attach: no event yet; the service has not started. */
++    CHECK(cellVoiceSetNotifyEventQueue(key, 0x77) == CELL_OK, "Set(key, source 0x77)");
++    CHECK(g_stub_q[qid - 1].n == 0, "no event before the service starts");
++
++    /* Start sends exactly the attach event: data1 = SERVICE_ATTACHED (8), data2/3 = 0, the source given. */
++    CHECK(cellVoiceStart() == CELL_OK, "Start");
++    stub_queue* q = &g_stub_q[qid - 1];
++    CHECK(q->n == 1, "one event after Start (got %d)", q->n);
++    CHECK(q->n >= 1 && q->ev[0].d1 == 8 && q->ev[0].d2 == 0 && q->ev[0].d3 == 0 && q->ev[0].source == 0x77,
++          "event: source 0x77, data1 SERVICE_ATTACHED, data2/3 zero");
++    CHECK(cellVoiceStart() == CELL_OK && q->n == 1, "a second Start sends nothing");
++
++    /* A zero source gets a generated, non-zero id; the same key may be attached twice. */
++    CHECK(cellVoiceSetNotifyEventQueue(key, 0) == CELL_OK, "Set(key, source 0) again");
++
++    /* Stop reports the detach to both sources; End after Stop sends nothing more. */
++    CHECK(cellVoiceStop() == CELL_OK, "Stop");
++    CHECK(q->n == 3 && q->ev[1].d1 == 16 && q->ev[2].d1 == 16, "Stop -> two SERVICE_DETACHED (n=%d)", q->n);
++    CHECK(q->n == 3 && q->ev[1].source == 0x77 && q->ev[2].source != 0 && q->ev[2].source != 0x77,
++          "detach events carry the given source and a generated non-zero one");
++    cellVoiceEnd();
++    CHECK(q->n == 3, "End after Stop sends nothing");
++    CHECK(U(cellVoiceSetNotifyEventQueue(key, 0)) == 0x80310801u, "Set after End -> NOT_INIT");
++
++    printf(fails ? "FAILED (%d)\n" : "OK\n", fails);
++    return fails ? 1 : 0;
++}
+diff --git a/libs/audio/tests/test_voice_port_control.c b/libs/audio/tests/test_voice_port_control.c
+index b26b2d7..2cfa030 100644
+--- a/libs/audio/tests/test_voice_port_control.c
++++ b/libs/audio/tests/test_voice_port_control.c
+@@ -17,6 +17,7 @@ s32 cellVoiceUpdatePort(CellVoicePortId, const CellVoicePortParam*) __attribute_
+ s32 cellVoiceGetSignalState(CellVoicePortId, u32, void*) __attribute__((weak));
+ #include "../cellVoice.c"
+ #include <stdlib.h>
++#include "voice_event_stubs.h"
+ 
+ uint8_t* vm_base;
+ uint32_t ppu_vm_size;
+diff --git a/b/libs/audio/tests/voice_event_stubs.h b/libs/audio/tests/voice_event_stubs.h
+new file mode 100644
+index 0000000..ceaa0ab
+--- /dev/null
++++ b/libs/audio/tests/voice_event_stubs.h
+@@ -0,0 +1,38 @@
++/* Host stand-ins for the three lv2 event queue helpers cellVoice.c calls
++ * (runtime/syscalls/sys_event.c has the real ones): a small queue table that
++ * keeps the key, the depth and the events pushed, so a test can read them back. */
++#ifndef VOICE_EVENT_STUBS_H
++#define VOICE_EVENT_STUBS_H
++#include <stdint.h>
++#include <string.h>
++
++typedef struct { uint64_t source, d1, d2, d3; } stub_evt;
++typedef struct { int active; uint64_t key; int depth; int n; stub_evt ev[128]; } stub_queue;
++static stub_queue g_stub_q[8];
++
++uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
++{
++    for (int i = 0; i < 8; i++)
++        if (!g_stub_q[i].active) {
++            memset(&g_stub_q[i], 0, sizeof g_stub_q[i]);
++            g_stub_q[i].active = 1; g_stub_q[i].key = key; g_stub_q[i].depth = size;
++            return (uint32_t)(i + 1);
++        }
++    return 0;
++}
++uint32_t sys_event_find_queue_by_key(uint64_t key)
++{
++    if (!key) return 0;
++    for (int i = 0; i < 8; i++)
++        if (g_stub_q[i].active && g_stub_q[i].key == key) return (uint32_t)(i + 1);
++    return 0;
++}
++int sys_event_queue_push_by_id(uint32_t id, uint64_t s, uint64_t d1, uint64_t d2, uint64_t d3)
++{
++    if (id == 0 || id > 8 || !g_stub_q[id - 1].active) return -1;
++    stub_queue* q = &g_stub_q[id - 1];
++    if (q->n >= q->depth) return -1;
++    q->ev[q->n++] = (stub_evt){ s, d1, d2, d3 };
++    return 0;
++}
++#endif
+diff --git a/b/tools/test_voice_notify_queue.py b/tools/test_voice_notify_queue.py
+new file mode 100644
+index 0000000..96759c2
+--- /dev/null
++++ b/tools/test_voice_notify_queue.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""cellVoiceCreateNotifyEventQueue and cellVoiceSetNotifyEventQueue.
++
++Both were unresolved NIDs (Deadlocked HD, Ratchet & Clank 3), answered with a
++default CELL_OK that gave the game no queue. This builds
++libs/audio/tests/test_voice_notify_queue.c and runs it.
++
++It needs a host C compiler (under CI=1 a missing one fails instead of
++skipping).
++
++Usage:
++    python3 tools/test_voice_notify_queue.py
++"""
++
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++TESTS = os.path.join(ROOT, "libs", "audio", "tests")
++SOURCES = [os.path.join(TESTS, "test_voice_notify_queue.c")]
++
++
++def _cc():
++    return (shutil.which(os.environ.get("CC", "cc")) or shutil.which("clang")
++            or shutil.which("gcc"))
++
++
++def main():
++    cc = _cc()
++    if cc is None:
++        if os.environ.get("CI"):
++            print("FAIL: no C compiler found")
++            return 1
++        print("skip test_voice_notify_queue: no C compiler")
++        return 0
++    with tempfile.TemporaryDirectory() as td:
++        exe = os.path.join(td, "test_voice_notify_queue")
++        cmd = [cc, "-std=gnu17", "-w", "-I" + os.path.join(ROOT, "include"),
++               "-o", exe] + SOURCES
++        r = subprocess.run(cmd, capture_output=True, text=True)
++        if r.returncode != 0:
++            print("FAIL: fixture did not build")
++            print((r.stdout + r.stderr)[-4000:])
++            return 1
++        r = subprocess.run([exe], capture_output=True, text=True)
++        sys.stdout.write(r.stdout)
++        return r.returncode
++
++
++if __name__ == "__main__":
++    sys.exit(main())

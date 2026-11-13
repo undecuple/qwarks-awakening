@@ -8,7 +8,7 @@
 **Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): the PS3 games recompiled into native Windows programs from your own copy.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/undecuple/qwarks-awakening/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
-[![Pre-release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&style=flat-square&label=pre-release&labelColor=0a1942&color=b24500)](https://github.com/undecuple/qwarks-awakening/releases)
+[![Pre-release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&filter=launcher-v*&style=flat-square&label=pre-release&labelColor=0a1942&color=b24500)](https://github.com/undecuple/qwarks-awakening/releases)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-1e70b9?style=flat-square&labelColor=0a1942)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-1e70b9?style=flat-square&labelColor=0a1942)](https://deepwiki.com/undecuple/qwarks-awakening)
 
@@ -16,31 +16,38 @@
 > documentation. It contains no game code, game data, assets, keys or firmware, and it never will. To build a game you
 > need your own copy of it and the decrypted `EBOOT.elf` made from that copy ([requirements](docs/requirements.md)).
 
-**10** games in the catalogue · **9** build into their own programs · **1** shared runtime ·
+**10** games in the catalogue · **10** build into their own programs · **1** shared runtime ·
 **5** fixes merged upstream into ps3recomp · **0** game files in this repository
 
-**Status: early work, not playable yet.** Version <!-- version -->0.2.1<!-- /version -->, a pre-release of
-2026-11-04: the source and a launcher preview for Windows. *Tools of Destruction* starts and can be played by hand from
-its first level, with known bugs, and has not been played through. In scripted runs of the current source it plays
-about 11 minutes of its first level without a crash, and *Ratchet & Clank 1*, *2* and *3* from the Collection reach
-their first levels.
+**Status: early work, not playable yet.** Version <!-- version -->0.3.0<!-- /version -->, a pre-release of
+2026-11-13: the source, and a launcher that builds the games from your own copy (Windows, not tried there yet).
+*Tools of Destruction* starts and can be played by hand from its first level, with known bugs, and has not been played
+through. In scripted runs of the source of 2026-11-10 it plays about 11 minutes of its first level without a crash,
+*Quest for Booty* reaches its ship deck, and *Ratchet & Clank 1*, *2* and *3* from the Collection reach their first
+levels, and *A Crack in Time* reaches its first level. *Deadlocked HD* builds, and a scripted new game plays its intro.
+No game is online yet ([ONLINE.md](docs/ONLINE.md)).
 
-**[Try the launcher](#try-the-launcher-preview-in-3-minutes)** · **[Status](#status)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
+**[Try the launcher](#try-the-launcher-preview-in-3-minutes)** · **[Status](#status)** · **[Feature parity](docs/FEATURE-PARITY.md)** · **[Building](docs/BUILDING.md)** · **[Online play](docs/ONLINE.md)** · **[Known issues](#settings-and-known-issues)** · **[Reporting bugs](#reporting-bugs-and-contributing)**
 
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
 <!-- badges:start -->
-[![ToD: in game](assets/badges/tods.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-tools-of-destruction) [![QfB: in game](assets/badges/qfb.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-quest-for-booty) [![ACiT: boots](assets/badges/acit.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-a-crack-in-time) [![A4O: boots](assets/badges/a4o.svg)](docs/FEATURE-PARITY.md#ratchet--clank-all-4-one) [![FFA: boots](assets/badges/ffa.svg)](docs/FEATURE-PARITY.md#ratchet--clank-full-frontal-assault) [![Nexus: boots](assets/badges/nexus.svg)](docs/FEATURE-PARITY.md#ratchet--clank-into-the-nexus) [![R&C 1: in game](assets/badges/rc1.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 2: in game](assets/badges/rc2.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 3: in game](assets/badges/rc3.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![Deadlocked HD: not built](assets/badges/dlhd.svg)](docs/FEATURE-PARITY.md#ratchet-deadlocked-hd)
+[![ToD: in game](assets/badges/tods.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-tools-of-destruction) [![QfB: in game](assets/badges/qfb.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-quest-for-booty) [![ACiT: boots](assets/badges/acit.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-a-crack-in-time) [![A4O: boots](assets/badges/a4o.svg)](docs/FEATURE-PARITY.md#ratchet--clank-all-4-one) [![FFA: boots](assets/badges/ffa.svg)](docs/FEATURE-PARITY.md#ratchet--clank-full-frontal-assault) [![Nexus: boots](assets/badges/nexus.svg)](docs/FEATURE-PARITY.md#ratchet--clank-into-the-nexus) [![R&C 1: in game](assets/badges/rc1.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 2: in game](assets/badges/rc2.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 3: in game](assets/badges/rc3.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![Deadlocked HD: menus](assets/badges/dlhd.svg)](docs/FEATURE-PARITY.md#ratchet-deadlocked-hd)
 
 *Each state is a measured run (last checked 2026-11-10, the Windows programs under Proton on Linux). "In game" means reached with scripted input, not played through by hand. The six states are defined in [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).*
 <!-- badges:end -->
 
 ## Try the launcher preview in 3 minutes
 
-The launcher preview lists the games and finds your files. It does not build or start a game yet: that part is
-**coming soon**. Download `Qwarks-Awakening-<version>-launcher-windows-x64.zip` from
-[Releases](https://github.com/undecuple/qwarks-awakening/releases); Python is included, nothing else to install.
+The launcher lists the games, finds your files, and builds a game from your own copy (Build, Rebuild, Cancel), then
+starts it (Play). Each game shows how far it gets in the current release. Download it from
+[Releases](https://github.com/undecuple/qwarks-awakening/releases) (the newest `launcher-v…` release; each game also
+has notes-only releases such as `tods-v…`); Python is included, nothing else to install.
+
+**Downloads.** Each launcher release has two: the bare launcher (`Qwarks-Awakening-<version>-launcher-windows-x64.zip`), which
+asks before it fetches the build files from GitHub on your first Build, and the full build zip, which carries the same
+files for a build with no download. A `SHA256SUMS` file lists the checksum of every zip.
 
 - **Windows 10/11:** unzip, start `Qwarks-Awakening-launcher.exe`. *Caveat: not tried on Windows yet.*
 - **Linux:** unzip, start `Qwarks-Awakening-launcher.exe` under Proton. *Caveat: tested only by starting it with
@@ -54,7 +61,7 @@ To build a game today, follow [docs/BUILDING.md](docs/BUILDING.md) (Linux with N
 |---|---|
 | Native code, not an emulator: the game's main-CPU (PPU) code and its SPU programs are recompiled to C ahead of time | [How it works](#how-it-works), [BUILDING.md](docs/BUILDING.md) |
 | One runtime and one set of tools for the whole PS3 series, one program per game | [Status](#status), [FEATURE-PARITY.md](docs/FEATURE-PARITY.md) |
-| Insomniac's SPU job code runs recompiled: *A Crack in Time* went from about 3 to 17 frames per second (scripted runs) | [CHANGELOG 0.2.1](CHANGELOG.md) |
+| Insomniac's SPU job code runs recompiled: *A Crack in Time*'s loading screen went from about 3 to about 17 frames per second (scripted runs, 2026-11-04; a loading screen, not play) | [CHANGELOG 0.2.1](CHANGELOG.md) |
 | Built from your own copy; no game code or data is shipped or downloaded (the launcher's cover-art switch, opt-in and not wired yet, will fetch cover images from IGDB.com) | [NOTICE.md](NOTICE.md), [requirements.md](docs/requirements.md) |
 | Run results in this README and in the feature-parity page give their date and how they were run; scripted and hand-play figures are kept apart | [Status](#status), [FEATURE-PARITY.md](docs/FEATURE-PARITY.md) |
 | General fixes go back to ps3recomp | [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#405](https://github.com/sp00nznet/ps3recomp/pull/405), [#408](https://github.com/sp00nznet/ps3recomp/pull/408), [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429), all merged |
@@ -64,10 +71,15 @@ To build a game today, follow [docs/BUILDING.md](docs/BUILDING.md) (Linux with N
 | Platform | How it runs | Renderer | State | Tested on |
 |---|---|---|---|---|
 | Windows 10/11 | native exe | Direct3D 12 | builds; not run on Windows | - |
-| Linux | the Windows exe under Proton (GE-Proton11-7) | Direct3D 12 through vkd3d-proton | verified | NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-04 |
+| Linux | the Windows exe under Proton (GE-Proton11-7) | Direct3D 12 through vkd3d-proton | verified | NVIDIA GeForce RTX 4060, driver 595.112.07; 2026-11-13 |
 
 What the runs under Proton showed for *Tools of Destruction*:
 
+- 2026-11-12 and 2026-11-13, scripted, no input, 300 seconds each: started directly with the game's developer level
+  option, 17 of its 19 level ids loaded, drew frames to the end of the run and did not crash, at about 12 to 59
+  frames per second over the last two minutes depending on the level (11 of the 17 under 30). Zordoom Prison and
+  Meridian City drew their first frames, then stopped drawing (a known issue). This shows that they load and draw, not that
+  they can be played.
 - 2026-11-10, scripted, twice, 16 minutes each: from an empty drive the game installs its data, a new game plays its
   intro and reaches Metropolis, and the player then moves, jumps, swings the wrench and fires there for about 11
   minutes. No crash; the only error lines in the log are the game's own script messages, from its data.
@@ -82,26 +94,27 @@ Not reached yet: a chapter played to its end, the port's own save loaded again a
 |---|---|---|
 | Ratchet & Clank Future: Tools of Destruction | 2007 | first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet |
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
-| Ratchet & Clank Future: A Crack in Time | 2009 | builds (1.20 update); a scripted new game reaches its first save, then the screen goes black in most runs; not playable |
+| Ratchet & Clank Future: A Crack in Time | 2009 | builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable |
 | Ratchet & Clank: All 4 One | 2011 | builds (1.03 update); scripted menus reach the first level, then the game stops; not playable |
 | Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
 | Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
 | Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |
-| Ratchet: Deadlocked HD (PS2 remaster) | 2013 | coming soon: a different engine; PPU code lifted, not built yet |
+| Ratchet: Deadlocked HD (PS2 remaster) | 2013 | builds; a scripted new game plays its intro, then stops before the first level; not playable |
 
 What the scripted runs of the Collection showed on 2026-11-10 (under Proton, one build of each game): *Ratchet &
 Clank 1* reaches Veldin and runs about three minutes there at about 8 frames per second; *Ratchet & Clank 2* reaches
 Aranos, about a minute under control at 41 to 65 frames per second; *Ratchet & Clank 3* reaches Veldin, about three
 minutes of running, jumping and fighting at about 23 frames per second. None crashed. A freeze of *Ratchet & Clank 1*
-after its intro is fixed by a new patch to ps3recomp: a race in the runtime's graphics fence queue lost a fence, and
+after its intro is fixed by this port's patch 7042 to the ps3recomp runtime: a race in the runtime's graphics fence queue lost a fence, and
 the renderer timed out waiting for it. None of the three was played by hand.
 
 Each game's console features and whether they work in the port, with an estimate per game:
 [docs/FEATURE-PARITY.md](docs/FEATURE-PARITY.md). What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
 **Coming soon,** in this order, no dates ([ROADMAP](docs/ROADMAP.md)): *Tools of Destruction* playable through; an
-installer that builds a game from your own copy; a settings menu and PC display and control options; the other games
-one at a time. Gameplay changes stay optional.
+in-game settings menu (display and control options already work through the `.ini` files); the other games one at a time; a native Linux build with Vulkan;
+online play through [re-psn](docs/ONLINE.md); and, if it proves possible, an optional co-op mode in the style of *All 4
+One* for the single-player games. Gameplay changes stay optional.
 
 ## Settings and known issues
 
@@ -112,21 +125,30 @@ off unless `[mouse] look = on` is set in its `keybinds.ini`.
 
 Known issues in *Tools of Destruction*:
 
-- Glow looks washed out.
 - The picture flickers inside one cave on Fastoon.
 - Level loads stall while graphics pipelines are built; the game's own graphics-stall notice can show during them.
 - The quit entries of the pause menu (off unless `RC_PAUSE_QUIT=1`) are drawn below the menu's box, and QUIT TO MAIN
   MENU loads the last save again.
 - The game has not been played through, so later levels are untested.
 
+All known issues, with how and when each was measured: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+
 **Where your data goes.** There is no installer yet. The developer build reads your own game folder and keeps its saves
 and caches in folders you point it at. Each game writes its log, and a crash report if it crashes, to `logs/<game>/`
 beside the program; your user name and home folder are removed from them, so a log can be attached to an issue as it
 is.
 
-**What goes online.** The port has no update check, no crash upload and no telemetry; crash reports stay on your PC.
-The launcher has a cover-art switch, off by default and not wired yet in this version: once it works, turning it on
-downloads cover images from IGDB.com; until then the launcher makes no network connections.
+**What goes online.** The port has no crash upload and no telemetry; crash reports stay on your PC. The launcher
+connects to nothing on its own, only when you choose: with the small launcher download, the first Build offers the
+build kit (the port's source, the recompiler, a compiler, CMake and Ninja; the full build download already holds it),
+showing its size and its address on this repository's GitHub releases, and downloads it only when you choose Download,
+checked against a fingerprint built into the launcher and refused if anything differs. "Check for new releases" in
+Settings, off by default, asks GitHub's release list once at start which release is newest; the launcher never
+downloads a release or a game update by itself (game updates come from your own copy). The launcher's own debug
+information is downloaded only when you press its Download button in Settings. The cover-art switch, off by default
+and not wired yet in this version, will download cover images from IGDB.com once it works. Debug information for your
+games is off by default; when on, each build writes it to a file beside the game, never uploaded. The launcher's Online
+settings are off by default and only write a settings file on your PC, kept for when the games go online.
 The network and PlayStation Network functions the games call answer as a console with no connection does (tested on
 the host, not yet in a game run), unless the developer switch `PS3_NET_ONLINE` is set. Online play is not supported yet.
 

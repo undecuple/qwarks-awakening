@@ -1,0 +1,25 @@
+# Host tests that need no game data and no GPU (run by tools/run-host-tests.sh inside `nix develop .#ci`,
+# after tools/ps3recomp-patched.sh). One path per line; .sh runs with bash, .py with python3.
+#:allow-skip port/rc/tests/run_log_test.sh the MinGW half SKIPs when x86_64-w64-mingw32-gcc is not on PATH (only .#win has it); the host half runs
+#:allow-skip port/rc/tests/run_hdd0_overlay_test.sh the cellFs part SKIPs without the lift of the player's EBOOT (never in CI); the overlay part runs
+port/rc/tests/fios_index_check.py
+port/rc/tests/run_cube_face_test.sh
+port/rc/tests/run_dxt_alias_test.sh
+port/rc/tests/run_dyn_bias_test.sh
+port/rc/tests/run_fifo_ahead_test.sh
+port/rc/tests/run_gamma_alpha_test.sh
+port/rc/tests/run_hdd0_overlay_test.sh
+port/rc/tests/run_igjob_rejoin_test.sh
+port/rc/tests/run_inline_divider_test.sh
+port/rc/tests/run_kz3_display_tests.sh
+port/rc/tests/run_log_test.sh
+port/rc/tests/run_pad_anchor_test.sh
+port/rc/tests/run_pso_keys_rec_test.sh
+port/rc/tests/run_pso_prio_test.sh
+port/rc/tests/run_rc_display_test.sh
+port/rc/tests/run_rc_modal_tick_test.sh
+port/rc/tests/run_rc_mouse_test.sh
+port/rc/tests/run_rc_settings_test.sh
+port/rc/tests/run_spurs_pm_interp_test.sh
+port/rc/tests/run_vg_index_test.sh
+port/rc/tests/run_vtx_gpu_test.sh

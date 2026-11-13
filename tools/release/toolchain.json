@@ -1,6 +1,6 @@
 {
  "format": 1,
- "about": "Pinned build toolchain of the release workflow (.github/workflows/release.yml): the launcher is built on a GitHub Windows runner with these, nothing else is downloaded. fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. Only SDL3.dll and the Python embeddable package (with their licence texts) reach the release zip; the compiler, CMake and Ninja never ship.",
+ "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships.",
  "components": [
   {
    "name": "llvm-mingw",
@@ -13,7 +13,32 @@
    "archive": "zip",
    "strip_top": true,
    "license": "Apache-2.0 WITH LLVM-exception (clang, lld, compiler-rt, libc++, libunwind); MinGW-w64 and winpthreads under their own permissive terms; build scripts ISC",
-   "about": "The C++ compiler for the launcher (clang++, lld, windres). Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin of the same file."
+   "about": "The C++ compiler for the launcher (clang++, lld, windres). Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin of the same file.",
+   "kit": {
+    "dest": "toolchain/llvm-mingw",
+    "prune": [
+     "aarch64-w64-mingw32/*",
+     "armv7-w64-mingw32/*",
+     "i686-w64-mingw32/*",
+     "arm64ec-w64-mingw32/*",
+     "bin/aarch64-w64-mingw32-*",
+     "bin/armv7-w64-mingw32-*",
+     "bin/i686-w64-mingw32-*",
+     "bin/arm64ec-w64-mingw32-*",
+     "bin/*widl*",
+     "busybox/*",
+     "python/*",
+     "bin/lldb*",
+     "bin/liblldb.dll",
+     "bin/libpython3*.dll",
+     "bin/mingw32-make.exe",
+     "bin/gendef.exe",
+     "share/gendef/*",
+     "share/make/*",
+     "share/widl/*",
+     "lib/clang/*/lib/linux/*"
+    ]
+   }
   },
   {
    "name": "llvm-mingw-linux",
@@ -51,7 +76,16 @@
    "archive": "zip",
    "strip_top": true,
    "license": "BSD-3-Clause",
-   "about": "Configures the launcher build. Hash from a download on 2026-11-03, in Kitware's published SHA-256 list and equal to the Killzone 3 port's pin."
+   "about": "Configures the launcher build. Hash from a download on 2026-11-03, in Kitware's published SHA-256 list and equal to the Killzone 3 port's pin.",
+   "kit": {
+    "dest": "toolchain/cmake",
+    "prune": [
+     "doc/*/html/*",
+     "doc/*/CMake.qch",
+     "man/*"
+    ],
+    "license": "doc/cmake/LICENSE.rst"
+   }
   },
   {
    "name": "ninja",
@@ -63,7 +97,11 @@
    "archive": "zip",
    "strip_top": false,
    "license": "Apache-2.0",
-   "about": "Runs the launcher compile. Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin."
+   "about": "Runs the launcher compile. Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin.",
+   "kit": {
+    "dest": "toolchain/ninja",
+    "prune": []
+   }
   },
   {
    "name": "python",
@@ -76,6 +114,84 @@
    "strip_top": false,
    "license": "PSF-2.0 (its LICENSE.txt also carries the terms of the libraries CPython bundles)",
    "about": "The Python embeddable package (Windows x64) that runs the launcher's engine, tools/release/catalog.py (standard library only). Unpacked to python/ in the zip, its LICENSE.txt also in licenses/. Hash from a download on 2026-11-03, equal to the Killzone 3 port's pin of the same file."
+  },
+  {
+   "name": "llvm-mingw-license",
+   "version": "20261006",
+   "pin": "confirmed",
+   "release_page": "https://github.com/mstorsjo/llvm-mingw",
+   "url": "https://raw.githubusercontent.com/mstorsjo/llvm-mingw/{version}/LICENSE.txt",
+   "sha256": "8e5db0129069005be2a07be3297e198888fd72fad62a13a611504660c6b7e3c7",
+   "archive": "file",
+   "file_name": "LICENSE.txt",
+   "kit_license": "llvm-mingw/llvm-mingw-LICENSE.txt",
+   "license": "ISC",
+   "about": "Licence text in the full build zip's licenses/llvm-mingw/llvm-mingw-LICENSE.txt, for llvm-mingw's build scripts. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "llvm-license",
+   "version": "23.1.3",
+   "pin": "confirmed",
+   "release_page": "https://github.com/llvm/llvm-project/releases",
+   "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-{version}/llvm/LICENSE.TXT",
+   "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+   "archive": "file",
+   "file_name": "LICENSE.TXT",
+   "kit_license": "llvm-mingw/LLVM-LICENSE.txt",
+   "license": "Apache-2.0 WITH LLVM-exception",
+   "about": "Licence text in the full build zip's licenses/llvm-mingw/LLVM-LICENSE.txt, for LLVM (clang, lld, compiler-rt, libc++, libunwind) of llvm-mingw. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "mingw-w64-license",
+   "version": "v13.0.0",
+   "pin": "confirmed",
+   "release_page": "https://github.com/mingw-w64/mingw-w64",
+   "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/{version}/COPYING",
+   "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
+   "archive": "file",
+   "file_name": "COPYING",
+   "kit_license": "llvm-mingw/mingw-w64-COPYING.txt",
+   "license": "MinGW-w64: ZPL-2.1 and public-domain parts; Wine-derived headers LGPL-2.1+",
+   "about": "Licence text in the full build zip's licenses/llvm-mingw/mingw-w64-COPYING.txt, for the MinGW-w64 headers and CRT of llvm-mingw. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "winpthreads-license",
+   "version": "v13.0.0",
+   "pin": "confirmed",
+   "release_page": "https://github.com/mingw-w64/mingw-w64",
+   "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/{version}/mingw-w64-libraries/winpthreads/COPYING",
+   "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177",
+   "archive": "file",
+   "file_name": "COPYING",
+   "kit_license": "llvm-mingw/winpthreads-COPYING.txt",
+   "license": "MIT and BSD-3-Clause",
+   "about": "Licence text in the full build zip's licenses/llvm-mingw/winpthreads-COPYING.txt, for winpthreads of llvm-mingw. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "lgpl-2.1-text",
+   "version": "2.1",
+   "pin": "confirmed",
+   "release_page": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html",
+   "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+   "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+   "archive": "file",
+   "file_name": "lgpl-2.1.txt",
+   "kit_license": "llvm-mingw/LGPL-2.1.txt",
+   "license": "LGPL-2.1 text",
+   "about": "Licence text in the full build zip's licenses/llvm-mingw/LGPL-2.1.txt, for the Wine-derived MinGW-w64 headers (shipped unmodified, as source). Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "ninja-license",
+   "version": "1.13.2",
+   "pin": "confirmed",
+   "release_page": "https://github.com/ninja-build/ninja",
+   "url": "https://raw.githubusercontent.com/ninja-build/ninja/v{version}/COPYING",
+   "sha256": "eb7e9ab9690124c5c9f42bdc81383d886a3dede26345b6ed15bbad7caf81f7ea",
+   "archive": "file",
+   "file_name": "COPYING",
+   "kit_license": "ninja/COPYING.txt",
+   "license": "Apache-2.0",
+   "about": "Licence text in the full build zip's licenses/ninja/COPYING.txt, for Ninja. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
   }
  ]
 }
