@@ -131,7 +131,7 @@ def exe_name(profile):
 
 # ------------------------------------------------------------------------------------------------ toolkit
 def patchset_want(root):
-    """The stamp tools/ps3recomp-patched.sh writes: sha256(port/patches/*.patch)[:16] - the submodule's commit as
+    """The stamp tools/ps3recomp_patched.py writes: sha256(port/patches/*.patch)[:16] - the submodule's commit as
     `git rev-parse --short` prints it (7 or more hex digits). -> "<patch hash>-<full commit>" (stamp_matches compares
     the short form as a prefix). The commit comes from the gitlink (git ls-tree), so an uninitialised submodule still
     has one. None = no git."""
@@ -142,7 +142,7 @@ def patchset_want(root):
     h = hashlib.sha256()
     for p in pats:
         with open(p, "rb") as f:
-            h.update(f.read())
+            h.update(f.read().replace(b"\r\n", b"\n"))
     try:
         out = subprocess.run(["git", "-C", root, "ls-tree", "HEAD", "third_party/ps3recomp"], capture_output=True,
                              text=True, timeout=30).stdout.split()
@@ -164,7 +164,7 @@ def stamp_matches(stamp, want):
 
 def find_toolkit(root, explicit=""):
     """-> (path, kind) of the patched ps3recomp: 'given' (--toolkit), 'release' (<root>/ps3recomp, shipped patched),
-    'tree' (<root>/work/ps3recomp-patched, made by tools/ps3recomp-patched.sh). The path may not exist yet."""
+    'tree' (<root>/work/ps3recomp-patched, made by tools/ps3recomp_patched.py). The path may not exist yet."""
     if explicit:
         return os.path.abspath(explicit), "given"
     rel = os.path.join(root, "ps3recomp")
@@ -182,10 +182,10 @@ def read_stamp(toolkit):
 
 
 def can_make_toolkit(root):
-    """The source tree can (re)make work/ps3recomp-patched: bash, git, the submodule checked out, the script."""
-    return (shutil.which("bash") is not None and shutil.which("git") is not None
+    """The source tree can (re)make work/ps3recomp-patched with native Python and Git."""
+    return (shutil.which("git") is not None
             and os.path.isfile(os.path.join(root, "third_party", "ps3recomp", "CMakeLists.txt"))
-            and os.path.isfile(os.path.join(root, "tools", "ps3recomp-patched.sh")))
+            and os.path.isfile(os.path.join(root, "tools", "ps3recomp_patched.py")))
 
 
 def toolkit_state(root, explicit="", allow_stale=False):

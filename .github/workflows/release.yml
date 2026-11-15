@@ -29,7 +29,7 @@
 #
 # Third-party pieces: actions/checkout and actions/upload-artifact (GitHub, MIT), the gh CLI (MIT, on the image),
 # Dear ImGui (MIT, the third_party/imgui submodule), ps3recomp (MIT, the third_party/ps3recomp submodule, with this
-# port's patches applied by tools/ps3recomp-patched.sh; it ships in the full build zip). Downloads at build time, each pinned by SHA-256 in
+# port's patches applied by tools/ps3recomp_patched.py; it ships in the full build zip). Downloads at build time, each pinned by SHA-256 in
 # tools/release/toolchain.json: llvm-mingw (Apache-2.0 WITH LLVM-exception; MinGW-w64 and winpthreads licences),
 # SDL3's MinGW development package (zlib; its SDL3.dll ships in the zip), SDL3's source release (only the HIDAPI and
 # yuv2rgb licence texts, for the code inside SDL3.dll, are taken from it), CMake (BSD-3-Clause), Ninja (Apache-2.0),
@@ -182,7 +182,7 @@ jobs:
         run: |
           failed=""
           for t in test_names test_release_notes test_fetch_toolchain test_pack_zip test_kit test_stage_sdl3 \
-                   test_workflows test_pe_imports test_launcher_src test_rc_iss; do
+                   test_workflows test_pe_imports test_launcher_src test_rc_iss test_ps3recomp_patched; do
             python3 "tools/release/$t.py" || failed="$failed $t"
           done
           if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
@@ -197,7 +197,7 @@ jobs:
 
       # ps3recomp at its pinned commit with every port/patches/*.patch applied: the build kit's recompiler
       - name: Patched ps3recomp (the build kit's toolkit)
-        run: bash tools/ps3recomp-patched.sh
+        run: python3 tools/ps3recomp_patched.py
 
       # The kit's file list first: the launcher is built with its SHA-256 (and the full zip's URL and sizes) compiled in,
       # so it accepts exactly this release's kit and nothing else.

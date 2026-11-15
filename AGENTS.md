@@ -36,8 +36,8 @@ The repository holds only the port; each player builds from their own copy of th
   docs may say that the port needs the decrypted EBOOT made from the player's own copy and that RPCS3 and its
   documentation are the place to start; nothing more.
 - **ps3recomp stays pristine.** Never edit the submodule or move its pin as part of a fix. Every change is a new
-  numbered patch in `port/patches/`, applied by `tools/ps3recomp-patched.sh`, which fails on a patch that does not
-  apply.
+  numbered patch in `port/patches/`, applied by `tools/ps3recomp_patched.py` (or its shell wrapper), which fails on a
+  patch that does not apply.
 - **No GPL code.** RPCS3 is a reference to read for behaviour, never to copy, translate or closely paraphrase.
 - **Gameplay stays original by default.** Mark additions `ENHANCEMENT:` (display improvements may default on, gameplay
   changes stay opt-in), values not yet recovered from the game `ASSUMPTION:`, and keep the original address in a
@@ -69,7 +69,7 @@ nix develop          # everything, plus Xvfb and steam-run for runs under Proton
 ~~~
 
 - **Before every pull request** run what CI runs, which needs no game data and no GPU:
-  `nix develop .#ci --command bash tools/ps3recomp-patched.sh` and every `tools/release/test_*.py`.
+  `nix develop .#ci --command python3 tools/ps3recomp_patched.py` and every `tools/release/test_*.py`.
 - **Host tests are self-contained.** A runtime fix comes with a focused test that fails without the fix and passes
   with it. A test that needs game data prints SKIP, not FAIL. When a patch changes what an old test checks, update the
   test in the same change.

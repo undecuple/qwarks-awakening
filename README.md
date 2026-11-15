@@ -138,7 +138,7 @@ games' settings. Both answers default to No.
 
 Logs have your user name and home folder removed, so you can attach them to an
 [issue](https://github.com/undecuple/qwarks-awakening/issues/new/choose) as they are. To build from source instead,
-follow [docs/BUILDING.md](docs/BUILDING.md) (Linux with Nix).
+follow [docs/BUILDING.md](docs/BUILDING.md) (native Windows or Linux with Nix).
 
 ---
 
@@ -272,8 +272,9 @@ donations in this project's name is not us.
 - Graphics: the ps3recomp runtime translates the game's RSX command stream to Direct3D 12 as it runs.
 - System software: the same runtime reimplements the PS3 libraries the game calls on PC APIs.
 
-The toolchain is a Nix flake (`nix develop`, `nix develop .#win` for the MinGW-w64 cross compiler). The recompiler is
-the `third_party/ps3recomp` submodule, with this port's changes in `port/patches/`. Steps:
+Native Windows source builds fetch the pinned llvm-mingw, CMake and Ninja archives and run through PowerShell and
+Python; Linux builds use the Nix flake (`nix develop`, `nix develop .#win` for the MinGW-w64 cross compiler). The
+recompiler is the `third_party/ps3recomp` submodule, with this port's changes in `port/patches/`. Steps:
 [docs/BUILDING.md](docs/BUILDING.md).
 
 ---

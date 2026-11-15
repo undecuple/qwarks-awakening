@@ -15,7 +15,8 @@ ports' tools/release/test_workflows.py (same author, MIT).
     no --clobber, upload, edit or delete, no tag or push; SHA256SUMS (setup exe + three zips + the Linux tarball, no
     per-file .sha256 since 0.3.1) checked before the release is created; the gh CLI runs outside a checkout with GH_REPO set; the zip bundles the pinned Python
     embeddable package (PSF credited in the header); the toolchain manifest is checked
-    --strict; only the imgui submodule is fetched and ps3recomp-patched.sh is not run; no game file is named;
+    --strict; only the imgui and ps3recomp submodules are fetched and the native Python patcher prepares the toolkit;
+    no game file is named;
   - release.yml (2026-11-03 review): the version mirrors are grepped with the dots escaped (the step is run in a temp
     tree: 0x2x0 must not pass for 0.2.0); the built exe's imports are checked (pe_imports.py --allow SDL3.dll);
     the Windows-host toolchain only; the 14-day artifact retention is explained;
@@ -26,7 +27,8 @@ ports' tools/release/test_workflows.py (same author, MIT).
     pinned SDL3 source / CMake / Ninja and the apt list from the repository, then test, build, import check (glibc
     2.35 at most), pack, smoke test, upload; publish takes the tarball from this run;
   - ci.yml: runs the release tools' host tests (every tools/release/test_*.py) and fetch_toolchain.py --check --strict,
-    and cross-compiles the launcher (launcher-build) with the pinned Linux llvm-mingw and checks its imports;
+    prepares the patched toolkit on native Windows, and cross-compiles the launcher (launcher-build) with the pinned
+    Linux llvm-mingw and checks its imports;
   - dependabot.yml: github-actions updates, weekly, grouped.
 
     python3 tools/release/test_workflows.py
@@ -293,11 +295,11 @@ def test_release():
     check("fetch_toolchain.py --check --strict" in lj, "release.yml: the toolchain manifest is checked --strict")
     check("bump_version.py --agree" in lj, "release.yml: shared version checker covers the catalog mirror")
     check("git submodule update --init --depth 1 third_party/imgui third_party/ps3recomp" in lj
-          and "submodules:" not in code(lj) and "bash tools/ps3recomp-patched.sh" in lj,
+          and "submodules:" not in code(lj) and "python3 tools/ps3recomp_patched.py" in lj,
           "release.yml: the imgui and ps3recomp submodules only; the patched ps3recomp is the build kit's toolkit")
     kit = "pack_zip.py --make-kit-manifest build/kit/kit.json"
     check(kit in lj and "LAUNCHER_KIT_MANIFEST: build/kit/kit.json" in lj
-          and lj.index("ps3recomp-patched.sh") < lj.index(kit) < lj.index("build_launcher.sh")
+          and lj.index("ps3recomp_patched.py") < lj.index(kit) < lj.index("build_launcher.sh")
           and "--kit-manifest build/kit/kit.json --toolkit work/ps3recomp-patched" in lj,
           "release.yml: kit.json is made before the launcher, which is built with it, and the full zip is packed with it")
     check(not re.search(r"EBOOT|\.elf\b|\.self\b|\.psarc|library/", c), "release.yml: no game file named")
@@ -411,6 +413,13 @@ def test_ci():
     t = read(os.path.join(WF, "ci.yml"))
     check("tools/release/test_*.py" in t, "ci.yml: runs every release-tool host test")
     check("fetch_toolchain.py --check --strict" in t, "ci.yml: checks the toolchain manifest --strict")
+    nw = jobs(t).get("windows-native-setup", "")
+    check("runs-on: windows-latest" in nw and "core.autocrlf true" in nw
+          and "git submodule update --init --depth 1 third_party/ps3recomp" in nw
+          and "python tools/ps3recomp_patched.py" in nw
+          and "python tools/release/test_ps3recomp_patched.py" in nw
+          and "ParseFile" in nw,
+          "ci.yml: native Windows setup prepares the real toolkit and checks its PowerShell entry point")
     lb = jobs(t).get("launcher-build", "")
     check("fetch_toolchain.py --only llvm-mingw-linux,sdl3" in lb and "tools/release/build_launcher.sh" in lb
           and "pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe" in lb

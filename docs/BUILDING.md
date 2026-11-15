@@ -11,7 +11,8 @@ been played through and is not playable yet. Every test run so far was the Windo
 | Way to build | Who it is for | State |
 |---|---|---|
 | The launcher (installer or zip from the releases) | Players | Builds a game from your own copy since v0.3.0; checked on Linux only, not tried on Windows. See the README's Install part. |
-| From source with [Nix](https://nixos.org/), below | Developers | The way every test build was made |
+| From source on native Windows, below | Developers | PowerShell entry point, pinned native tools; no WSL, Bash or Nix |
+| From source with [Nix](https://nixos.org/), below | Developers | The way every game test build was made |
 
 The releases carry no game program.
 
@@ -24,13 +25,17 @@ You need two things from your own copy of the game.
 | Ratchet & Clank Future: Tools of Destruction, US disc **BCUS98127**, as a decrypted folder | The folder that holds `PS3_GAME/`. Other regions are untested. |
 | The **decrypted EBOOT** | `EBOOT.elf`, made from your own copy of the game. This project provides no decryption tools or instructions; [RPCS3](https://rpcs3.net) and its documentation are the place to start for dumping questions. |
 
-| To build | To run |
-|---|---|
-| Linux with Nix (flakes enabled), 16 GB of memory or more, plenty of free disk | A GPU with Direct3D 12 support; the only tested way is the Windows program under Proton on Linux |
+| To build on Windows | To build on Linux | To run |
+|---|---|---|
+| Windows 10 or 11 x64, PowerShell, Git for Windows, Python 3.10 or newer, 16 GB of memory or more, plenty of free disk | Linux with Nix (flakes enabled), 16 GB of memory or more, plenty of free disk | A GPU with Direct3D 12 support; game runs have only been tested under Proton on Linux |
 
 ## Toolchain
 
-Everything comes from the Nix flake; nothing needs to be installed system-wide.
+On Windows, `tools\build-windows.ps1` downloads the pinned native llvm-mingw, CMake, Ninja and SDL3 archives listed
+in `tools\release\toolchain.json`, verifies their SHA-256 hashes and keeps them under `work\`. Git and Python are the
+only tools installed separately.
+
+On Linux, everything comes from the Nix flake; nothing needs to be installed system-wide.
 
 ```sh
 nix develop .#re     # analysis and lifting: Python with capstone and pyelftools, bubblewrap
@@ -41,7 +46,30 @@ nix develop          # everything, plus Xvfb and steam-run for test runs under P
 `tools/sandbox.sh [--gpu] -- CMD` runs a command with the game and the repository read-only, only `work/` and
 `build/` writable, and no network. The steps below run inside it.
 
-## Steps
+## Building on native Windows
+
+The native path uses Windows PowerShell, Python and Windows executables throughout. It does not use WSL, Bash, Nix
+or a Unix-hosted cross compiler.
+
+```powershell
+git clone --recursive https://github.com/undecuple/qwarks-awakening
+Set-Location qwarks-awakening
+.\tools\build-windows.ps1 -Game tods -Eboot 'D:\Games\ToD\EBOOT.elf' -Disc 'D:\Games\ToD'
+```
+
+`-Disc` accepts the decrypted game folder or decrypted ISO and is optional for the build, but the game files are
+needed to play. The script initializes the pinned ps3recomp submodule when needed, prepares its patched copy without
+changing the submodule, fetches the pinned native toolchain, lifts the PPU and SPU programs, builds the game and
+stages it under `games\tods\`. Generated files stay under ignored `work\`, `build\` and `games\` paths.
+
+The default build is `RelWithDebInfo`, matching development and test builds. Pass `-Configuration Release` for the
+player build flags, `-Jobs N` to override the memory-based job count, or `-Build` and `-Stage` to choose generated
+output folders. After one successful toolchain download, `-SkipToolchainDownload` keeps the existing pinned tools.
+
+CI prepares the complete patched toolkit on a Windows runner with a CRLF checkout and parses the PowerShell entry
+point. A complete game build cannot run in public CI because it requires the player's game.
+
+## Building with Nix
 
 **Status on Linux (2026-11-03, ps3recomp v0.18.0).** Steps 1 to 3b were run on NixOS in a fresh clone. They gave the
 same lifted code as the developer's checkout. That checkout's build (steps 4 and 5) was run under Proton (step 6).
@@ -90,21 +118,8 @@ tested. Reports are welcome (open an issue).
 
 - What you would need: a Mac with Apple silicon, 16 GB of memory or more, and Nix with flakes enabled
   (`experimental-features = nix-command flakes` in `~/.config/nix/nix.conf`).
-- Steps: the same as [Steps](#steps) 1 to 5. `tools/sandbox.sh` relies on bubblewrap, which is Linux-only. On
+- Steps: the same as [Building with Nix](#building-with-nix), steps 1 to 5. `tools/sandbox.sh` relies on bubblewrap,
+  which is Linux-only. On
   macOS, run the commands without it (untested).
 - Running: `tods.exe` is a Windows program, and Proton does not run on macOS. The untested option is to copy
   `work/stage/tods/` to a Windows PC and run it there.
-
-## Building on Windows
-
-**Status: not run.** The port has not been built on Windows or WSL2. It has not been run on real Windows either; it
-is tested under Proton on Linux only.
-
-Nix does not run on Windows itself, so the build would run inside **WSL2** (untested):
-
-1. Install WSL2 with Ubuntu (`wsl --install -d Ubuntu`), then install Nix inside it and enable flakes as above.
-2. Give WSL2 enough memory: `%UserProfile%\.wslconfig` with `[wsl2]` and `memory=24GB`, then `wsl --shutdown`.
-3. Keep the repository inside the Linux file system (not under `/mnt/c`); the build reads and writes many files.
-4. Run [Steps](#steps) 1 to 5 unchanged. Skip step 6.
-5. Copy `work/stage/tods/` to a Windows folder. Start `tods.exe` there with the path of your decrypted EBOOT as the
-   argument. You need a GPU with Direct3D 12 and a current driver.

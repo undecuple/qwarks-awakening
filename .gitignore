@@ -22,6 +22,7 @@ EBOOT.BIN
 # Lifted code, builds and run output
 /work/
 /build/
+/games/
 result
 result-*
 __pycache__/

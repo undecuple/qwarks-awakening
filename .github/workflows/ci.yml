@@ -1,8 +1,8 @@
 # CI without the game: the program cannot be built here (the lifted code comes from the player's own EBOOT and is never
 # committed), so this checks what can be checked without game data: that every patch applies to the pinned ps3recomp,
 # that the release tools pass their host tests and every toolchain download is pinned, and that no secret is in the
-# history, and that the launcher still cross-compiles for Windows with the pinned toolchain (the release itself is
-# built in release.yml, on tags and manual dry runs only).
+# history, that the native Windows setup can prepare the patched toolkit, and that the launcher still cross-compiles
+# for Windows with the pinned toolchain (the release itself is built in release.yml, on tags and manual dry runs only).
 name: CI
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
           persist-credentials: false
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
       - name: Patches apply to the pinned ps3recomp
-        run: nix develop .#ci --command bash tools/ps3recomp-patched.sh
+        run: nix develop .#ci --command python3 tools/ps3recomp_patched.py
       - name: Host tests (no game data, no GPU; a SKIP counts as a failure)
         # tools/run-host-tests.sh runs the tests in tools/host-tests.txt against the patched tree built above and prints one
         # ok/FAIL/SKIP line per test; it fails at the end when any test failed. RC_TEST_CC=gcc: the shell's own compiler
@@ -49,6 +49,32 @@ jobs:
           if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
       - name: Toolchain manifest (every download pinned)
         run: python3 tools/release/fetch_toolchain.py --check --strict
+
+  windows-native-setup:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      # Exercise the common Git for Windows setting explicitly. The patcher exports the pinned submodule commit and
+      # normalizes patch files, so the generated toolkit is independent of checkout line endings.
+      - name: CRLF checkout
+        run: git config --global core.autocrlf true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pinned ps3recomp submodule
+        run: git submodule update --init --depth 1 third_party/ps3recomp
+      - name: Patched toolkit with native Python and Git
+        run: python tools/ps3recomp_patched.py
+      - name: Native patcher host tests
+        run: python tools/release/test_ps3recomp_patched.py
+      - name: PowerShell entry point parses
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path tools/build-windows.ps1), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
 
   # The launcher, cross-compiled for Windows on every push with the pinned toolchain (the release builds it on a
   # Windows runner only at a tag): llvm-mingw's Linux build and SDL3's MinGW devel package from

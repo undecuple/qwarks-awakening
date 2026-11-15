@@ -25,7 +25,7 @@ with a profile and glue (port/rc/<profile>/) builds the same way. Standard libra
               install's <root>/toolchain when present, else (Linux) the MinGW-w64 GCC on PATH (cmake/mingw-w64.cmake,
               the same compiler tools/build-rc.sh uses, from `nix develop .#win`)
   --toolkit   the patched ps3recomp (default <root>/ps3recomp in an install, else <root>/work/ps3recomp-patched,
-              made or refreshed by the toolkit step with tools/ps3recomp-patched.sh when its stamp is stale)
+              made or refreshed by the toolkit step with tools/ps3recomp_patched.py when its stamp is stale)
   --config    CMake build type: RelWithDebInfo (default: what tools/build-rc.sh builds and every test ran) or Release
               (what catalog.py build passes for players: RelWithDebInfo's -O2 without -g, no debug information)
   --split-debug  with RelWithDebInfo (the player's "debug information" setting): the stage step moves the exe's
@@ -39,7 +39,7 @@ with a profile and glue (port/rc/<profile>/) builds the same way. Standard libra
 
 Steps (name: what; marker keys):
   check      firstrun_check.run_checks in process (always)
-  toolkit    tools/ps3recomp-patched.sh when the source tree's patched toolkit is missing or stale (always checked)
+  toolkit    tools/ps3recomp_patched.py when the source tree's patched toolkit is missing or stale (always checked)
   extract    an ISO's PS3_GAME (and PS3_DISC.SFB) into <build>/disc (only for an ISO)
   load       ppu_loader.py + find_functions.py into <build>/analysis              (tools/lift.sh)
   ppu-lift   ppu_lifter.py --chunks 64 [--overrides port/rc/<p>/ppu_overrides.txt] into <build>/recomp; then the
@@ -233,7 +233,7 @@ class StepFailed(Exception):
 
 
 def cmd_toolkit(c):
-    return [["bash", c.r("tools", "ps3recomp-patched.sh")]] if c.toolkit_make else []
+    return [[*c.py, c.r("tools", "ps3recomp_patched.py")]] if c.toolkit_make else []
 
 
 def after_toolkit(c):

@@ -74,9 +74,9 @@ For these workflows and your own:
 
 - ps3recomp (MIT) is a git submodule at `third_party/ps3recomp`, pinned in `.gitmodules` and by commit. It stays
   unmodified.
-- This port's changes to it are the patches in `port/patches/NNNN-name.patch`. `tools/ps3recomp-patched.sh` copies
-  the pinned ps3recomp to a work folder (`RC_PATCHED_DIR`) and applies every patch in order; the lift and the build
-  use that copy.
+- This port's changes to it are the patches in `port/patches/NNNN-name.patch`. `tools/ps3recomp_patched.py` copies
+  the pinned ps3recomp to a work folder (`RC_PATCHED_DIR`) and applies every patch in order; the shell wrapper calls
+  the same implementation. The lift and the build use that copy.
 - Number blocks: `0xxx`-`5xxx`, `9633` and `9933` are carried from the Killzone 3 port's series; `6xxx` and `7xxx`
   are this port's own.
 - Each patch header names its source when the change comes from someone else (a ps3recomp pull request, a fork commit
@@ -91,7 +91,7 @@ Check these before you run the scripts on another machine.
 | Item | Where | Default or note |
 |---|---|---|
 | `PROTON_DIR` (`--proton DIR`) | `tools/proton-test.sh`, `tools/proton-inner.sh` | a GE-Proton folder in Steam's `compatibilitytools.d` under the user's home; change it for your system |
-| `RC_PATCHED_DIR` | `tools/ps3recomp-patched.sh`, `tools/lift.sh` | where the patched ps3recomp copy is made |
+| `RC_PATCHED_DIR` | `tools/ps3recomp_patched.py`, `tools/ps3recomp-patched.sh`, `tools/lift.sh` | where the patched ps3recomp copy is made |
 | `RC_RECOMP_DIR`, `RC_ANALYSIS_DIR`, `RC_LIFT_CHUNKS` | `tools/lift.sh` | where the lifted sources and the lift report go, and how the source is split |
 | `RC_BUILD_JOBS_MAX`, `RC_BUILD_JOB_MB`, `RC_CCACHE`, `RC_SPU`, `RC_RELEASE_TAG` | `tools/build-rc.sh` | tuning (memory per compile job), the SPU build switch and the version tag |
 | `RC_LOCK_DIR`, `RC_HELD_LOCKS`, `RC_BUILD_SLOTS` | `tools/lift.sh`, `tools/build-rc.sh` | lock files for shared build slots; on a machine that runs nothing else you can ignore them (`lift.sh` then prints a harmless warning) |
