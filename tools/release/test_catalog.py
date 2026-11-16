@@ -99,7 +99,7 @@ def dirrec(lba, size, name, isdir, more=False):
     return bytes(r)
 
 
-def build_iso(path, prim, jol, files, encrypted_table=False):
+def build_iso(path, prim, jol, files, encrypted_table=False, encrypted_from=None):
     """prim/jol: {name: ('f', key) | ('d', subtree)}; files: {key: [chunk, ...]} (several chunks = multi-extent)."""
     nxt = [19]
     dirs = {}
@@ -162,21 +162,29 @@ def build_iso(path, prim, jol, files, encrypted_table=False):
     t[1:6] = b"CD001"
     put(18, bytes(t))
     if encrypted_table:
-        put(0, struct.pack(">II", 1, 0) + struct.pack(">II", 0, 40))
+        clear_end = ext[encrypted_from][0][0] - 1 if encrypted_from else 40
+        put(0, struct.pack(">II", 1, 0) + struct.pack(">II", 0, clear_end))
     wr(path, bytes(img))
 
 
 SECT = catalog.SECTOR
 
 
-def iso_with_sfo(path, tid, ver="01.00", multi=False, encrypted=False):
+def iso_with_sfo(path, tid, ver="01.00", multi=False, encrypted=False, decrypted_payload=False):
     good = sfo(TITLE_ID=tid, APP_VER=ver, VERSION="01.00", CATEGORY="DG", TITLE="x")
     bad = sfo(TITLE_ID="WRONG00000", APP_VER="09.99", VERSION="09.99", CATEGORY="DG", TITLE="x")
     chunks = [good[:30], good[30:]] if multi else [good]
     # primary names are 8.3 and point at a DIFFERENT sfo; Joliet names are the real tree
     prim = {"PS3_GA00": ("d", {"PARAM.SFO": ("f", "bad")})}
-    jol = {"PS3_GAME": ("d", {"PARAM.SFO": ("f", "good")})}
-    build_iso(path, prim, jol, {"bad": [bad], "good": chunks}, encrypted_table=encrypted)
+    game = {"PARAM.SFO": ("f", "good")}
+    files = {"bad": [bad], "good": chunks}
+    encrypted_from = None
+    if decrypted_payload:
+        game["USRDIR"] = ("d", {"EBOOT.BIN": ("f", "eboot")})
+        files["eboot"] = [b"SCE\0" + b"\0" * 12]
+        encrypted_from = "eboot"
+    jol = {"PS3_GAME": ("d", game)}
+    build_iso(path, prim, jol, files, encrypted_table=encrypted, encrypted_from=encrypted_from)
 
 
 def by_id(games, i):
@@ -236,6 +244,12 @@ def run(tmp):
     os.makedirs(os.path.dirname(iso3))
     iso_with_sfo(iso3, "BCUS98175", encrypted=True)
     check(catalog.sfo_from_iso(iso3)[1] is True, "ISO: region table flags an encrypted image")
+    iso4 = os.path.join(tmp, "iso4", "d.iso")
+    os.makedirs(os.path.dirname(iso4))
+    iso_with_sfo(iso4, "BCUS98127", encrypted=True, decrypted_payload=True)
+    r, enc = catalog.sfo_from_iso(iso4)
+    check(r and r["TITLE_ID"] == "BCUS98127" and not enc,
+          "ISO: clear EBOOT outside stale region table identifies a decrypted image")
     notiso = os.path.join(tmp, "iso3", "d.iso")
     wr(notiso, b"x" * 100)
     check(catalog.sfo_from_iso(notiso) == (None, False), "ISO: junk file gives None")

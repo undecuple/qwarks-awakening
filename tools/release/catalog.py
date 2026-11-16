@@ -178,8 +178,9 @@ class Iso:
         try:
             self.f.seek(0, os.SEEK_END)
             self.size = self.f.tell()
-            self.encrypted = self._region_table()
+            self._clear_regions = self._region_table()
             self._open()
+            self.encrypted = bool(self._clear_regions) and not self._payload_is_clear()
         except BaseException:
             self.f.close()
             raise
@@ -203,16 +204,28 @@ class Iso:
         return b
 
     def _region_table(self):
-        """PS3 raw images start with a table of encrypted regions (ASSUMPTION: big-endian count at 0, then
-        start/end sector pairs from offset 8, as seen in the A4O image)."""
+        """PS3 raw images start with clear-region pairs. Decrypted images can retain this table."""
         if self.size < SECTOR:
-            return False
+            return ()
         h = self._raw(0, SECTOR)
         n = struct.unpack_from(">I", h, 0)[0]
         if not 1 <= n <= 200 or 8 + 8 * n > SECTOR:
-            return False
+            return ()
         v = [struct.unpack_from(">I", h, 8 + 4 * i)[0] for i in range(2 * n)]
-        return v[0] == 0 and all(a <= b for a, b in zip(v, v[1:])) and v[-1] > 16
+        if v[0] != 0 or not all(a <= b for a, b in zip(v, v[1:])) or v[-1] <= 16:
+            return ()
+        return tuple(zip(v[::2], v[1::2]))
+
+    def _payload_is_clear(self):
+        """A clear SELF in a nominally encrypted sector identifies an in-place-decrypted image."""
+        eboot = self.lookup("PS3_GAME/USRDIR/EBOOT.BIN")
+        if eboot is None or eboot[0] or not eboot[1]:
+            return False
+        lba = eboot[1][0][0]
+        if any(start <= lba <= end for start, end in self._clear_regions):
+            return False
+        magic = self._raw(lba * SECTOR, 4)
+        return magic in (b"SCE\0", b"\x7fELF")
 
     def _open(self):
         pvd = jol = None
