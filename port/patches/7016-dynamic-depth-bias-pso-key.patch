@@ -8,7 +8,8 @@ everything is as before. The pipeline stream path gets a FLAGS subobject. LD_PSO
 Log: "[caps] list9=.. dynamic-depth-bias=..". Host test: R&C port/rc/tests/run_dyn_bias_test.sh.
 Rebased onto v0.18.0 + KZ3 2c5081a5, 2026-11-02: unchanged; it applies with a 3-way merge only (line offsets). Checked
 that the render-state hash (ld_hash_structural_render_state, KZ3 2141 era) is still fed from ld_pso_key_tail's local
-copy that ld_dynb_key_bits rewrites, so the key carries "offset on" only.
+copy that ld_dynb_key_bits rewrites, so the key carries "offset on" only. Rebased after KZ3 2148: the draw-site
+context includes its reuse counter and root-CBV slot; the dynamic-bias call remains immediately after SetPipelineState.
 
 diff --git a/libs/video/rsx_dyn_bias.h b/libs/video/rsx_dyn_bias.h
 new file mode 100644
@@ -163,8 +164,9 @@ index 3053b65..da0589f 100644
                fflush(kf);
            } }
          if (bp_t0) { LDW_ADD(RSX_PERF_W_PSO_NEW_T, bp_t0); rsx_perf_add(RSX_PERF_W_PSO_NEW_N, 1); }
-@@ -15376,6 +15404,15 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -15376,7 +15404,16 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
      LDW_ADD(RSX_PERF_W_CONST_T, vcb_t0);
+     if (rsx_perf_walk_on()) rsx_perf_add(cb_reused ? RSX_PERF_W_CB_REUSE_N : RSX_PERF_W_CB_COPY_N, 1);
  
      if (!sm_on || g_ld_sm.pso != pso) { g.list->lpVtbl->SetPipelineState(g.list, pso); g_ld_sm.pso = pso; }
 +    if (g_ld_caps.dyn_bias && (rsx_dsp_reg(&g.rsx, M_POLY_OFFSET_FILL_ENABLE) & 1u)) {   /* R&C patch 7016 */
@@ -178,4 +180,4 @@ index 3053b65..da0589f 100644
 +    }
      if (!sm_on || !g_ld_sm.rootsig) { g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x); g_ld_sm.rootsig = 1; }
      g.list->lpVtbl->SetGraphicsRootConstantBufferView(
-         g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + g.cb_used);
+         g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + cb_slot);

@@ -1,0 +1,288 @@
+KZ3 patch 1158 (SPU pass 147; upstream candidate): let registered one-way entries reset a resident job overlay's lifted host stack.
+
+A WWS job can branch from interpreted code back into a lifted entry that replaces the guest call stack. The existing
+stack-reset registry handled ordinary lifted workloads, but excluded policy contexts and checked only the generic
+spu_indirect_branch wrapper when an interpreter handoff resolved a lifted target. Tools of Destruction's overlay image
+207 consequently re-entered 0x7808 from 0x1FA70 without unwinding, reached the host-depth guard at 2,000 calls and
+stopped Zordoom Prison and Meridian City from drawing.
+
+Permit registered resets while a policy context has a resident job overlay, and check the resolved lifted function at
+the interpreter handoff. Policy code without an overlay remains excluded. The title's lift configuration registers the
+verified one-way entry; unregistered transfers retain the existing behavior.
+
+Test: tools/test_spu_interpreter_handoff.py --overlay-stack-reset drives interpreted code through a branch to a
+registered lifted entry while a host call frame is live. It requires depth zero for a resident overlay and depth one
+for the same transfer in a plain policy context. The focused fixture runs natively on Windows as well as POSIX.
+Direct no-input starts of Zordoom Prison and Meridian City then kept presenting and drawing for 120 seconds and exited
+cleanly; Meridian City progressed into the return to Fastoon.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7e208e7..925eb43 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -446,6 +446,10 @@ if(PS3RECOMP_BUILD_TESTS)
+         add_test(NAME spu_host_stack
+             COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_spu_host_stack.py")
++        add_test(NAME spu_overlay_stack_reset
++            COMMAND "${Python3_EXECUTABLE}"
++                "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_spu_interpreter_handoff.py"
++                --overlay-stack-reset)
+     endif()
+     if(NOT WIN32)
+         find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index 40e697d..ecd9e80 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -1099,7 +1099,8 @@ extern unsigned g_spu_stack_reset_count; /* read-only outside registration */
+ static inline int spu_stack_reset_needed(const spu_context* ctx)
+ {
+     unsigned count = __atomic_load_n(&g_spu_stack_reset_count, __ATOMIC_ACQUIRE);
+-    return count && ctx->host_depth && !ctx->policy_mode;
++    /* A resident job overlay can also replace the guest stack while running under its policy context. */
++    return count && ctx->host_depth && (!ctx->policy_mode || ctx->resident_ovl > 0);
+ }
+ /* KZ3 patch 1039 (SPU pass 28): the per-transfer and per-call hooks below run once per trampoline step and
+  * once per lifted call (~10-12 % of the level's SPU job samples in SPU pass 27, all out-of-line calls into
+@@ -1130,7 +1131,8 @@ static inline __attribute__((always_inline)) void spu_task_launch_check(spu_cont
+     }
+     const uint32_t pc = (uint32_t)ctx->pc & SPU_LS_MASK;
+     ctx->recent_pc[ctx->recent_n++ & 255] = pc;
+-    if (__builtin_expect(g_spu_stack_reset_n != 0, 0) && ctx->host_depth && !ctx->policy_mode)
++    if (__builtin_expect(g_spu_stack_reset_n != 0, 0) && ctx->host_depth &&
++        (!ctx->policy_mode || ctx->resident_ovl > 0))
+         spu_check_stack_reset(ctx, (void (SPU_ABI *)(spu_context*))fn);
+     /* same test as the full hook: a job branching to LS 0 (not on the first step) is complete */
+     if (__builtin_expect(ctx->steps++ && pc == 0, 0) && !ctx->policy_mode && ctx->image_id > 0)
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+index 9686045..172da7c 100644
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -831,6 +831,8 @@ static void spu_drain_call_body(spu_context* ctx, uint32_t return_pc)
+                 fn = spu_lookup_located(ctx, pc);
+             }
+             if (fn) {
++                /* This path's trampoline is the generic indirect-branch wrapper; check the resolved target too. */
++                if (spu_stack_reset_needed(ctx)) spu_check_stack_reset(ctx, fn);
+                 { static int _n = 0; if (PS3_LOG_FIRST(_n, 8))
+                     fprintf(stderr, "[spu] drain-resume return_pc=0x%05X at lifted entry 0x%05X img=%d depth=%d ovl=%d\n",
+                             (unsigned)(return_pc & SPU_LS_MASK), pc, ctx->image_id, ctx->host_depth,
+diff --git a/runtime/spu/tests/test_spu_interpreter_handoff.c b/runtime/spu/tests/test_spu_interpreter_handoff.c
+index 8924a50..d8bb875 100644
+--- a/runtime/spu/tests/test_spu_interpreter_handoff.c
++++ b/runtime/spu/tests/test_spu_interpreter_handoff.c
+@@ -12,47 +12,55 @@
+ uint8_t* vm_base;
+ uint32_t ppu_vm_size;
+ extern void spu_begin_image(int);
+-extern void spu_register_function(uint32_t, void (*)(spu_context*));
+-extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
++extern void spu_register_function(uint32_t, void (SPU_ABI *)(spu_context*));
++extern void spu_register_stack_reset_entry(uint32_t, int);
++extern int spu_run_with_halt(void (SPU_ABI *)(spu_context*), spu_context*);
+ extern void spu_halt(spu_context*);
+ static spu_context ctx;
+ static void word(uint32_t pc, uint32_t w) {
+     ctx.ls[pc] = w >> 24; ctx.ls[pc+1] = w >> 16;
+     ctx.ls[pc+2] = w >> 8; ctx.ls[pc+3] = w;
+ }
+-static void finish(spu_context* c) {
++static SPU_ABI void finish(spu_context* c) {
+     c->gpr[11]._u32[0]++;
+     c->status = SPU_STATUS_STOPPED_BY_STOP;
+     spu_halt(c);
+ }
+-static void helper(spu_context* c) {
+-    c->gpr[10] = spu_ai(c->gpr[10], 1);
+-    SPU_RET(c);
++static unsigned stack_reset_depth = ~0u;
++static SPU_ABI void stack_reset_finish(spu_context* c) {
++    stack_reset_depth = c->host_depth;
++    finish(c);
++}
++static SPU_ABI void helper(spu_context* ctx) {
++    ctx->gpr[10] = spu_ai(ctx->gpr[10], 1);
++    SPU_RET(ctx);
+ }
+ /* This is a valid registered entry which a nested call's return boundary must
+  * NOT execute: the corresponding host frame owns its continuation. */
+-static void wrong_continuation(spu_context* c) {
++static SPU_ABI void wrong_continuation(spu_context* c) {
+     c->gpr[21]._u32[0]++;
+     finish(c);
+ }
+-static void tail_entry(spu_context* c) {
+-    c->pc = 0x4000; g_spu_trampoline_fn = spu_indirect_branch;
++static SPU_ABI void tail_entry(spu_context* ctx) {
++    ctx->pc = 0x4000; g_spu_trampoline_fn = spu_indirect_branch;
+ }
+ static int queued_call;
+-static void nested_entry(spu_context* c) {
+-    c->gpr[0] = spu_link(0x204);
+-    c->host_depth++;
+-    c->pc = 0x4000;
++static SPU_ABI void nested_entry(spu_context* ctx) {
++    ctx->gpr[0] = spu_link(0x204);
++    ctx->host_depth++;
++    ctx->pc = 0x4000;
+     if (queued_call) g_spu_trampoline_fn = spu_indirect_branch;
+-    else spu_indirect_branch(c);
+-    spu_drain_call(c, 0x204);
+-    c->host_depth--;
+-    c->gpr[20]._u32[0]++;
+-    finish(c);
++    else spu_indirect_branch(ctx);
++    spu_drain_call(ctx, 0x204);
++    ctx->host_depth--;
++    ctx->gpr[20]._u32[0]++;
++    finish(ctx);
+ }
+ int main(int argc, char** argv) {
+     assert(argc == 2);
+     const char* mode = argv[1];
++    const int resident_reset = !strcmp(mode, "resident-stack-reset");
++    const int plain_policy_reset = !strcmp(mode, "policy-stack-reset-no-overlay");
+     spu_context_init(&ctx, 0);
+     ctx.image_id = 77;
+     ctx.policy_mode = 1; /* live policy APIs are below the unlifted job */
+@@ -63,13 +71,20 @@ int main(int argc, char** argv) {
+         spu_register_function(0x204, wrong_continuation);
+     spu_register_function(0x240, finish);
+     if (!strcmp(mode, "top-zero")) spu_register_function(0, finish);
++    if (resident_reset || plain_policy_reset) {
++        const int image_id = resident_reset ? 207 : 77;
++        spu_begin_image(image_id);
++        spu_register_function(0x280, stack_reset_finish);
++        spu_register_stack_reset_entry(0x280, image_id);
++        ctx.resident_ovl = resident_reset ? image_id : 0;
++    }
+     if (!strcmp(mode, "negative-stepcap")) {
+         ctx.image_id = -1;
+         spu_begin_image(0);
+         spu_register_function(0x4004, finish); /* wildcard ignored by pure interpretation */
+     }
+     word(0x4000, 0x04000082); /* ori $2,$1,0: force full interpreter */
+-    void (*entry)(spu_context*) = tail_entry;
++    void (SPU_ABI *entry)(spu_context*) = tail_entry;
+     if (!strcmp(mode, "top-zero")) {
+         word(0x4004, 0x30000000); /* bra 0: registered, valid lifted entry */
+     } else if (!strcmp(mode, "top")) {
+@@ -86,6 +101,9 @@ int main(int argc, char** argv) {
+         word(0x400C, 0x31004000); /* brasl $0,0x200 */
+         word(0x4010, 0x04000082); /* ori $2,$1,0 */
+         word(0x4014, 0x30004800); /* bra 0x240 */
++    } else if (resident_reset || plain_policy_reset) {
++        entry = nested_entry; queued_call = 1;
++        word(0x4004, 0x30005000); /* bra 0x280 */
+     } else if (!strcmp(mode, "stop-zero") || !strcmp(mode, "nested-stop")) {
+         if (!strcmp(mode, "nested-stop")) entry = nested_entry;
+         word(0x4004, 0x00000000); /* stop 0 */
+@@ -120,7 +138,7 @@ int main(int argc, char** argv) {
+         word(0x4004, 0x30004800);
+         uint32_t pc = spu_interp_run_until(&ctx, 0x4000, 0);
+         assert(pc == 0x240 && ctx.status == SPU_STATUS_RUNNING);
+-        assert(g_spu_trampoline_fn == NULL); /* adapter owns scheduling */
++        assert(ctx.tramp_fn == NULL); /* adapter owns scheduling */
+         puts("pure-interpreter PASS"); return 0;
+     } else { fprintf(stderr, "unknown mode\n"); return 2; }
+     int halted = spu_run_with_halt(entry, &ctx);
+@@ -131,9 +149,17 @@ int main(int argc, char** argv) {
+     if (!strcmp(mode, "stepcap") || !strcmp(mode, "negative-stepcap")) {
+         assert(halted == 0 && ctx.status == SPU_STATUS_RUNNING);
+         assert(ctx.pc == 0x4004 && ctx.gpr[11]._u32[0] == 0);
+-        assert(g_spu_trampoline_fn == NULL);
++        assert(ctx.tramp_fn == NULL);
+         puts("PASS"); return 0;
+     }
++    if (resident_reset || plain_policy_reset) {
++        const unsigned expected_depth = resident_reset ? 0u : 1u;
++        assert(halted == 1 && ctx.status == SPU_STATUS_STOPPED_BY_STOP);
++        assert(stack_reset_depth == expected_depth && ctx.host_depth == expected_depth);
++        assert(ctx.gpr[11]._u32[0] == 1 && ctx.gpr[20]._u32[0] == 0);
++        puts(resident_reset ? "PASS resident overlay reset" : "PASS plain policy exclusion");
++        return 0;
++    }
+     assert(ctx.gpr[21]._u32[0] == 0);
+     if (!strncmp(mode, "smc-ldst", 8)) {
+         for (int k = 0; k < 4; k++) {
+@@ -182,3 +208,4 @@ void spurs_pm_build_context(spu_context* c, uint32_t a, uint32_t b, uint32_t d)
+     (void)c; (void)a; (void)b; (void)d; abort();
+ }
+ uint32_t g_spu_image_src_ea, g_spu_image_ls_start, g_spu_image_span;
++const char* ppu_thread_name_for_os_tid(unsigned long tid) { (void)tid; return NULL; }
+diff --git a/tools/test_spu_interpreter_handoff.py b/tools/test_spu_interpreter_handoff.py
+index 8d36feb..8024519 100644
+--- a/tools/test_spu_interpreter_handoff.py
++++ b/tools/test_spu_interpreter_handoff.py
+@@ -1,37 +1,61 @@
+ #!/usr/bin/env python3
+ """Exercise real SPU interpretation/drain boundaries without game binaries."""
++import argparse
+ import os
++from pathlib import Path
++import re
++import shutil
+ import subprocess
+ import tempfile
+-from pathlib import Path
+ 
+-if os.name == 'nt':
+-    print('SKIP: fixture currently requires the POSIX compiler/linker')
++parser = argparse.ArgumentParser(description=__doc__)
++parser.add_argument('--overlay-stack-reset', action='store_true')
++args = parser.parse_args()
++if os.name == 'nt' and not args.overlay_stack_reset:
++    print('SKIP: full fixture currently requires the POSIX compiler/linker')
+     raise SystemExit(0)
+ root = Path(__file__).resolve().parents[1]
+ spu = root / 'runtime/spu'
+ sources = ['spu_channels.c', 'spu_drain.c', 'spu_lockstep.c', 'spu_coherency.c',
+            'spu_workload.c', 'spurs_policy.c', 'spurs_job.c', 'spu_tsp_weak.c',
+            'spu_vm_pagemap.c', 'spurs_policy_blob_weak.c', 'spu_interp.c']
++cc = os.environ.get('CC')
++cache = root / 'build/CMakeCache.txt'
++if not cc and cache.is_file():
++    match = re.search(r'^CMAKE_C_COMPILER:[^=]+=([^\r\n]+)$', cache.read_text(), re.M)
++    if match:
++        cc = match[1]
++        if Path(cc).stem.lower() == 'clang-cl':
++            cc = str(Path(cc).with_name('clang' + Path(cc).suffix))
++if not cc:
++    cc = shutil.which('clang') if os.name == 'nt' else shutil.which('cc')
++if not cc:
++    raise SystemExit('FAILED: a C compiler is required')
+ with tempfile.TemporaryDirectory(prefix='spu-interp-handoff-') as tmp:
+-    binary = Path(tmp) / 'test'
+-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu17', '-O1', '-UNDEBUG',
++    binary = Path(tmp) / ('test.exe' if os.name == 'nt' else 'test')
++    subprocess.run([cc, '-std=gnu17', '-O1', '-UNDEBUG', '-D_WIN32_WINNT=0x0A00',
+                     '-I'+str(root/'include'), '-I'+str(spu),
+                     '-I'+str(root/'runtime/platform'),
+                     str(spu/'tests/test_spu_interpreter_handoff.c'),
+                     *[str(spu / name) for name in sources],
+-                    str(root/'runtime/platform/win32_compat.c'), '-pthread', '-lm',
++                    str(root/'runtime/diag/kz3_wait_acct.c'),
++                    str(root/'runtime/platform/ps3_evcv.c'),
++                    str(root/'runtime/platform/win32_compat.c'),
++                    *([] if os.name == 'nt' else ['-pthread', '-lm']),
+                     '-o', str(binary)], check=True)
+     failed = []
+-    for mode in ['top', 'top-zero', 'nested-return', 'nested-return-unlifted', 'nested-calls', 'stop-zero',
+-                 'nested-stop', 'stop-code', 'halt', 'smc', 'smc-ldst', 'smc-ldst-diag', 'pure-interpreter', 'stepcap', 'negative-stepcap']:
++    modes = ['resident-stack-reset', 'policy-stack-reset-no-overlay'] if args.overlay_stack_reset else [
++        'top', 'top-zero', 'nested-return', 'nested-return-unlifted', 'nested-calls', 'stop-zero',
++        'nested-stop', 'stop-code', 'halt', 'smc', 'smc-ldst', 'smc-ldst-diag',
++        'pure-interpreter', 'stepcap', 'negative-stepcap']
++    for mode in modes:
+         env = {k: v for k, v in os.environ.items()
+                if not k.startswith(('SPU_', 'SPURS_', 'YDKJ_', 'LBP_', 'GH3_'))}
+         if mode in ('stepcap', 'negative-stepcap'):
+             env.update(YDKJ_SPU_TRACE='1', SPU_STEPCAP='2')
+         result = subprocess.run([str(binary), mode], capture_output=True,
+                                 text=True, timeout=5, cwd=tmp, env=env)
+-        print(result.stdout.strip())
++        print(mode, 'exit', result.returncode, result.stdout.strip())
+         if result.returncode:
+             print(result.stderr[-2500:])
+             failed.append(mode)

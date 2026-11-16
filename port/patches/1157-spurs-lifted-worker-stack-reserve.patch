@@ -1,0 +1,226 @@
+KZ3 patch 1157 (SPU pass 146; upstream candidate): reserve enough host stack for every SPURS HLE thread that can run lifted SPU code.
+
+The ordinary SPU host threads reserve 16 MiB (or 512 MiB with SPU_HOST_STACK_BIG), because every lifted guest call is
+a host call. The SPURS kernel, policy-module lane/worker and job-chain threads still reserved only 1 MiB. On native
+Windows, Tools of Destruction's PhysColl job exhausted that reserve in its lifted indirect-call chain and raised
+STATUS_STACK_OVERFLOW. Fresh scripted Metropolis runs reproduced the identical PhysColl stack with LD_CB_REUSE=0 and
+LD_CB_REUSE=1, so the renderer optimization was not involved.
+
+Use one shared 16/512 MiB helper for ordinary and SPURS lifted-code threads. Windows uses
+STACK_SIZE_PARAM_IS_A_RESERVATION, so the larger value reserves virtual address space and pages are committed only as
+the stack grows; the POSIX CreateThread shim maps the requested pthread stack lazily as well. SetThreadStackGuarantee
+only preserves space for the exception handler and does not enlarge the thread's stack.
+
+Test: tools/test_spu_host_stack.py compiles the helper, checks both reservation sizes, and verifies that all four SPURS
+lifted-code thread paths use it with the platform reservation flag. A native Windows Metropolis run then completed its
+360-second window and exited cleanly.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b42d0a3..7e208e7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -443,6 +443,9 @@ if(PS3RECOMP_BUILD_TESTS)
+         add_test(NAME spu_dma_repeat
+             COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_spu_dma_repeat.py")
++        add_test(NAME spu_host_stack
++            COMMAND "${Python3_EXECUTABLE}"
++                "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_spu_host_stack.py")
+     endif()
+     if(NOT WIN32)
+         find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 43b53fb..73bdf63 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -22,6 +22,7 @@
+ #include "../../runtime/platform/kz3_waitstat.h"   /* KZ3 patch 1144 */
+ #include "../../runtime/platform/ps3_evcv.h"   /* KZ3 patch 1148 */
+ #include "../../runtime/ppu/ppu_context.h"  /* g_active_ctx: 9th argument on the guest stack */
++#include "../../runtime/spu/spu_host_stack.h"
+ #include <stdio.h>
+ #include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
+ #include <string.h>
+@@ -49,6 +50,12 @@ uint32_t g_ydkj_real_spurs_ea   = 0;   /* real CellSpurs instance EA (for the ta
+ #endif
+ #include "ps3emu/thread_name.h"
+ 
++#ifdef _WIN32
++#define SPURS_LIFTED_STACK_FLAGS STACK_SIZE_PARAM_IS_A_RESERVATION
++#else
++#define SPURS_LIFTED_STACK_FLAGS 0
++#endif
++
+ /* ---------------------------------------------------------------------------
+  * Internal workload tracking
+  * -----------------------------------------------------------------------*/
+@@ -812,7 +819,8 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
+         for (int k = 0; k < n; k++) {
+             s_kt_arg[si - s_inst][k].si = si;
+             s_kt_arg[si - s_inst][k].k  = k;
+-            CreateThread(NULL, 1u << 20, spurs_kernel_thread, &s_kt_arg[si - s_inst][k], 0, NULL);
++            CreateThread(NULL, spu_host_stack_bytes(), spurs_kernel_thread,
++                         &s_kt_arg[si - s_inst][k], SPURS_LIFTED_STACK_FLAGS, NULL);
+         }
+     }
+     printf("[cellSpurs] Initialize \"%s\" ea=0x%08X nSpus=%u (real BE instance + kernel poll)\n",
+@@ -2752,7 +2760,9 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
+                                 L->kt = kt; L->prefix = si->prefix;
+                                 L->go = CreateEventA(NULL, FALSE, FALSE, NULL);
+                                 L->done = CreateEventA(NULL, FALSE, FALSE, NULL);
+-                                L->th = CreateThread(NULL, 1u << 20, kz3_lane_thread, L, 0, NULL);
++                                L->th = CreateThread(NULL, spu_host_stack_bytes(),
++                                                     kz3_lane_thread, L,
++                                                     SPURS_LIFTED_STACK_FLAGS, NULL);
+                             }
+                             th[nth] = L->done;
+                             SetEvent(L->go);
+@@ -2768,7 +2778,9 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
+                         wa[nth].pm = pm; wa[nth].pm_size = sz;
+                         wa[nth].arg = arg; wa[nth].wid = wid; wa[nth].ea = ea;
+                         wa[nth].spu_num = sn;
+-                        th[nth] = CreateThread(NULL, 1u << 20, spurs_pm_worker, &wa[nth], 0, NULL);
++                        th[nth] = CreateThread(NULL, spu_host_stack_bytes(),
++                                               spurs_pm_worker, &wa[nth],
++                                               SPURS_LIFTED_STACK_FLAGS, NULL);
+                     }
+                     if (!lane_pool) spu_run_policy_module(r->fn, r->image_id, pm, sz, arg, wid, ea, 0);
+                     if (nth) {
+@@ -3837,7 +3849,8 @@ static s32 jc_start(u64 jc_ea, const char* who)
+         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
+         /* Coalesce: a chain already being walked must not start twice. */
+         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
+-            HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
++            HANDLE th = CreateThread(NULL, spu_host_stack_bytes(), jc_thread,
++                                     (LPVOID)(intptr_t)i, SPURS_LIFTED_STACK_FLAGS, NULL);
+             if (th) CloseHandle(th);
+             else s_jobchains[i].running = 0;
+         }
+diff --git a/runtime/spu/spu_host_stack.h b/runtime/spu/spu_host_stack.h
+new file mode 100644
+index 0000000..608c92d
+--- /dev/null
++++ b/runtime/spu/spu_host_stack.h
+@@ -0,0 +1,16 @@
++#ifndef PS3RECOMP_SPU_HOST_STACK_H
++#define PS3RECOMP_SPU_HOST_STACK_H
++
++#include <stddef.h>
++#include <stdlib.h>
++
++/* Lifted SPU calls are host calls. A host-default stack can overflow during a
++ * valid guest call chain, so every ordinary and SPURS lifted-code thread uses
++ * this reservation. The larger setting is for diagnosing runaway chains. */
++static inline size_t spu_host_stack_bytes(void)
++{
++    return getenv("SPU_HOST_STACK_BIG") ? (size_t)512 * 1024 * 1024
++                                        : (size_t)16 * 1024 * 1024;
++}
++
++#endif
+diff --git a/runtime/spu/tests/test_spu_host_stack.c b/runtime/spu/tests/test_spu_host_stack.c
+new file mode 100644
+index 0000000..7bf7b37
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_host_stack.c
+@@ -0,0 +1,12 @@
++#include "../spu_host_stack.h"
++
++#include <stdio.h>
++
++int main(int argc, char** argv)
++{
++    if (argc != 2) return 2;
++    const size_t expected = (size_t)strtoull(argv[1], NULL, 0);
++    const size_t actual = spu_host_stack_bytes();
++    printf("SPU host stack: %zu bytes\n", actual);
++    return actual == expected ? 0 : 1;
++}
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+index ab02edc..9e3e55c 100644
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -42,6 +42,7 @@ extern void spu_raw_note_image(uint32_t src_ea, uint32_t entry);
+ #include "../spu/spu_lifted_job.h"   /* spu_run_interp_job — run un-lifted SPU images */
+ #include "../spu/spu_lifted_thread.h" /* run a thread's own image, lifted */
+ #include "../spu/spu_context.h"       /* the architectural context that runs it */
++#include "../spu/spu_host_stack.h"
+ #include "../spu/spu_workload.h"   /* the content-fingerprint registry */
+ #include "sys_event.h"
+ 
+@@ -688,16 +689,6 @@ static int64_t sys_spu_thread_initialize_handler(ppu_context* ctx)
+     return 0;
+ }
+ 
+-/* Reserved stack for an SPU host thread. Lifted SPU code turns a guest loop
+- * into a chain of host calls, so a thread that gets the host default -- 512 KB
+- * on Darwin against 16 MB on Windows -- dies inside code that has done nothing
+- * wrong. SPU_HOST_STACK_BIG raises it further for chasing a runaway chain. */
+-static size_t spu_host_stack_bytes(void)
+-{
+-    return getenv("SPU_HOST_STACK_BIG") ? (size_t)512 * 1024 * 1024
+-                                   : (size_t)16 * 1024 * 1024;
+-}
+-
+ #ifndef _WIN32
+ /* pthread_create with that stack, falling back to the host default if the size
+  * is refused -- a thread with a small stack beats no thread at all. */
+diff --git a/tools/test_spu_host_stack.py b/tools/test_spu_host_stack.py
+new file mode 100644
+index 0000000..4d8e2b8
+--- /dev/null
++++ b/tools/test_spu_host_stack.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++"""Check the shared host-stack reservation used by lifted SPU threads."""
++import os
++from pathlib import Path
++import re
++import shutil
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++SPU = ROOT / "runtime/spu"
++cc = os.environ.get("CC")
++cache = ROOT / "build/CMakeCache.txt"
++if not cc and cache.is_file():
++    match = re.search(r"^CMAKE_C_COMPILER:[^=]+=([^\r\n]+)$", cache.read_text(), re.M)
++    if match:
++        cc = match[1]
++        if Path(cc).stem.lower() == "clang-cl":
++            cc = str(Path(cc).with_name("clang" + Path(cc).suffix))
++if not cc:
++    cc = shutil.which("clang") if os.name == "nt" else shutil.which("cc")
++if not cc:
++    raise SystemExit("FAILED: a C compiler is required")
++
++spurs = (ROOT / "libs/spurs/cellSpurs.c").read_text(encoding="utf-8")
++for target in ("spurs_kernel_thread", "kz3_lane_thread", "spurs_pm_worker", "jc_thread"):
++    call = re.compile(
++        r"CreateThread\(NULL,\s*spu_host_stack_bytes\(\),\s*" + target
++        + r",.*?SPURS_LIFTED_STACK_FLAGS",
++        re.S,
++    )
++    assert len(call.findall(spurs)) == 1, target + " must use the shared lifted-SPU stack reservation"
++
++with tempfile.TemporaryDirectory(prefix="spu-host-stack-") as temp:
++    binary = Path(temp) / ("test.exe" if os.name == "nt" else "test")
++    subprocess.run(
++        [
++            cc,
++            "-std=c11",
++            "-O2",
++            "-I" + str(SPU),
++            str(SPU / "tests/test_spu_host_stack.c"),
++            "-o",
++            str(binary),
++        ],
++        check=True,
++    )
++    env = dict(os.environ)
++    env.pop("SPU_HOST_STACK_BIG", None)
++    subprocess.run([str(binary), str(16 * 1024 * 1024)], env=env, check=True)
++    env["SPU_HOST_STACK_BIG"] = "1"
++    subprocess.run([str(binary), str(512 * 1024 * 1024)], env=env, check=True)
++print("PASS shared SPU host stack reservation")

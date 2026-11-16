@@ -11,10 +11,9 @@ Host controls exercise extracted routing/ownership with resource/window mocks.
 Native compile, GPU output, DPI and actual pointer behavior require separate validation.
 No internal render-resolution change is introduced by this presentation correction.
 
-R&C (2026-11-09, window stage 1b/1d): carried from the Killzone 3 port. R&C has no KZ3 2148 (constant-buffer reuse)
-or 2153 (ring fence waits), so two hunks of rsx_live_draw.c have R&C context: the include block (no
-rsx_cb_reuse.h line, log_first.h after it) and the ui_owner_direct insert, which sits before the
-constant copy (u8* cbdst = ...) instead of KZ3 2148's cb_slot/cb_reused lines. Added lines unchanged.
+R&C (2026-11-09, window stage 1b/1d): carried from the Killzone 3 port. R&C has no KZ3 2153 (ring fence waits);
+the ring-related context remains rebased. Patch 2148 now precedes this patch, so its include and
+ui_owner_direct hunks use the original KZ3 constant-buffer-reuse context. Added lines unchanged.
 R&C 7013 and 7043 rebased on it (context only). ToD reads no cursor position, so the new input mapping
 (rsx_display_client_to_guest/_to_ui through the presented geometry) serves only the runtime's menu mouse.
 Host test copied to port/rc/tests/kz3/test_display_geometry.py (run_kz3_display_tests.sh).
@@ -27,9 +26,9 @@ Host test copied to port/rc/tests/kz3/test_display_geometry.py (run_kz3_display_
  #include "rsx_live_draw.h"
 +#include "rsx_present_geometry.h"
 +#include "rsx_ui_provenance.h"
+ #include "rsx_cb_reuse.h"
  #include "ps3emu/yz_runtime_config.h"
  #include "ps3emu/yz_frontier_trace.h"
- #include "ps3emu/log_first.h"
 @@ -28,6 +30,8 @@
  #if !defined(_WIN32)
 
@@ -250,9 +249,9 @@ Host test copied to port/rc/tests/kz3/test_display_geometry.py (run_kz3_display_
 +    const int ui_owner_direct = ui_direct && target < g.n_surfaces &&
 +        rsx_ui_owner_extent_matches((u32)W, (u32)H, g.surfaces[target].w, g.surfaces[target].h,
 +                                    (u32)Wv, (u32)Hv, g.width, g.height);
-     u8* cbdst = g.cb_mapped + g.cb_used;
+     u32 cb_slot = g.cb_used;   /* ring offset this draw's root CBV points at */
+     int cb_reused = 0;
      LDW_T0(vcb_t0);
-     memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
 @@ -15346,6 +15408,11 @@
        LDW_T0(rs_t0);
        decode_render_state(&cw);

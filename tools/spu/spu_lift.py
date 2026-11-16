@@ -6,9 +6,9 @@
                                               OUT_DIR = work/spu/GAME)
 
 Per-title inputs (numbers, offsets and names recovered from the EBOOT; no game bytes): data/titles/GAME_spu_config.json (title string, symbol
-prefix, image ids, policy-module slot and seeds, the optional lift table), GAME_spu_jobs.json (job-module header offsets, policy module EA, size
-and file offset: read by carve_jobmods.py), GAME_spu_code.json (the EDGE inflate ELF's file offset and size), GAME_spu_lift_table.tsv (optional:
-code ends and data islands, tools/survey/lift_table.py).
+prefix, image ids, policy-module slot and seeds, optional overlay stack resets and the optional lift table), GAME_spu_jobs.json (job-module
+header offsets, policy module EA, size and file offset: read by carve_jobmods.py), GAME_spu_code.json (the EDGE inflate ELF's file offset and
+size), GAME_spu_lift_table.tsv (optional: code ends and data islands, tools/survey/lift_table.py).
 
 Writes (all derived from game code, never committed), shown for tods:
   OUT_DIR/jobmods/                  the carved job modules (carve_jobmods.py) and policy/pm_*.bin
@@ -42,6 +42,45 @@ def run(cmd, log=None):
     return r.stdout
 
 
+def add_overlay_stack_resets(path, resets):
+    if not isinstance(resets, list):
+        raise ValueError("overlay_stack_resets must be a list")
+    if not resets:
+        return
+    text = open(path, encoding="utf-8").read()
+    declaration = "extern void spu_overlay_register_sig(const uint8_t sig[16], int image_id);\n"
+    end_marker = "    spu_begin_image(0);\n"
+    if text.count(declaration) != 1 or text.count(end_marker) != 1:
+        raise RuntimeError("unexpected lift_jobmods.py registration output")
+    calls = []
+    for i, reset in enumerate(resets):
+        if not isinstance(reset, dict) or set(reset) != {"entry", "image_id"}:
+            raise ValueError("overlay_stack_resets[%d] must contain entry and image_id" % i)
+        raw_entry = reset["entry"]
+        raw_image_id = reset["image_id"]
+        try:
+            if isinstance(raw_entry, str):
+                entry = int(raw_entry, 0)
+            elif isinstance(raw_entry, int) and not isinstance(raw_entry, bool):
+                entry = raw_entry
+            else:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("invalid overlay_stack_resets[%d] entry" % i) from exc
+        if not isinstance(raw_image_id, int) or isinstance(raw_image_id, bool):
+            raise ValueError("invalid overlay_stack_resets[%d] image_id" % i)
+        image_id = raw_image_id
+        if entry < 0 or entry >= 0x40000 or entry & 3 or image_id <= 0:
+            raise ValueError("invalid overlay_stack_resets[%d]" % i)
+        calls.append("    spu_register_stack_reset_entry(0x%05Xu, %d);\n" % (entry, image_id))
+    text = text.replace(
+        declaration,
+        declaration + "extern void spu_register_stack_reset_entry(uint32_t entry, int image_id);\n",
+    )
+    text = text.replace(end_marker, "".join(calls) + end_marker)
+    open(path, "w", encoding="utf-8", newline="\n").write(text)
+
+
 def main():
     game, elf, ps3, out = sys.argv[1:5]
     here = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +105,10 @@ def main():
     if cfg.get("lift_table"):
         cmd += ["--table", os.path.join(titles, cfg["lift_table"])]
     run(cmd, os.path.join(lift, "jobmods.log"))
+    add_overlay_stack_resets(
+        os.path.join(lift, "jobmods_register.c"),
+        cfg.get("overlay_stack_resets", []),
+    )
     imgs, text_fps, ids = [], {}, {}
     # 3. EDGE ELF (optional: a title without one has no "edge_zlib_inflate_elf" in its code table)
     code = json.load(open(os.path.join(titles, "%s_spu_code.json" % game))).get("edge_zlib_inflate_elf")

@@ -1003,12 +1003,17 @@ int main(int argc, char** argv)
      *                   post chain took more than 30 s on our slow SPU side, the resync skipped the frame tail with the
      *                   render fence release (NV406E label 0x4B, waited for at 0x48AE8) and the main thread waited
      *                   forever.
+     *  LD_CB_REUSE=1  ENHANCEMENT (performance, identical output): reuse the previous draw's vertex constant-buffer
+     *                   block when neither the transform constants nor the viewport tail changed (KZ3 patch 2148).
+     *                   In ToD frame 6986, 3,124 of 6,964 draws were unchanged; the focused host test compares every
+     *                   byte read by 30,000 synthetic draws with reuse off and on. Set to 0 for the old always-copy path.
      *  LD_VTX_GPU=1, LD_VTX_GPU_INDEX=1  ENHANCEMENT (performance, identical output): the GPU decodes vertices (KZ3 2076)
      *                   and indexed triangle draws use the guest index buffer directly (R&C 7013). ToD Metropolis:
      *                   LD_VTX_GPU_VERIFY found 0 differing draws in 3.27M (tods-ng-r1); flips 8.6 -> 10.7 (p1/p2),
      *                   12.3 -> 13.7 (s0/s1) with the same picture. Set either to 0 for the CPU path. */
     static const char* const rc_env[][2] = { {"PS3_CAMERA", "0"}, {"RSX_LIVE_DRAW", "1"},
                                               {"GCM_PARK_WAIT_MS", "86400000"},
+                                              {"LD_CB_REUSE", "1"},
                                               {"LD_VTX_GPU", "1"}, {"LD_VTX_GPU_INDEX", "1"} };
     for (const auto& e : rc_env) {
         if (getenv(e[0])) continue;

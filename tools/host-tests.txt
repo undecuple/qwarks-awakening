@@ -25,3 +25,5 @@ port/rc/tests/run_rc_settings_test.sh
 port/rc/tests/run_spurs_pm_interp_test.sh
 port/rc/tests/run_vg_index_test.sh
 port/rc/tests/run_vtx_gpu_test.sh
+tools/smoke/test_gcm_r137.sh
+tools/smoke/test_ld_cb_reuse.sh

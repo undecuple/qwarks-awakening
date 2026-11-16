@@ -228,6 +228,8 @@ static const char* const rc_set_from_names[3] = { "default", "file", "environmen
  *   [performance] ENHANCEMENTs with identical output (default on; main.cpp rc_env has the same defaults). */
 typedef struct { const char* section; const char* key; const char* env; const char* def; const char* what; } RcSetting;
 static const RcSetting rc_settings_table[] = {
+    { "performance", "cb_reuse", "LD_CB_REUSE", "1",
+      "1 = unchanged draws reuse the previous constant-buffer block (KZ3 2148), 0 = copy every draw" },
     { "performance", "vtx_gpu", "LD_VTX_GPU", "1",
       "1 = the GPU decodes vertices (KZ3 2076; same picture, faster), 0 = the CPU path" },
     { "performance", "vtx_gpu_index", "LD_VTX_GPU_INDEX", "1",

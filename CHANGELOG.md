@@ -3,6 +3,26 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
+## [Unreleased]
+
+### [All games]
+- SPURS worker threads that execute lifted SPU code reserve the same host stack as ordinary SPU threads (patch 1157).
+  This prevents a native Windows stack overflow in *Tools of Destruction*'s Metropolis physics jobs.
+- Unchanged draws reuse the previous vertex constant-buffer block instead of copying 8 KiB again (patch 2148,
+  `cb_reuse = 1` in `settings.ini`; set it to `0` for the old path). A focused host test compares every byte read with
+  reuse off and on over 30,000 synthetic draws and rejects a deliberately broken cache. In a stationary 60-second
+  *Tools of Destruction* sample, 3,453,748 of 8,466,010 draws reused their block, avoiding 26.35 GiB of host writes and
+  reducing measured constant-stage CPU time per draw by 20.9%. One reuse-on/off pair presented 16.58/16.12 FPS, but
+  the two samples differed by 1.9% in draws per frame, so this is not yet evidence of a frame-rate gain.
+
+### [ToD] *Tools of Destruction*: in game
+- Zordoom Prison and Meridian City no longer stop drawing. A resident SPU job overlay could branch from interpreted
+  code back to a one-way lifted entry without discarding the obsolete lifted host call frames; the depth guard
+  eventually stopped that SPU. Registered resident-overlay entries now reset those frames after the interpreter
+  resolves their lifted target (patch 1158). Direct starts with no input kept presenting and drawing for 120 seconds
+  in both levels (2026-11-15); Zordoom Prison presented 4,775 frames, and Meridian City progressed into the return to
+  Fastoon. Both runs exited cleanly.
+
 ## [0.3.1] - 2026-11-16 (pre-release)
 
 A fix release on top of 0.3.0: *Tools of Destruction*'s pause menu opens and closes again, *All 4 One*'s first
@@ -247,4 +267,3 @@ per second, in every game's line.
 - A DualShock 4 pad (through SDL3), Alt+Enter fullscreen and in-game saving work under Proton.
 - The PPU code of *A Crack in Time* and *Into the Nexus* is lifted with the same tools; neither game is linked or
   running yet.
-

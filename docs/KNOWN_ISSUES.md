@@ -68,13 +68,16 @@ graphics-stall notice can show during them. Shorter pauses follow after the leve
 earlier build (2026-11-11) had three each: eight of them 3.2 to 3.7 s and one 8.4 s. A second start with the cache
 of the first is much shorter (1.3 s in one run).
 
-### Two levels stop drawing
+### Two levels stopped drawing (fixed after 0.3.1)
 
-The game's developer level option started Zordoom Prison and Meridian City directly
-(scripted, no input, 2026-11-13). Both load and draw their first frames. Then the picture stops changing for the
-rest of the run, while the game waits for a frame to be shown. The run logs point to the way the port runs the
-game's SPU (co-processor) programs. A fix is in development; it is not yet tried on these two levels and not in this
-release.
+The game's developer level option started Zordoom Prison and Meridian City directly (scripted, no input,
+2026-11-13). Both loaded and drew their first frames, then stopped drawing because a resident SPU (co-processor)
+job overlay repeatedly returned from interpreted code to a one-way lifted entry without discarding obsolete host
+call frames. The host-depth guard eventually stopped that SPU.
+
+The unreleased fix resets those frames at the registered overlay entry. In direct starts with no input on 2026-11-15,
+both levels kept presenting and drawing for 120 seconds and exited cleanly; Meridian City also progressed into the
+return to Fastoon.
 
 ### Two script errors in the log
 
