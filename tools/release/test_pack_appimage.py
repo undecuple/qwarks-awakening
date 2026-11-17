@@ -213,6 +213,10 @@ if _TOP and _LOG:
 
 def test_read_only(tmp):
     """The AppDir from this repository, read-only, the engine run from it in an empty home."""
+    if not os.path.isfile(os.path.join(ROOT, "third_party", "imgui", "LICENSE.txt")):
+        # the CI host-test job checks out no submodules; the release workflow's linux job (submodules fetched) runs this
+        print("SKIP the AppDir from this repository (third_party/imgui not checked out)")
+        return
     _r, tk, b = tpl.make_root(tmp)
     lic = runtime_license(tmp)
     built = os.path.join(tmp, "ro-src")
