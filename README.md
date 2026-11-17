@@ -244,8 +244,9 @@ on the host, not yet in a game run, and the developer switch `PS3_NET_ONLINE` ch
 supported yet.
 
 **Where releases come from.** Qwark's Awakening is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple),
-Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** (on the ps3recomp
-server). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
+Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** on the undecuple
+server, an unofficial fan work community with a forum for this project:
+[discord.gg/W8fMT78Q7k](https://discord.gg/W8fMT78Q7k). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
 We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or
 donations in this project's name is not us.
 
