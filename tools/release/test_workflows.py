@@ -91,6 +91,8 @@ def test_common(files):
             ok = re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref) is not None and re.search(r"#\s*v\d", rest)
             check(bool(ok), f"{name}: {ref.split('@')[0]} pinned to a commit SHA with its version", line.strip())
         secrets = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", t)) - {"GITHUB_TOKEN"}
+        if name == "release-notify.yml":  # its one secret is the Discord webhook, checked in test_release_notify
+            secrets -= {"DISCORD_RELEASE_WEBHOOK"}
         check(not secrets, f"{name}: no secret beyond the run's own token", secrets)
         for m in re.finditer(r"uses: actions/checkout@\S+[^\n]*\n((?:\s{8,}[^\n]*\n)*)", t):
             check("persist-credentials: false" in m.group(1), f"{name}: checkout keeps no credentials", m.group(0))
@@ -396,11 +398,32 @@ def test_dependabot():
     check("interval: weekly" in t and "groups:" in t, "dependabot.yml: weekly, grouped")
 
 
+def test_release_notify(t):
+    """release-notify.yml (shared release-notify rules, 2026-11-17): one Discord message per published release."""
+    check(re.search(r"^on:\n  release:\n    types: \[published\]\n", t, re.M) is not None,
+          "release-notify.yml: triggered by release published only")
+    check(re.search(r"^permissions: \{\}$", t, re.M) is not None, "release-notify.yml: no token permissions")
+    check("uses:" not in t, "release-notify.yml: no third-party action (curl and jq only)")
+    check(set(re.findall(r"secrets\.(\w+)", t)) == {"DISCORD_RELEASE_WEBHOOK"}, "release-notify.yml: only DISCORD_RELEASE_WEBHOOK")
+    check('if [ -z "$WEBHOOK" ]' in t, "release-notify.yml: a missing secret (forks) exits 0")
+    check("allowed_mentions: {parse: []}" in t, "release-notify.yml: the message can never mention anyone")
+    check(r'thread_name: (("Qwark\u0027s Awakening " + $tag) | .[0:100])' in t, "release-notify.yml: the forum webhook gets a thread name (400 without one)")
+    run = t.split("run: |", 1)[-1]
+    check("${{" not in run, "release-notify.yml: event text reaches the script through env only")
+    check(not re.search(r"release\.name", t), "release-notify.yml: the release title is not posted")
+    check("BODY: ${{ github.event.release.body }}" in t and "--arg body \"$BODY\"" in t and ".[0:1800]" in t,
+          "release-notify.yml: the notes come in through env and jq --arg, cut to 1,800 characters")
+
+
 def main():
     files = sorted(glob.glob(os.path.join(WF, "*.yml")))
     have = {os.path.basename(p) for p in files}
     check({"ci.yml", "release.yml"} <= have, "workflows present: ci.yml, release.yml", sorted(have))
     test_common(files)
+    rn = [p for p in files if os.path.basename(p) == "release-notify.yml"]
+    check(len(rn) == 1, "release-notify.yml present")
+    if rn:
+        test_release_notify(read(rn[0]))
     test_release()
     test_ci()
     test_dependabot()
