@@ -8,9 +8,13 @@ SDL3 (zlib licence) is what the game loads from its exe folder for native pads: 
 Xbox without Steam, motion sensors and rumble (patch 4010). Run it in `nix develop .#win`: the sdl3 build input's
 mingw bin/ is on the shell's path lists, so the DLL is found from the environment, never from a hard-coded store path.
 
-  stage_sdl3.py [--out DIR] [--dll PATH --license PATH]     (--dll/--license override the search, e.g. on a CI runner
+  stage_sdl3.py [--out DIR] [--dll PATH --license PATH] [--source SDL_SOURCE_TREE]
+                                                            (--dll/--license override the search, e.g. on a CI runner
                                                              that unpacked libsdl-org's release zip)
-Writes DIR/SDL3.dll, DIR/LICENSE.txt and DIR/sdl3.json (sha256, size, source). Exit 0 = staged, 1 = not found / not a
+Writes DIR/SDL3.dll, DIR/LICENSE.txt and DIR/sdl3.json (sha256, size, source). --source (SDL's source release of the
+same version, toolchain.json "sdl3-source") also writes the licence texts of the third-party code inside SDL3.dll
+(PARTS: HIDAPI, used under its BSD-style licence, and yuv2rgb, BSD-3-Clause), which the MinGW package does not carry;
+the release zips need them (pack_zip.py refuses a --sdl3 folder without them). Exit 0 = staged, 1 = not found / not a
 64-bit DLL / no licence text.
 """
 import argparse
@@ -22,6 +26,19 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SDL3_SRC = ("SDL3.dll", "LICENSE.txt")   # names inside --out DIR
+# Third-party code SDL builds into its library on Windows and Linux (the Linux launcher's linker map, 2026-11-16), whose
+# licences ask for their text with binaries: staged name -> (path in SDL's source release, words the text must hold)
+PARTS = {"SDL3-hidapi-LICENSE.txt": ("src/hidapi/LICENSE-bsd.txt", ("Alan Ott", "Redistributions in binary form must reproduce")),
+         "SDL3-yuv2rgb-LICENSE.txt": ("src/video/yuv2rgb/LICENSE", ("Adrien Descamps", "Redistributions in binary form must reproduce"))}
+
+
+def part_problems(path, words):
+    """-> "" when `path` is a licence text holding `words`, else why not."""
+    if not os.path.isfile(path):
+        return f"{path}: missing"
+    with open(path, encoding="utf-8", errors="replace") as f:
+        t = f.read()
+    return "" if all(w in t for w in words) else f"{path}: not the expected licence text ({words[0]})"
 
 
 def pe_x64_problem(path):
@@ -73,7 +90,7 @@ def find_sdl3(environ):
     return "", ""
 
 
-def stage(dll, lic, out):
+def stage(dll, lic, out, source=""):
     """-> list of problems ([] = staged)."""
     if not dll or not os.path.isfile(dll):
         return ["SDL3.dll not found (run in `nix develop .#win`, or pass --dll)"]
@@ -86,7 +103,14 @@ def stage(dll, lic, out):
         text = f.read()
     if "Sam Lantinga" not in text or "provided 'as-is'" not in text:
         return [f"{lic}: not SDL's zlib licence text"]
+    if source:
+        bad = [b for b in (part_problems(os.path.join(source, *src.split("/")), w) for src, w in PARTS.values()) if b]
+        if bad:
+            return bad
     os.makedirs(out, exist_ok=True)
+    for name, (src, _w) in PARTS.items():
+        if source:
+            shutil.copyfile(os.path.join(source, *src.split("/")), os.path.join(out, name))
     shutil.copyfile(dll, os.path.join(out, SDL3_SRC[0]))
     shutil.copyfile(lic, os.path.join(out, SDL3_SRC[1]))
     with open(dll, "rb") as f:
@@ -102,12 +126,13 @@ def main(argv=None, environ=None, out=sys.stdout):
     p.add_argument("--out", default=os.path.join(os.path.dirname(os.path.dirname(HERE)), "work", "release", "sdl3"))
     p.add_argument("--dll", default="")
     p.add_argument("--license", default="")
+    p.add_argument("--source", default="", help="SDL's source release tree: also stage the PARTS licence texts")
     a = p.parse_args(argv)
     dll, lic = a.dll, a.license
     if not dll:
         dll, lic0 = find_sdl3(os.environ if environ is None else environ)
         lic = lic or lic0
-    probs = stage(dll, lic, a.out)
+    probs = stage(dll, lic, a.out, a.source)
     for m in probs:
         print("stage_sdl3: " + m, file=out)
     if not probs:

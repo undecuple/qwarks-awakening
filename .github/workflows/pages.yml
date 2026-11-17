@@ -1,7 +1,8 @@
 # GitHub Pages: publishes only site/ (the project page) and assets/ (the images it links as ../assets/).
 # Dormant until the maintainer sets the repository variable PAGES_ENABLED to "true" (Settings, Secrets and variables,
 # Actions, Variables) and Settings, Pages, Source to "GitHub Actions": without the variable both jobs are skipped.
-# The page is committed as static HTML and CSS, with no script; this workflow copies it and changes nothing.
+# The page is committed as static HTML and CSS; its only script is the inline image viewer, allowed by its hash in the
+# page's Content-Security-Policy. This workflow copies the page and changes nothing.
 name: pages
 
 on:

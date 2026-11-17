@@ -362,6 +362,12 @@ static void CardBanner(ImDrawList* dl, ImVec2 a, ImVec2 b, const Game& g) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // State icons: our own vector drawing, never colour alone (each state has its own shape).
+// An open three-point line (a check mark): a named array, not a compound literal (GCC refuses the address of a
+// temporary array; the Linux release is built with GCC).
+static void Polyline3(ImDrawList* dl, ImVec2 a, ImVec2 b, ImVec2 c, ImU32 col, float th) {
+    const ImVec2 p[] = {a, b, c};
+    dl->AddPolyline(p, 3, col, 0, th);
+}
 static void StateIcon(ImDrawList* dl, ImVec2 c, float r, State st, ImU32 col) {
     float th = std::max(1.5f, r * 0.17f);
     switch (st) {
@@ -374,7 +380,7 @@ static void StateIcon(ImDrawList* dl, ImVec2 c, float r, State st, ImU32 col) {
             break; }
         case State::Built:   // check in a disc
             dl->AddCircleFilled(c, r, col, 20);
-            dl->AddPolyline((ImVec2[]){ImVec2(c.x - r * 0.45f, c.y + r * 0.02f), ImVec2(c.x - r * 0.1f, c.y + r * 0.38f), ImVec2(c.x + r * 0.5f, c.y - r * 0.32f)}, 3, Col(T->windowBg), 0, th);
+            Polyline3(dl, ImVec2(c.x - r * 0.45f, c.y + r * 0.02f), ImVec2(c.x - r * 0.1f, c.y + r * 0.38f), ImVec2(c.x + r * 0.5f, c.y - r * 0.32f), Col(T->windowBg), th);
             break;
         case State::ReadyToBuild:   // ring with a dot
             dl->AddCircle(c, r * 0.9f, col, 20, th); dl->AddCircleFilled(c, r * 0.32f, col, 12);
@@ -1327,7 +1333,7 @@ static void CheckLine(const Check& c) {
     ImVec2 p = ImGui::GetCursorScreenPos(); float r = A.S(7.f);
     ImU32 col = c.ok ? Col(T->success) : Col(T->destructive);
     ImVec2 m(p.x + r, p.y + A.S(10.f));
-    if (c.ok) dl->AddPolyline((ImVec2[]){ImVec2(m.x - r * .6f, m.y), ImVec2(m.x - r * .1f, m.y + r * .5f), ImVec2(m.x + r * .7f, m.y - r * .5f)}, 3, col, 0, A.S(2.f));
+    if (c.ok) Polyline3(dl, ImVec2(m.x - r * .6f, m.y), ImVec2(m.x - r * .1f, m.y + r * .5f), ImVec2(m.x + r * .7f, m.y - r * .5f), col, A.S(2.f));
     else { dl->AddLine(ImVec2(m.x - r * .5f, m.y - r * .5f), ImVec2(m.x + r * .5f, m.y + r * .5f), col, A.S(2.f)); dl->AddLine(ImVec2(m.x + r * .5f, m.y - r * .5f), ImVec2(m.x - r * .5f, m.y + r * .5f), col, A.S(2.f)); }
     ImGui::SetCursorScreenPos(ImVec2(p.x + r * 2 + A.S(6.f), p.y));
     ImGui::PushTextWrapPos(0); Wrapped(c.text.c_str(), c.ok ? T->success : T->destructive, 15.f); ImGui::PopTextWrapPos();
@@ -1337,7 +1343,7 @@ static void StepHeader(int n, const char* title, int mode /*0 active 1 done 2 sk
     ImVec2 p = ImGui::GetCursorScreenPos(); float r = A.S(13.f);
     ImVec2 c(p.x + r, p.y + r + A.S(1.f));
     if (mode == 0) { dl->AddCircleFilled(c, r, Col(T->accentBg), 24); char b[4]; snprintf(b, 4, "%d", n); ImVec2 ts = A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, 0, b); dl->AddText(A.fHeadBold, A.S(18.f), ImVec2(c.x - ts.x / 2, c.y - ts.y / 2), Col(T->accentFg), b); }
-    else if (mode == 1) { dl->AddCircle(c, r, Col(T->success), 24, A.S(2.f)); dl->AddPolyline((ImVec2[]){ImVec2(c.x - r * .45f, c.y), ImVec2(c.x - r * .1f, c.y + r * .38f), ImVec2(c.x + r * .5f, c.y - r * .32f)}, 3, Col(T->success), 0, A.S(2.f)); }
+    else if (mode == 1) { dl->AddCircle(c, r, Col(T->success), 24, A.S(2.f)); Polyline3(dl, ImVec2(c.x - r * .45f, c.y), ImVec2(c.x - r * .1f, c.y + r * .38f), ImVec2(c.x + r * .5f, c.y - r * .32f), Col(T->success), A.S(2.f)); }
     else { dl->AddCircle(c, r, Col(T->dimFg, .6f), 24, A.S(1.5f)); dl->AddLine(ImVec2(c.x - r * .4f, c.y), ImVec2(c.x + r * .4f, c.y), Col(T->dimFg, .6f), A.S(1.5f)); }
     ImGui::SetCursorScreenPos(ImVec2(p.x + r * 2 + A.S(10.f), p.y));
     Heading(title, 22.f, mode == 2 ? T->dimFg : T->windowFg);
@@ -1437,7 +1443,7 @@ static void AddDrawer(float W, float H) {
         for (int i = 0; i < 5; i++) {
             ImVec2 q = ImGui::GetCursorScreenPos(); float r = A.S(6.f); ImVec2 m(q.x + r, q.y + A.S(11.f));
             bool done = justDone || i < cur, now = building && i == cur;
-            if (done) dl->AddPolyline((ImVec2[]){ImVec2(m.x - r * .7f, m.y), ImVec2(m.x - r * .15f, m.y + r * .6f), ImVec2(m.x + r * .8f, m.y - r * .6f)}, 3, Col(T->success), 0, A.S(2.f));
+            if (done) Polyline3(dl, ImVec2(m.x - r * .7f, m.y), ImVec2(m.x - r * .15f, m.y + r * .6f), ImVec2(m.x + r * .8f, m.y - r * .6f), Col(T->success), A.S(2.f));
             else if (now) dl->AddCircleFilled(m, r * .7f, Col(T->accent), 12);
             else dl->AddCircle(m, r * .7f, Col(T->dimFg, .6f), 12, A.S(1.5f));
             ImGui::SetCursorScreenPos(ImVec2(q.x + A.S(24.f), q.y));

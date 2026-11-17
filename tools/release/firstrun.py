@@ -17,8 +17,9 @@ with a profile and glue (port/rc/<profile>/) builds the same way. Standard libra
               ISO; optional for the build, an ISO's PS3_GAME is copied out to <build>/disc for Play)
   --library   library.json: --eboot / --disc default to the files it records for the game
   --root      the source tree or install (default: two folders above this script); its port/, data/, tools/, cmake/
-  --build     everything generated (default <root>/build/firstrun/<profile>); --stage where the exe goes (default
-              <root>/games/<catalogue id>)
+  --build     everything generated (default <root>/build/firstrun/<profile>; on Linux, when <root> is an install with
+              its shipped ps3recomp/ (the Linux tarball), $XDG_DATA_HOME/qwarks-awakening/build/<profile>, because the
+              install folder is replaced on an update); --stage where the exe goes (default <root>/games/<catalogue id>)
   --toolchain llvm-mingw for the compile: a folder holding bin/x86_64-w64-mingw32-clang[.exe], or a folder holding
               llvm-mingw/, cmake/, ninja/ (fetch_toolchain.py's trees/ layout, the install's toolchain/). Default: the
               install's <root>/toolchain when present, else (Linux) the MinGW-w64 GCC on PATH (cmake/mingw-w64.cmake,
@@ -47,7 +48,7 @@ Steps (name: what; marker keys):
              (tools/spu/lift_spu.sh); skipped when the game has no SPU tables
   configure  cmake -S port/rc -B <build>/obj (RC_GAME, RC_EXE, PS3RECOMP_DIR, RECOMP_DIR, SPU_DIR; always, cheap)
   compile    cmake --build (Ninja; always: an up-to-date build is a no-op)
-  stage      <stage>/<exe> + SDL3.dll and its licence + build.json (exe SHA-256, port version, inputs)
+  stage      <stage>/<exe> + SDL3.dll and its licences (SDL, and HIDAPI / yuv2rgb from an install's licenses/) + build.json (exe SHA-256, port version, inputs)
 
 Machine-readable lines on stdout (the launcher and catalog.py build parse them; every other line is a tool's own):
   LOG path=<file>
@@ -424,6 +425,10 @@ def sha256_file(p):
     return h.hexdigest()
 
 
+# stage_sdl3.PARTS's names (this file imports no release module but catalog; test_firstrun keeps them equal)
+SDL3_PART_LICENCES = ("SDL3-hidapi-LICENSE.txt", "SDL3-yuv2rgb-LICENSE.txt")
+
+
 def find_sdl3(c):
     """SDL3.dll for the game folder (patch 4010: native pads; the game falls back to XInput without it):
     <root>/SDL3.dll (beside the launcher in an install), the toolchain's SDL3 package, else stage_sdl3.py's search
@@ -484,6 +489,9 @@ def after_stage(c):
         shutil.copyfile(dll, os.path.join(c.stage, "SDL3.dll"))
         if lic:
             shutil.copyfile(lic, os.path.join(c.stage, "SDL3-LICENSE.txt"))
+        for n in SDL3_PART_LICENCES:   # the HIDAPI and yuv2rgb code inside SDL3.dll (an install's licenses/)
+            if os.path.isfile(c.r("licenses", n)):
+                shutil.copyfile(c.r("licenses", n), os.path.join(c.stage, n))
         sdl = "copied"
     else:
         st = c.r("tools", "release", "stage_sdl3.py")
@@ -602,6 +610,19 @@ def resolve_toolchain(root, given):
         nj = _find_exe(sub("ninja"), ["ninja"])
         return lm, cm, nj
     return "", "cmake", ""
+
+
+def default_build(root, pid, env=None, platform=None):
+    """The --build default: <root>/build/firstrun/<pid>, except on Linux for an install with the shipped ps3recomp/
+    (the Linux tarball: install.sh replaces that folder on an update, so a build kept there would start over each time)
+    -> $XDG_DATA_HOME/qwarks-awakening/build/<pid>, beside the library and the built games."""
+    env = os.environ if env is None else env
+    if (platform or sys.platform).startswith("linux") and fc.find_toolkit(root)[1] == "release":
+        base = env.get("XDG_DATA_HOME", "")
+        if not os.path.isabs(base):
+            base = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local", "share")
+        return os.path.join(base, "qwarks-awakening", "build", pid)
+    return os.path.join(root, "build", "firstrun", pid)
 
 
 def library_files(path, game):
@@ -918,7 +939,7 @@ def main(argv=None, steps=None, out=sys.stdout):
         print(f"REASON {e}", file=out)
         print("RESULT ok=0 step=check elapsed=0", file=out)
         return 2
-    build = os.path.abspath(a.build or os.path.join(root, "build", "firstrun", pid))
+    build = os.path.abspath(a.build or default_build(root, pid))
     stage = os.path.abspath(a.stage or os.path.join(root, "games", cid))
     jobs = a.jobs or jobs_for(available_ram(), clang=bool(lm), cores=os.cpu_count())
     ctx = Ctx(root=root, build=build, stage=stage, game=a.game, eboot=os.path.abspath(eboot) if eboot else "",

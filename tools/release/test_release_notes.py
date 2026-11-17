@@ -148,6 +148,10 @@ for public in (True, False):
               < body.index(bz) < body.index("New in 0.3.0:") and "More info" in body and "Run anyway" in body
               and ".sha256" not in body,
               f"{lay}: launcher body lists the installer first, the zips as portable, the SmartScreen step, no .sha256")
+        lt = names.linux_tar_name("0.3.0")
+        check(lt in body and body.index(bz) < body.index(lt) < body.index("New in 0.3.0:") and "./install.sh" in body
+              and f"[docs/LINUX.md]({B}docs/LINUX.md)" in body and "five files" in body,
+              f"{lay}: launcher body lists the Linux tarball after the zips, with install.sh and a pinned LINUX.md link")
 
         G = f"{R}/blob/tods-v0.3.0/"
         rc, body, _ = run(root, "--tag", "tods-v0.3.0", "--title-out", str(t))

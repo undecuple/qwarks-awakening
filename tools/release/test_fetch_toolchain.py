@@ -92,14 +92,16 @@ def test_real_manifest():
     check(not ft.validate(m, strict=True), "real toolchain.json passes --strict", ft.validate(m, strict=True))
     names = {c["name"] for c in m["components"]}
     lic = {"llvm-mingw-license", "llvm-license", "mingw-w64-license", "winpthreads-license", "lgpl-2.1-text", "ninja-license"}
-    linux = {"cmake-linux", "ninja-linux", "ge-proton"}
+    linux = {"cmake-linux", "ninja-linux", "ge-proton", "sdl3-source"}
     check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic | linux,
           "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python, the kit's licence texts and "
-          "the Linux launcher's build tools and GE-Proton", names)
+          "the Linux launcher's build tools, GE-Proton and SDL3's source", names)
     by = {c["name"]: c for c in m["components"]}
     check({n for n, c in by.items() if c.get("linux") == "build"} == {"llvm-mingw-linux", "cmake-linux", "ninja-linux"}
-          and {n for n, c in by.items() if c.get("linux") == "runtime"} == {"ge-proton"},
-          "linux: build = llvm-mingw-linux, cmake-linux, ninja-linux; runtime = ge-proton")
+          and {n for n, c in by.items() if c.get("linux") == "runtime"} == {"ge-proton"}
+          and {n for n, c in by.items() if c.get("linux") == "release"} == {"sdl3-source"}
+          and not by["sdl3-source"].get("kit"),
+          "linux: build = llvm-mingw-linux, cmake-linux, ninja-linux; runtime = ge-proton; release = sdl3-source (not in the kit)")
     ge = ft.expand(by["ge-proton"])
     check(ge["url"] == "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/"
           "GE-Proton11-7-x86_64.tar.gz" and ge["archive"] == "tar" and ge.get("strip_top")

@@ -65,11 +65,18 @@ def main():
     check(s == "Qwarks-Awakening-1.2.3-setup-windows-x64.exe", "setup_exe_name shape (the installer)")
     check(all(c.isalnum() or c in "-._" for c in s), "setup exe name is plain ASCII (no spaces or quotes)")
     check(s not in (z, names.build_zip_name("1.2.3"), names.symbols_zip_name("1.2.3")), "setup exe name differs from the zips")
+    lt = names.linux_tar_name("1.2.3")
+    check(lt == "qwarks-awakening-launcher-1.2.3-linux-x86_64.tar.gz", "linux_tar_name shape (the Linux launcher)")
+    check(names.linux_tar_top("1.2.3") == "qwarks-awakening-launcher-1.2.3" and lt.startswith(names.linux_tar_top("1.2.3")),
+          "Linux tarball top folder names the version")
+    check(all(c.isalnum() or c in "-._" for c in lt + names.LINUX_PROGRAM), "Linux names are plain ASCII")
+    check(lt not in (z, s, names.build_zip_name("1.2.3"), names.symbols_zip_name("1.2.3")), "Linux tarball name differs")
     check(re.fullmatch(r"\d+\.\d+\.\d+", names.VERSION) is not None, "VERSION is X.Y.Z")
     rel = read(PUB / ".github" / "workflows" / "release.yml")
     check(rel is not None and "names.launcher_zip_name" in rel and "names.ASSET_STEM" in rel,
           "release.yml takes the asset names from names.py")
     check(rel is not None and "names.setup_exe_name" in rel, "release.yml takes the setup exe name from names.py")
+    check(rel is not None and "names.linux_tar_name" in rel, "release.yml takes the Linux tarball name from names.py")
     pz = read(HERE / "pack_zip.py") or ""
     check("names.launcher_zip_name" in pz and "names.LAUNCHER_EXE" in pz, "pack_zip.py takes its names from names.py")
     print("test_names:", "FAIL" if FAILS else "PASS")

@@ -19,7 +19,9 @@ hash, published-list and unpack checks are KZ3's.
 
 An entry's optional "exec" list names files made executable after unpacking (a zip keeps no modes: Ninja's Linux
 zip); "linux": "build" | "runtime" marks the entries the Linux launcher fetches on the player's PC (linux_kit.py,
-proton.py), never shipped by us.
+proton.py), never shipped by us; "linux": "release" the ones only release builds use, never fetched on a player's PC
+(SDL3's source: release.yml's linux job builds it into the Linux launcher, and the launcher job takes the HIDAPI and
+yuv2rgb licence texts for SDL3.dll from it).
 
 A filled hash that does not match the download is refused and the download deleted (if the version was changed
 on purpose, set its sha256 back to TO-FILL and use --fill). Zip (and tar) members with absolute paths, "..", drive letters,
@@ -122,8 +124,8 @@ def validate(m, schemes=("https",), strict=False):
         ex = e.get("exec", [])
         if not isinstance(ex, list) or not all(isinstance(x, str) and safe_rel(x) for x in ex):
             bad.append(f"{where}: exec must be a list of safe relative paths")
-        if e.get("linux") not in (None, "build", "runtime"):
-            bad.append(f"{where}: linux must be build or runtime")
+        if e.get("linux") not in (None, "build", "runtime", "release"):
+            bad.append(f"{where}: linux must be build, runtime or release")
     return bad
 
 

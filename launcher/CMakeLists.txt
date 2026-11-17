@@ -10,15 +10,27 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# LAUNCHER_LINUX_RELEASE (tools/release/build_launcher_linux.sh, release.yml's linux job): the Linux release tarball's
+# launcher. SDL3 is linked statically (built from the pinned source by that script), no source tree path is compiled in
+# (the engine is the tarball's tools/release/catalog.py beside the program), and the release list address comes from
+# LAUNCHER_RELEASE_API (no kit.json on Linux: the tarball carries the build files itself).
+option(LAUNCHER_LINUX_RELEASE "Linux release tarball build (static SDL3, no source tree path)" OFF)
+set(LAUNCHER_RELEASE_API "" CACHE STRING "Linux release build: the GitHub releases API address of the repository")
+
 # SDL3: its CMake config when one is on CMAKE_PREFIX_PATH (the release build: SDL3's official MinGW devel package,
 # tools/release/build_launcher.sh), else pkg-config (the Nix shells).
-find_package(SDL3 CONFIG QUIET COMPONENTS SDL3-shared)
-if(SDL3_FOUND)
-  set(LAUNCHER_SDL3 SDL3::SDL3-shared)
+if(LAUNCHER_LINUX_RELEASE)
+  find_package(SDL3 CONFIG REQUIRED COMPONENTS SDL3-static)
+  set(LAUNCHER_SDL3 SDL3::SDL3-static)
 else()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
-  set(LAUNCHER_SDL3 PkgConfig::SDL3)
+  find_package(SDL3 CONFIG QUIET COMPONENTS SDL3-shared)
+  if(SDL3_FOUND)
+    set(LAUNCHER_SDL3 SDL3::SDL3-shared)
+  else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+    set(LAUNCHER_SDL3 PkgConfig::SDL3)
+  endif()
 endif()
 # The fonts' fallback folder baked into the exe (the exe looks in <exe dir>/fonts first); the release build passes a
 # relative one so no build machine path ends up in the program.
@@ -53,6 +65,11 @@ if(LAUNCHER_KIT_MANIFEST)
   string(REPLACE "-build-windows-x64.zip" "-launcher-symbols.zip" LAUNCHER_SYMBOLS_URL "${LAUNCHER_KIT_URL}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LAUNCHER_KIT_MANIFEST}")
   message(STATUS "launcher: build kit ${LAUNCHER_KIT_RELEASE} sha256 ${LAUNCHER_KIT_SHA256}")
+elseif(LAUNCHER_RELEASE_API)
+  if(NOT LAUNCHER_RELEASE_API MATCHES "^https://api\\.github\\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    message(FATAL_ERROR "LAUNCHER_RELEASE_API is not a GitHub repository API address: ${LAUNCHER_RELEASE_API}")
+  endif()
+  set(LAUNCHER_REPO_API "${LAUNCHER_RELEASE_API}")
 endif()
 
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/imgui)
@@ -74,7 +91,7 @@ target_compile_definitions(launcher PRIVATE
   LAUNCHER_KIT_UNPACKED=${LAUNCHER_KIT_UNPACKED}LL LAUNCHER_REPO_API="${LAUNCHER_REPO_API}"
   LAUNCHER_SYMBOLS_URL="${LAUNCHER_SYMBOLS_URL}"
   IMGUI_DISABLE_DEBUG_TOOLS IMGUI_DISABLE_DEMO_WINDOWS)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT LAUNCHER_LINUX_RELEASE)
   # A Linux launcher run from its build folder finds the engine of the source tree it was built from (main.cpp
   # DefaultEngine looks beside the exe and in ../share/qwarks-awakening first). Never set for Windows builds.
   target_compile_definitions(launcher PRIVATE LAUNCHER_ENGINE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tools/release/catalog.py")

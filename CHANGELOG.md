@@ -20,9 +20,18 @@ its 0.3.1 notes and the [status table](README.md#status). Known issues of this r
   and saves kept outside the prefix. Settings > Proton chooses between the GE-Proton release the port is tested with
   (GE-Proton11-7, downloaded from its own release only after you confirm, about 564 MB, checked against a pinned
   SHA-256) and a Proton you already have. With umu-launcher installed, games start through it; without it, through
-  Proton directly. Steam is not needed. No Linux download yet: build the launcher from source
-  ([docs/LINUX.md](docs/LINUX.md)). Run once on NixOS (2026-11-16, GE-Proton11-7, without Steam or umu-launcher):
-  the launcher's Play path started *Tools of Destruction* up to its "Press the START button" screen.
+  Proton directly. Steam is not needed. Run once on NixOS with a launcher built from source (2026-11-16, GE-Proton11-7,
+  without Steam or umu-launcher): the launcher's Play path started *Tools of Destruction* up to its "Press the START
+  button" screen.
+- A Linux download: `qwarks-awakening-launcher-0.4.0-linux-x86_64.tar.gz` holds the launcher (SDL 3 built in, so it
+  needs only the C library: glibc 2.34 or newer), its Python engine (Python 3.10 or newer must be installed) and the
+  build files, so Build needs no other download from this project. Unpack it and run `./install.sh`: it installs the
+  launcher for your user under `~/.local/share/qwarks-awakening/launcher/`, with a menu entry and
+  `~/.local/bin/qwarks-awakening`; `install.sh --uninstall` removes them and keeps your library, games and settings.
+  Checked on 2026-11-16 with a tarball made the way the release workflow makes it, in a fresh Ubuntu 22.04
+  container under Xvfb: install, a first start whose scan listed the eight games, uninstall. Starting a game from this
+  download has not been tried yet. Building the launcher from source stays possible
+  ([docs/LINUX.md](docs/LINUX.md)).
 - Stop on a running game's page ends the game, on both systems. On Linux it ends every Windows process in that game's
   prefix (checked in the same run); on Windows it has not been tried yet.
 - Linux build tools: Settings > Building > "Linux build tools" downloads llvm-mingw, CMake, Ninja and SDL3's package,

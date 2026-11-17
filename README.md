@@ -54,7 +54,7 @@ Contents: [Install](#install) · [Status](#status) · [Settings, controllers and
 The launcher lists the games, finds your files, builds a game from your own copy and starts it. Python and the
 compiler come with it; nothing else needs to be installed.
 
-<p align="center"><img src="docs/screenshots/launcher-library.png" width="720"
+<p align="center"><img src="assets/launcher-library.png" width="720"
   alt="The launcher's library on its first start: eight game cards with drawn strips in each game's colour, all marked Not added"></p>
 
 *The launcher on its first start, before any game was added (version 0.4.0, the Linux launcher's own screenshot mode on a new, empty library, 2026-11-16). The Windows launcher is built from the same code.*
@@ -66,7 +66,7 @@ compiler come with it; nothing else needs to be installed.
 | **Your game** | Your own copy of each game, as a decrypted folder or ISO | Title IDs and updates per game: the table below |
 | **Decrypted EBOOT** | `EBOOT.elf`, made from your own copy | This project gives no decryption tools or instructions. [RPCS3](https://rpcs3.net) and its documentation are the place to start. |
 | **Windows** | Windows 10 or 11, 64-bit | Not tested on Windows itself; tested under Proton on Linux |
-| **Linux** | x86-64 with a 64-bit Vulkan driver | The launcher runs natively and starts each game through Proton; no Linux download yet, build the launcher from source; run once on NixOS up to the title screen of *Tools of Destruction* (2026-11-16): [docs/LINUX.md](docs/LINUX.md) |
+| **Linux** | x86-64 with glibc 2.34 or newer, Python 3.10 or newer and a 64-bit Vulkan driver | The launcher runs natively (Linux download, or built from source) and starts each game through Proton. The download was installed, started and removed in an Ubuntu 22.04 container (2026-11-16); a launcher built from source ran *Tools of Destruction* on NixOS up to its title screen (2026-11-16): [docs/LINUX.md](docs/LINUX.md) |
 | **GPU** | Direct3D 12 | Tested only on an NVIDIA GeForce RTX 4060 |
 | **CPU and memory** | x86-64; 16 GB of memory to build | Tested only on an Intel Core i7-12700KF |
 | **Disk** | The install, plus several GB for each game you build | The setup download is about 100 MB; the space a build needs is not measured yet |
@@ -102,6 +102,10 @@ Portable (no install): each launcher release also has two zips. The full build z
 setup. The launcher zip holds only the launcher; it asks before it downloads the build kit on your first Build. Unpack
 the whole folder, then start `Qwarks-Awakening-launcher.exe`. `SHA256SUMS` on the release page lists the checksum of
 every file.
+
+Linux: download `qwarks-awakening-launcher-<version>-linux-x86_64.tar.gz` from the same release, unpack it and run
+`./install.sh` in its folder. It installs the launcher for your user (no administrator rights) with a menu entry;
+`install.sh --uninstall` removes it again. [docs/LINUX.md](docs/LINUX.md) has the details and the Proton choice.
 
 Uninstall from Windows Settings, Apps, or from the Start menu. The uninstaller removes the program files. It asks
 before it deletes your library, your built games with their saves, and the logs. Then it asks before it deletes the

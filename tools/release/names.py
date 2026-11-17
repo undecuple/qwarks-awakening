@@ -71,6 +71,22 @@ def setup_exe_name(version):
     return f"{ASSET_STEM}-{version}-setup-windows-x64.exe"
 
 
+# The Linux launcher (0.4.0, linux-launcher-plan.md s.6): one tarball with the native launcher, its engine, the build
+# files and install.sh (tools/release/pack_linux.py). Lower case, as Linux packages are named.
+LINUX_STEM = "qwarks-awakening"
+LINUX_PROGRAM = "qwarks-awakening"                  # the launcher program inside the tarball (and the command install.sh links)
+
+
+def linux_tar_name(version):
+    """The Linux download: qwarks-awakening-launcher-<version>-linux-x86_64.tar.gz (listed in SHA256SUMS)."""
+    return f"{LINUX_STEM}-launcher-{version}-linux-x86_64.tar.gz"
+
+
+def linux_tar_top(version):
+    """The one folder every tarball entry sits under."""
+    return f"{LINUX_STEM}-launcher-{version}"
+
+
 def release_tag(version):
     """the release that carries the downloads is the launcher's, tag launcher-v<version> (games have notes-only
     releases <id>-v<version>; releases before 0.3.0 were tagged v<version>)."""

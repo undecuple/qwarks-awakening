@@ -44,7 +44,7 @@ import names  # noqa: E402
 
 AI_LINE = "AI tools were used in making this port; the README section \"How AI was used\" says how."
 PARA2 = (f"You need your own copy of the game (the US disc, {names.SERIAL}) and the decrypted EBOOT made from it; "
-         "neither is included or downloaded. SHA-256 sums of the four files: SHA256SUMS. See the README for "
+         "neither is included or downloaded. SHA-256 sums of the five files: SHA256SUMS. See the README for "
          "what it does and what goes online.")
 PARA2_GAME = ("You need your own copy of the game and the decrypted EBOOT made from it; neither is included or "
               "downloaded. This release has no download: the game is built on your PC from your copy by the launcher "
@@ -52,8 +52,9 @@ PARA2_GAME = ("You need your own copy of the game and the decrypted EBOOT made f
 LAUNCHER_GROUPS = ("[All games]", "[Launcher]")
 
 
-def downloads(version):
-    """The launcher release's download list (0.3.1): the installer first, the zips as the portable option."""
+def downloads(version, link=lambda path, label=None: label or path):
+    """The launcher release's download list (0.3.1): the installer first, the zips as the portable option, then
+    the Linux tarball (0.4.0)."""
     return ["**Downloads**", "",
             f"- **Installer (recommended):** `{names.setup_exe_name(version)}`. It installs the launcher and the build "
             "kit for your Windows user (no administrator rights) and adds Start-menu and desktop shortcuts. The program "
@@ -61,7 +62,11 @@ def downloads(version):
             f"- **Portable (no install):** `{names.build_zip_name(version)}` holds the launcher and the build kit. "
             f"`{names.launcher_zip_name(version)}` holds the launcher only; it asks before it downloads the build kit "
             f"on your first Build. Unpack the whole folder, then start `{names.LAUNCHER_EXE}`.",
-            f"- `{names.symbols_zip_name(version)}`: the launcher's debug information, only for bug reports.", ""]
+            f"- **Linux:** `{names.linux_tar_name(version)}` holds the native launcher and the build files. Unpack it "
+            "and run `./install.sh` (for your user, no administrator rights; `--uninstall` removes it again). It "
+            "needs Python 3.10 or newer and glibc 2.34 or newer, and starts the games through Proton: see "
+            f"{link('docs/LINUX.md')}.",
+            f"- `{names.symbols_zip_name(version)}`: the Windows launcher's debug information, only for bug reports.", ""]
 SETUP_GROUP = "Test setup"
 STATE = {"not_built": "not built", "boots": "boots", "menus": "menus", "in_game": "in game",
          "playable": "playable", "completed": "completed"}          # badges.py's labels
@@ -188,7 +193,7 @@ def build(text, tag, status=None, known_issues=False, games=None):
                      "this version changes no game, so it has no game releases; each game's notes are in its latest "
                      "release.")
         first = [f"{names.PRODUCT} launcher {version}{launcher_txt}. It builds the games on your PC from your own copy; "
-                 + games_txt, ""] + downloads(version)
+                 + games_txt, ""] + downloads(version, link)
         last = PARA2
     else:
         game = (games or {}).get(who)

@@ -235,6 +235,19 @@
    "about": "Ninja for a Linux host, same version as the Windows entry (whose pin equals GitHub's digest of ninja-win.zip). Hash = the digest GitHub shows for ninja-linux.zip (read 2026-11-16)."
   },
   {
+   "name": "sdl3-source",
+   "version": "3.4.16",
+   "pin": "confirmed",
+   "release_page": "https://github.com/libsdl-org/SDL/releases",
+   "url": "https://github.com/libsdl-org/SDL/releases/download/release-{version}/SDL3-{version}.tar.gz",
+   "sha256": "7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68",
+   "archive": "tar",
+   "strip_top": true,
+   "license": "zlib",
+   "linux": "release",
+   "about": "SDL3's source release, the same version as the MinGW package: release.yml's linux job (and tools/release/build_launcher_linux.sh) builds it as a static library on the Ubuntu runner and links it into the Linux launcher, whose tarball carries its LICENSE.txt; the launcher job takes from it only the HIDAPI and yuv2rgb licence texts for the code inside the Windows SDL3.dll (stage_sdl3.py --source). Never downloaded on a player's PC. Hash = the digest GitHub shows for the release asset (read 2026-11-16)."
+  },
+  {
    "name": "ge-proton",
    "version": "GE-Proton11-7",
    "pin": "confirmed",

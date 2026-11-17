@@ -11,7 +11,10 @@ roadmap and the requirements tables are rendered from those files, not retyped. 
 (section intros, status labels, gallery captions) are the constants at the top of this file.
 
 The export ships public/site/ as site/ at the public repo's root, next to assets/ (the images the page uses are
-pointed at as ../assets/). The page loads no scripts and nothing from another site (fonts are in site/fonts/).
+pointed at as ../assets/). The page loads nothing from another site (fonts are in site/fonts/). Its one script is the
+image viewer (VIEWER_JS below, inline, allowed by its hash in the Content-Security-Policy, with its CSS beside it):
+every content image is a plain link to the image file, which the viewer opens in the page; without JavaScript the
+link opens the file itself.
 Publishing happens at the public release only.
 
     python3 tools/release/website.py            # regenerate public/site/index.html, llms.txt and style.css's colours
@@ -19,6 +22,8 @@ Publishing happens at the public release only.
     python3 tools/release/website.py --root DIR # another repo root (a test fixture)
 """
 import argparse
+import base64
+import hashlib
 import html
 import json
 import pathlib
@@ -77,6 +82,110 @@ ROADMAP_LABELS = {"done": ("Done", "✓", True), "in progress": ("In progress", 
 # style.css's colour block, written from data/theme.json between these two lines.
 TOK_BEGIN = "/* colours: begin. Written by tools/release/website.py from data/theme.json; edit the JSON, not this block. */"
 TOK_END = "/* colours: end */"
+
+
+# The image viewer: every <a data-viewer="GROUP" href=IMAGE><img alt=...></a> opens IMAGE in a modal <dialog> in the
+# page, with its figure caption (or the alt text), "n of N", previous/next within GROUP (buttons, Left/Right, swipe),
+# and Close, Esc or a click beside the image to close. Focus moves to Close and returns to the clicked link; Tab stays
+# in the dialog. Colours are the theme tokens of style.css. Without JavaScript the links open the image files.
+VIEWER_LABELS = ("Previous image", "Next image", "Close")
+VIEWER_GROUP = "images"   # one set for the whole page: Previous/Next walk the gallery, then the launcher shot
+VIEWER_HTML = ('<dialog class="viewer" id="viewer" aria-labelledby="viewer-cap">'
+               '<p class="viewer-count" aria-live="polite"></p>'
+               '<button type="button" class="viewer-btn viewer-close" aria-label="%s"><span aria-hidden="true">✕</span></button>'
+               '<button type="button" class="viewer-btn viewer-prev" aria-label="%s"><span aria-hidden="true">‹</span></button>'
+               '<div class="viewer-stage"><img class="viewer-img" alt="" decoding="sync"></div>'
+               '<button type="button" class="viewer-btn viewer-next" aria-label="%s"><span aria-hidden="true">›</span></button>'
+               '<p class="viewer-cap" id="viewer-cap"></p></dialog>') % (VIEWER_LABELS[2], VIEWER_LABELS[0], VIEWER_LABELS[1])
+VIEWER_CSS = """
+body:has(.viewer[open]) { overflow: hidden; }
+.page-shot { margin: 1.15rem 0; max-width: 45rem; }
+.viewer { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0.75rem; border: 0; color: var(--window-fg); background: var(--view-bg); box-sizing: border-box; }
+.viewer[open] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "count count close" "prev stage next" "cap cap cap"; gap: 0.5rem 0.75rem; align-items: center; }
+.viewer::backdrop { background: var(--shade); }
+.viewer-count { grid-area: count; margin: 0; color: var(--dim-fg); font-size: 0.875rem; }
+.viewer-stage { grid-area: stage; display: flex; align-items: center; justify-content: center; min-height: 0; height: 100%; }
+.viewer-img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-button); }
+.viewer-cap { grid-area: cap; justify-self: center; max-width: 66rem; margin: 0; color: var(--dim-fg); font-size: 0.875rem; line-height: 1.55; text-align: center; }
+.viewer-btn { display: inline-flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-button); color: var(--window-fg); background: var(--button-bg); font: inherit; font-size: 1.5rem; line-height: 1; cursor: pointer; }
+.viewer-btn:hover { background: var(--button-hover); }
+.viewer-btn:active { background: var(--button-active); }
+.viewer-btn:focus-visible { outline: var(--focus-ring) solid var(--accent); outline-offset: 2px; }
+.viewer-btn[hidden] { display: none; }
+.viewer-close { grid-area: close; justify-self: end; font-size: 1.1rem; }
+.viewer-prev { grid-area: prev; }
+.viewer-next { grid-area: next; }
+@media (max-width: 42rem) {
+  .viewer[open] { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "count close" "stage stage" "cap cap" "prev next"; }
+  .viewer-next { justify-self: end; }
+}
+@media (prefers-reduced-motion: no-preference) { .viewer[open] { animation: viewer-in 0.15s ease-out; } }
+@keyframes viewer-in { from { opacity: 0; } }
+"""
+VIEWER_JS = """
+(function () {
+  var d = document.getElementById("viewer");
+  if (!d || !d.showModal) return;
+  var q = function (s) { return d.querySelector(s); };
+  var img = q(".viewer-img"), cap = q(".viewer-cap"), count = q(".viewer-count"),
+      prev = q(".viewer-prev"), next = q(".viewer-next"), set = [], i = 0, from = null, x0 = null;
+  var links = document.querySelectorAll("a[data-viewer]");
+  for (var k = 0; k < links.length; k++) links[k].setAttribute("aria-haspopup", "dialog");
+  function show(n) {
+    i = (n + set.length) % set.length;
+    var a = set[i], t = a.querySelector("img"), f = a.closest("figure"), c = f && f.querySelector("figcaption");
+    img.src = a.getAttribute("href");
+    img.alt = t ? t.alt : "";
+    cap.textContent = c ? c.textContent : img.alt;
+    count.textContent = (i + 1) + " of " + set.length;
+    prev.hidden = next.hidden = set.length < 2;
+  }
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[data-viewer]");
+    if (!a || e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    set = [].slice.call(document.querySelectorAll('a[data-viewer="' + a.getAttribute("data-viewer") + '"]'));
+    from = a;
+    a.focus();   // the dialog's own focus restore then agrees with ours (Safari does not focus links on click)
+    show(set.indexOf(a));
+    d.showModal();
+    q(".viewer-close").focus();
+  });
+  prev.addEventListener("click", function () { show(i - 1); });
+  next.addEventListener("click", function () { show(i + 1); });
+  q(".viewer-close").addEventListener("click", function () { d.close(); });
+  d.addEventListener("click", function (e) { if (e.target === d || e.target.className === "viewer-stage") d.close(); });
+  d.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowLeft") { show(i - 1); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { show(i + 1); e.preventDefault(); }
+    else if (e.key === "Escape") { d.close(); e.preventDefault(); }
+    else if (e.key === "Tab") {
+      var b = [].filter.call(d.querySelectorAll("button"), function (x) { return !x.hidden; });
+      var at = b.indexOf(document.activeElement), to = e.shiftKey ? at - 1 : at + 1;
+      b[(to + b.length) % b.length].focus();
+      e.preventDefault();
+    }
+  });
+  d.addEventListener("touchstart", function (e) { x0 = e.changedTouches[0].clientX; }, { passive: true });
+  d.addEventListener("touchend", function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 40 && set.length > 1) show(dx < 0 ? i + 1 : i - 1);
+  }, { passive: true });
+  d.addEventListener("close", function () { img.removeAttribute("src"); if (from) from.focus(); });
+})();
+"""
+
+
+def csp_hash(text):
+    """The CSP source that allows one inline <script> or <style> with exactly this text."""
+    return "'sha256-%s'" % base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode()
+
+
+def viewer_link(href, img_html, group):
+    """A content image as a link to its file that the viewer opens (group: the set previous/next walks)."""
+    return '<a href="%s" data-viewer="%s">%s</a>' % (esc(href), esc(group), img_html)
 
 
 # ---------------------------------------------------------------- markdown subset
@@ -211,7 +320,13 @@ def blocks(md, table_labels=None, hlevel=4, game_rows=None):
             # and assets/, so the page links the picture on GitHub instead of printing its HTML as text
             img = re.fullmatch(r'<p[^>]*>\s*<img\s+([^>]*?)/?>\s*</p>', text)
             src = img and re.search(r'src="([^"]+)"', img.group(1))
-            if src:
+            if src and src.group(1).startswith("assets/"):
+                # an image Pages serves (assets/ is published next to site/): shown on the page, opened in the viewer
+                alt = re.search(r'alt="([^"]*)"', img.group(1))
+                u = "../" + html.unescape(src.group(1))
+                out.append('<figure class="page-shot">%s</figure>' % viewer_link(
+                    u, '<img src="%s" loading="lazy" alt="%s">' % (esc(u), esc(html.unescape(alt.group(1))) if alt else ""), VIEWER_GROUP))
+            elif src:
                 alt = re.search(r'alt="([^"]+)"', img.group(1))
                 label = "Screenshot" + (": " + html.unescape(alt.group(1)) if alt else "")
                 out.append('<p><a href="%s">%s</a></p>' % (esc(fix_link(src.group(1))), esc(label)))
@@ -329,8 +444,9 @@ def build_html(f, root):
         p = pathlib.Path(root) / "public" / "assets" / fn
         if not p.exists():
             raise SystemExit("website.py: missing image " + str(p))
-        gallery.append('<figure><a href="../assets/%s"><img src="../assets/%s" loading="lazy" alt="%s"></a>'
-                       "<figcaption>%s</figcaption></figure>" % (fn, fn, esc(alt or f["alt"]), esc(cap)))
+        gallery.append("<figure>%s<figcaption>%s</figcaption></figure>" % (viewer_link(
+            "../assets/" + fn, '<img src="../assets/%s" loading="lazy" alt="%s">' % (fn, esc(alt or f["alt"])), VIEWER_GROUP),
+            esc(cap)))
 
     def sec(sid, title, body, intro=None):
         intro = INTRO.get(sid) if intro is None else intro
@@ -371,8 +487,9 @@ def build_html(f, root):
 <meta name="description" content="{esc(plain(f["tagline"]))}. Status: {esc(f["status_text"])}.">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:,">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {csp_hash(VIEWER_JS)}; style-src 'self' {csp_hash(VIEWER_CSS)}; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <link rel="stylesheet" href="style.css">
+<style>{VIEWER_CSS}</style>
 </head>"""
     description = plain(f["tagline"]).partition(": ")[2] or plain(f["tagline"])
     description = description[:1].upper() + description[1:]
@@ -413,6 +530,8 @@ Source: <a href="{REPO}">{esc(REPO.split("//", 1)[1])}</a>.</p>
 <p>{FONT_NOTE}</p>
 </div>
 </footer>
+{VIEWER_HTML}
+<script>{VIEWER_JS}</script>
 </body>
 </html>
 """

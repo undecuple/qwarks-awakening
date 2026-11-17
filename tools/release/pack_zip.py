@@ -17,14 +17,16 @@ From the Killzone 3 port's tools/release/pack_zip.py (same author, MIT): the sam
 
 The bare launcher zip (names.launcher_zip_name(version), every entry under names.launcher_zip_top(version)/):
   names.LAUNCHER_EXE                      the launcher (--exe; must be a 64-bit Windows program, not a DLL)
-  SDL3.dll                                from --sdl3 (a folder stage_sdl3.py wrote: SDL3.dll + LICENSE.txt)
+  SDL3.dll                                from --sdl3 (a folder stage_sdl3.py --source wrote: SDL3.dll, LICENSE.txt
+                                          and the HIDAPI and yuv2rgb licence texts, stage_sdl3.PARTS)
   fonts/*.ttf                             launcher/fonts (the launcher loads <exe dir>/fonts)
   python/                                 the Python embeddable package (--python, as python.org ships it); the
                                           launcher runs <exe dir>/python/pythonw.exe <exe dir>/tools/release/catalog.py
   tools/release/catalog.py, kit.py        the setup engine (offline) and the one module that downloads (on request)
   data/titles/catalog.json                the games list catalog.py reads (../../data/titles from it)
   data/titles/library.example.json        a made-up library to look at the screens
-  licenses/                               the port's LICENSE, SDL3 (zlib), Dear ImGui (MIT), each font's OFL text,
+  licenses/                               the port's LICENSE, SDL3 (zlib) with the HIDAPI and yuv2rgb code inside
+                                          SDL3.dll (BSD), Dear ImGui (MIT), each font's OFL text,
                                           Python (PSF; the package's LICENSE.txt)
   README.txt                              what the download does, what goes online
 
@@ -147,7 +149,8 @@ Getting started
 
 What is in this folder
   {exe}   the launcher
-  SDL3.dll                     SDL 3 (zlib licence), which the launcher and the games use for windows and controllers
+  SDL3.dll                     SDL 3 (zlib licence; the HIDAPI and yuv2rgb code in it under BSD licences), which the
+                               launcher and the games use for windows and controllers
   fonts\\                       the launcher's fonts (SIL Open Font License)
   python\\                      {py} for Windows, the official embeddable package (PSF licence); it runs the
                                setup engine
@@ -192,6 +195,11 @@ def gather(exe, sdl3, root, python):
             problems.append(f"{lic}: not SDL's zlib licence text")
     need("SDL3.dll", dll)
     need("licenses/SDL3-LICENSE.txt", lic)
+    for name, (_src, words) in stage_sdl3.PARTS.items():   # HIDAPI and yuv2rgb inside SDL3.dll (stage_sdl3.py --source)
+        part = os.path.join(sdl3, name)
+        if os.path.isfile(part) and stage_sdl3.part_problems(part, words):
+            problems.append(stage_sdl3.part_problems(part, words))
+        need(f"licenses/{name}", part)
     fonts = os.path.join(root, "launcher", "fonts")
     ttf = sorted(n for n in os.listdir(fonts) if n.lower().endswith(".ttf")) if os.path.isdir(fonts) else []
     ofl = sorted(n for n in os.listdir(fonts) if n.startswith("OFL")) if os.path.isdir(fonts) else []

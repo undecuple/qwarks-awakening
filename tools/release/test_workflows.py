@@ -12,8 +12,8 @@ ports' tools/release/test_workflows.py (same author, MIT).
     the CHANGELOG (release_notes.py) before the toolchain is fetched and travel in the artifact as release-body.md;
     every file publish uses is in the artifact the launcher job uploads; `gh release create TAG --draft --latest
     --verify-tag --title TAG --notes-file release-body.md`, never --prerelease; an existing release is refused;
-    no --clobber, upload, edit or delete, no tag or push; SHA256SUMS (setup exe + three zips, no per-file .sha256
-    since 0.3.1) checked before the release is created; the gh CLI runs outside a checkout with GH_REPO set; the zip bundles the pinned Python
+    no --clobber, upload, edit or delete, no tag or push; SHA256SUMS (setup exe + three zips + the Linux tarball, no
+    per-file .sha256 since 0.3.1) checked before the release is created; the gh CLI runs outside a checkout with GH_REPO set; the zip bundles the pinned Python
     embeddable package (PSF credited in the header); the toolchain manifest is checked
     --strict; only the imgui submodule is fetched and ps3recomp-patched.sh is not run; no game file is named;
   - release.yml (2026-11-03 review): the version mirrors are grepped with the dots escaped (the step is run in a temp
@@ -22,6 +22,9 @@ ports' tools/release/test_workflows.py (same author, MIT).
   - release.yml installer job (0.3.1): after the launcher job, read-only plus actions: read, no rebuild (the
     full build zip from the launcher artifact), Inno Setup pinned by version and SHA-256 from toolchain.json build_tools,
     ISCC on installer/rc.iss with the payload and version, the setup exe (names.setup_exe_name) uploaded and published;
+  - release.yml linux job (0.4.0): launcher tags and the dry run, read-only, ubuntu-22.04, the version checked, the
+    pinned SDL3 source / CMake / Ninja and the apt list from the repository, then test, build, import check (glibc
+    2.35 at most), pack, smoke test, upload; publish takes the tarball from this run;
   - ci.yml: runs the release tools' host tests (every tools/release/test_*.py) and fetch_toolchain.py --check --strict,
     and cross-compiles the launcher (launcher-build) with the pinned Linux llvm-mingw and checks its imports;
   - dependabot.yml: github-actions updates, weekly, grouped.
@@ -133,6 +136,44 @@ def test_installer_job(ij, pub):
           "release.yml: the setup exe travels in its own artifact to publish")
 
 
+def test_linux_job(lx, pub):
+    """The Linux launcher job (0.4.0, linux-launcher-plan.md s.6)."""
+    check("if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')" in lx,
+          "release.yml: linux runs on launcher tags and the dry run only")
+    perms = re.search(r"^    permissions:\n((?:      [^\n]*\n)+)", lx, re.M)
+    pl = re.findall(r"^      (\w[\w-]*):\s*(\w+)", perms.group(1), re.M) if perms else []
+    check(pl == [("contents", "read")], "release.yml: linux is read-only", pl)
+    check("runs-on: ubuntu-22.04" in lx, "release.yml: linux on ubuntu-22.04 (the oldest hosted Ubuntu: glibc 2.35)")
+    check('[ "$v" != "$want" ]' in lx and "names.VERSION" in lx and "bump_version.py --agree" in lx,
+          "release.yml: linux checks tag == names.VERSION and the version mirrors")
+    check("git submodule update --init --depth 1 third_party/imgui third_party/ps3recomp" in lx
+          and "submodules:" not in code(lx) and "bash tools/ps3recomp-patched.sh" in lx,
+          "release.yml: linux fetches the imgui and ps3recomp submodules only and patches ps3recomp")
+    check("tools/release/linux-build-packages.txt" in lx and "fetch_toolchain.py --check --strict" in lx
+          and "fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux" in lx,
+          "release.yml: linux takes the apt list from the repository and the pinned SDL3 source, CMake and Ninja")
+    with open(os.path.join(ROOT, "tools", "release", "toolchain.json"), encoding="utf-8") as f:
+        comps = {c["name"]: c for c in json.load(f)["components"]}
+    s = comps.get("sdl3-source", {})
+    check(s.get("linux") == "release" and s.get("version") == comps.get("sdl3", {}).get("version")
+          and re.fullmatch(r"[0-9a-f]{64}", s.get("sha256", "")) is not None,
+          "toolchain.json: sdl3-source pinned, the same SDL version as the Windows package, release-build only", s)
+    order = ["test_pack_linux.py", "build_launcher_linux.sh build/launcher-linux",
+             "pack_linux.py --check-elf build/launcher-linux/qwarks-awakening --glibc-max 2.35",
+             "pack_linux.py --program build/launcher-linux/qwarks-awakening", "smoke_linux.sh"]
+    check(all(o in lx for o in order) and [lx.index(o) for o in order] == sorted(lx.index(o) for o in order),
+          "release.yml: linux tests, builds, checks the imports, packs, then installs/starts/removes the tarball", order)
+    check("--glibc-max 2.35" in lx[lx.index("pack_linux.py --program"):] and "names.linux_tar_name(sys.argv[1])" in lx,
+          "release.yml: the tarball is refused above glibc 2.35; its name comes from names.py")
+    paths = upload_paths(lx)
+    check(paths == ["build/release-out/${{ steps.ver.outputs.tarball }}"] and "retention-days: 14" in lx
+          and "name: ${{ steps.ver.outputs.artifact }}" in lx and "artifact: ${{ steps.ver.outputs.artifact }}" in lx
+          and "tarball: ${{ steps.ver.outputs.tarball }}" in lx, "release.yml: linux uploads the tarball only", paths)
+    check("LINUX_ARTIFACT: ${{ needs.linux.outputs.artifact }}" in pub and "LINUX_TAR: ${{ needs.linux.outputs.tarball }}" in pub
+          and 'gh run download "$GITHUB_RUN_ID" --name "$LINUX_ARTIFACT"' in pub,
+          "release.yml: publish downloads the Linux tarball from this run")
+
+
 def js_launcher_text():
     return jobs(read(os.path.join(WF, "release.yml"))).get("launcher", "")
 
@@ -156,8 +197,8 @@ def test_release():
     check(re.search(r"^concurrency:\n  group: release-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false", t, re.M)
           is not None, "release.yml: one run per ref, never cancelled half-way")
     js = jobs(t)
-    check(set(js) == {"launcher", "installer", "publish", "game-notes", "game-publish"},
-          "release.yml: launcher, installer, publish, game-notes and game-publish jobs", list(js))
+    check(set(js) == {"launcher", "linux", "installer", "publish", "game-notes", "game-publish"},
+          "release.yml: launcher, linux, installer, publish, game-notes and game-publish jobs", list(js))
     for job, body in js.items():
         check(re.search(r"^    permissions:", body, re.M) is not None, f"release.yml: job {job} sets its own permissions")
     writers = [j for j, b in js.items() if re.search(r"contents:\s*write", b)]
@@ -165,12 +206,13 @@ def test_release():
     lj, pub = js.get("launcher", ""), js.get("publish", "")
     check("contents: write" not in lj and "actions: write" not in lj, "release.yml: the build job is read-only")
     check("if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'launcher-v')" in pub
-          and "actions/checkout" not in pub and "needs: [launcher, installer]" in pub,
+          and "actions/checkout" not in pub and "needs: [launcher, installer, linux]" in pub,
           "release.yml: publish runs on launcher tag pushes only, after the build, with no checkout")
     check("if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')" in lj,
           "release.yml: the launcher builds on a launcher tag or the dry run only (a game tag builds nothing)")
     test_game_jobs(js.get("game-notes", ""), js.get("game-publish", ""))
     test_installer_job(js.get("installer", ""), pub)
+    test_linux_job(js.get("linux", ""), pub)
     check("runs-on: windows-latest" in lj and "git config --global core.autocrlf false" in lj
           and lj.index("core.autocrlf") < lj.index("actions/checkout"), "release.yml: Windows runner, LF kept before checkout")
     # version: tag == names.VERSION in both jobs
@@ -205,16 +247,16 @@ def test_release():
           "release.yml: gh release create TAG --draft --latest --verify-tag --title 'Launcher vX.Y.Z' --notes-file release-body.md", rc)
     check("--prerelease" not in pub and "$pre" not in pub,
           "release.yml: the launcher release is a full release at every version, never a pre-release")
-    check(re.search(r'"\$SETUP_EXE" "\$ZIP" "\$BUILD_ZIP" "\$SYMBOLS_ZIP" SHA256SUMS\s*$', rc) is not None,
-          "release.yml: assets are the setup exe, the launcher, build and symbols zips and SHA256SUMS", rc)
+    check(re.search(r'"\$SETUP_EXE" "\$ZIP" "\$BUILD_ZIP" "\$SYMBOLS_ZIP" "\$LINUX_TAR" SHA256SUMS\s*$', rc) is not None,
+          "release.yml: assets are the setup exe, the launcher, build and symbols zips, the Linux tarball and SHA256SUMS", rc)
     check(not re.search(r"(?<!pin)\.sha256\b", code(t)), "release.yml: no per-file .sha256 is made, uploaded or published (0.3.1)")
     check(not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)|git push", c),
           "release.yml: no clobber, upload, edit or delete; no tag or push")
     check("gh release view" in pub and pub.index("gh release view") < pub.rindex("gh release create"),
           "release.yml: an existing release is refused before anything is created")
-    check('sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" > SHA256SUMS' in pub and "sha256sum -c SHA256SUMS" in pub
-          and pub.index("sha256sum -c SHA256SUMS") < pub.rindex("gh release create"),
-          "release.yml: SHA256SUMS lists the setup exe and the three zips and is verified before the release")
+    check('sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" > SHA256SUMS' in pub
+          and "sha256sum -c SHA256SUMS" in pub and pub.index("sha256sum -c SHA256SUMS") < pub.rindex("gh release create"),
+          "release.yml: SHA256SUMS lists the setup exe, the three zips and the Linux tarball and is verified before the release")
     check("> SHA256SUMS" in pub, "release.yml: SHA256SUMS written beside the assets")
     check('"$RUNNER_TEMP/release-assets"' in pub and "GH_REPO: ${{ github.repository }}" in pub,
           "release.yml: assets downloaded outside any checkout, gh told the repository")
@@ -241,8 +283,11 @@ def test_release():
     pe = "python3 tools/release/pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe"
     check(pe in lj and lj.index("build_launcher.sh") < lj.index(pe) < lj.index("pack_zip.py --exe"),
           "release.yml: the built exe's imports are checked (system DLLs + SDL3.dll) before it is zipped")
-    check(re.search(r"fetch_toolchain\.py --only llvm-mingw,sdl3,cmake,ninja,python,[a-z0-9,.-]+\n", lj) is not None,
-          "release.yml: fetches the Windows-host toolchain only")
+    check(re.search(r"fetch_toolchain\.py --only llvm-mingw,sdl3,sdl3-source,cmake,ninja,python,[a-z0-9,.-]+\n", lj) is not None,
+          "release.yml: fetches the Windows-host toolchain only (plus SDL3's source for its part licences)")
+    st = "stage_sdl3.py --dll"
+    check(st in lj and "--source work/release/toolchain-cache/trees/sdl3-source" in lj[lj.index(st):lj.index("pack_zip.py --exe")],
+          "release.yml: SDL3.dll is staged with the HIDAPI and yuv2rgb licence texts (stage_sdl3.py --source) before the zips")
     check(re.search(r"#[^\n]*14 days[^\n]*\n(?:\s*#[^\n]*\n)*\s*retention-days: 14", lj) is not None,
           "release.yml: the 14-day artifact retention is explained")
     check('LAUNCHER_SYMBOLS: "1"' in lj and "--symbols build/launcher-release/launcher.exe.debug" in lj

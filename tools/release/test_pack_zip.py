@@ -36,6 +36,7 @@ import names  # noqa: E402
 import pack_zip  # noqa: E402
 import kit  # noqa: E402
 import test_kit as tkit  # noqa: E402  (pe_with_debuglink)
+from stage_sdl3 import PARTS  # noqa: E402
 
 FAILS = []
 SDL_LICENCE = ("Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>\n\nThis software is provided 'as-is', "
@@ -80,6 +81,8 @@ def tree(tmp):
     write(os.path.join(tmp, "launcher.exe"), pe())
     write(os.path.join(tmp, "sdl3", "SDL3.dll"), pe(dll=True))
     write(os.path.join(tmp, "sdl3", "LICENSE.txt"), SDL_LICENCE)
+    for n, (_src, words) in PARTS.items():
+        write(os.path.join(tmp, "sdl3", n), "Copyright\n" + "\n".join(words) + "\n")
     py = os.path.join(tmp, "python")
     for n, data in (("python.exe", pe()), ("pythonw.exe", pe()), ("python313.dll", pe(dll=True)),
                     ("python313.zip", b"PK\5\6" + bytes(18)), ("python313._pth", "python313.zip\n.\n"),
@@ -143,6 +146,7 @@ def main_args(*args):
 BARE = (names.LAUNCHER_EXE, "SDL3.dll", "README.txt", "fonts/AdwaitaSans-Regular.ttf", "fonts/RussoOne-Regular.ttf",
         "tools/release/catalog.py", "tools/release/kit.py", "data/titles/catalog.json",
         "data/titles/library.example.json", "licenses/LICENSE.txt", "licenses/SDL3-LICENSE.txt",
+        "licenses/SDL3-hidapi-LICENSE.txt", "licenses/SDL3-yuv2rgb-LICENSE.txt",
         "licenses/imgui-LICENSE.txt", "licenses/OFL-adwaita.txt", "licenses/OFL-russo-one.txt",
         "licenses/Python-LICENSE.txt", "python/python.exe", "python/pythonw.exe", "python/python313.dll",
         "python/python313.zip", "python/python313._pth", "python/LICENSE.txt")
@@ -202,6 +206,11 @@ def test_refusals(tmp, root):
     refused(tmp, root, "a 32-bit exe", lambda: write(exe, pe(machine=0x14c)), put_back)
     refused(tmp, root, "an exe as SDL3.dll", lambda: write(dll, pe()), put_back)
     refused(tmp, root, "a licence that is not SDL's", lambda: write(lic, "GPL\n"), put_back)
+    for n, (_src, words) in PARTS.items():   # the third-party code inside SDL3.dll: its licence texts must ship
+        part = os.path.join(tmp, "sdl3", n)
+        good = lambda part=part, words=words: write(part, "Copyright\n" + "\n".join(words) + "\n")  # noqa: E731
+        refused(tmp, root, f"no {n} beside SDL3.dll", lambda part=part: os.remove(part), good)
+        refused(tmp, root, f"a {n} that is another text", lambda part=part: write(part, "MIT\n"), good)
     refused(tmp, root, "a missing font folder", lambda: shutil.move(fonts, fonts + ".x"),
             lambda: shutil.move(fonts + ".x", fonts))
     cat = os.path.join(root, "data", "titles", "catalog.json")

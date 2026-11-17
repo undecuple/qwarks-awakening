@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Host test for stage_sdl3.py: finds SDL3.dll from the shell's path lists (nix layout: bin, -lib, -dev outputs), refuses
-a 32-bit or non-DLL file and a missing or foreign licence, writes sdl3.json. Self-contained: builds fake PE files."""
+a 32-bit or non-DLL file and a missing or foreign licence, writes sdl3.json; --source stages the HIDAPI and yuv2rgb
+licence texts (and refuses other texts). Self-contained: builds fake PE files."""
 import contextlib
 import io
 import json
@@ -66,6 +67,18 @@ def main():
         check(rc == 0 and os.path.isfile(os.path.join(out, "SDL3.dll")) and os.path.isfile(os.path.join(out, "LICENSE.txt"))
               and meta["licence"] == "zlib" and "Sam Lantinga" in meta["copyright"] and len(meta["sha256"]) == 64,
               "staged DLL, licence and sdl3.json", txt)
+        check(not any(os.path.exists(os.path.join(out, n)) for n in ss.PARTS), "without --source no part licence is staged")
+        src = os.path.join(tmp, "SDL3-3.4.16")
+        for n, (rel, words) in ss.PARTS.items():
+            put(os.path.join(src, *rel.split("/")), "Copyright\n" + "\n".join(words) + "\n")
+        rc, txt = run(["--out", out, "--source", src], env)
+        check(rc == 0 and all(os.path.isfile(os.path.join(out, n)) for n in ss.PARTS)
+              and set(ss.PARTS) == {"SDL3-hidapi-LICENSE.txt", "SDL3-yuv2rgb-LICENSE.txt"},
+              "--source stages the HIDAPI and yuv2rgb licence texts beside SDL3.dll", txt)
+        put(os.path.join(src, "src", "hidapi", "LICENSE-bsd.txt"), "GPL-3.0\n")
+        rc, txt = run(["--out", os.path.join(tmp, "out2"), "--source", src], env)
+        check(rc == 1 and "Alan Ott" in txt and not os.path.exists(os.path.join(tmp, "out2")),
+              "--source with a wrong HIDAPI text is refused, nothing staged", txt)
         rc, txt = run(["--out", out], {"PATH": "/usr/bin"})
         check(rc == 1 and "not found" in txt, "no DLL in the shell: refused with the fix", txt)
         bad = os.path.join(tmp, "bad32.dll")
