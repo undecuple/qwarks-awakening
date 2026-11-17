@@ -210,7 +210,13 @@ def fix_link(url):
     return BLOB + path
 
 
+# README badges, [![alt](image-url)](link): the page's CSP is img-src 'self', so remote badge images are left out of the
+# site (its text link beside them stays) instead of loosening the policy.
+BADGE = re.compile(r"[ \t]*\[!\[[^\]]*\]\([^)\s]+\)\]\([^)\s]+\)")
+
+
 def inline(text):
+    text = BADGE.sub("", text)
     codes = []
 
     def stash(m):
@@ -228,7 +234,7 @@ def inline(text):
 
 def plain(text):
     """Markdown inline -> plain text (for llms.txt and the checks)."""
-    t = re.sub(r"<!--.*?-->", "", text)
+    t = re.sub(r"<!--.*?-->", "", BADGE.sub("", text))
     t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
     return re.sub(r"[`*]", "", t)
 

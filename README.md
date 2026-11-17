@@ -248,7 +248,7 @@ supported yet.
 **Where releases come from.** Qwark's Awakening is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple),
 Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** on the undecuple
 server, an unofficial fan work community with a forum for this project:
-[discord.gg/W8fMT78Q7k](https://discord.gg/W8fMT78Q7k). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
+[discord.gg/W8fMT78Q7k](https://discord.gg/W8fMT78Q7k) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8fMT78Q7k). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
 We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or
 donations in this project's name is not us.
 
