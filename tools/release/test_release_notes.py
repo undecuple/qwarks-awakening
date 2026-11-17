@@ -100,6 +100,7 @@ Frame rates are frames presented per second.
 - The runs of 2026-01-05 used a test PC.
 
 ## [1.2.3] - 2026-02-01
+Summary: Final things.
 ### [All games]
 - Final item.
 ### [Launcher]
@@ -196,9 +197,9 @@ with tempfile.TemporaryDirectory() as d:
 
 # a launcher-only version (0.4.0): no game group, so line 1 points to no game release of the same version
 with tempfile.TemporaryDirectory() as d:
-    root = layout(d, "# C\n\n## [0.4.0] - 2026-11-17 (pre-release)\n\n### [Launcher]\n- Only launcher item\n", True)
+    root = layout(d, "# C\n\n## [0.4.0] - 2026-11-17 (pre-release)\n\nSummary: Only a launcher item.\n\n### [Launcher]\n- Only launcher item\n", True)
     rc, body, _ = run(root, "--tag", "launcher-v0.4.0")
-    first = body.split("\n")[0]
+    first = body.split("\n")[2]               # line 0 is the summary
     check(rc == 0 and "this version changes no game, so it has no game releases" in first
           and "its own release of the same version" not in first and "Only launcher item" in body,
           f"launcher-only version: line 1 names no game release ({first[-90:]})")
@@ -211,7 +212,7 @@ with tempfile.TemporaryDirectory() as d:
 with tempfile.TemporaryDirectory() as d:
     root = layout(d, CL, True)
     rc, out, _ = run(root, "--tag", "launcher-v1.2.3")
-    check(rc == 0 and out.startswith(f"{P} launcher 1.2.3. It builds") and "Final launcher item" in out
+    check(rc == 0 and out.split("\n")[2].startswith(f"{P} launcher 1.2.3. It builds") and "Final launcher item" in out
           and "\nKnown issues" not in out, "non-pre-release heading drops the pre-release wording; no known-issues file, no line")
     for tag, why, what in (("qfb-v0.3.0", "no items for qfb-v0.3.0", "a game with no group in the section: refused"),
                            ("zz-v0.3.0", "not a game id", "an unknown game id: refused"),
@@ -231,6 +232,44 @@ with tempfile.TemporaryDirectory() as d:
 with tempfile.TemporaryDirectory() as d:
     rc, _, err = run(d, "--tag", "launcher-v0.1.0")
     check(rc == 1, "no CHANGELOG file: refused")
+
+# Summary line (0.4.0): first line of the body, out of the intro, one line; absent = body unchanged; required from 0.4.0
+SUM = "Summary: The launcher got a thing; see [the notes](docs/X.md)."
+with tempfile.TemporaryDirectory() as d:
+    base = layout(d + "/a", CL, True)
+    with_sum = CL.replace("Since 0.2.1 things changed.", SUM + "\n\nSince 0.2.1 things changed.", 1)
+    wroot = layout(d + "/b", with_sum, True)
+    for tag in ("launcher-v0.3.0", "tods-v0.3.0", "dlhd-v0.3.0", "rc1-v0.3.0"):
+        _, plain_body, _ = run(base, "--tag", tag)
+        rc, body, _ = run(wroot, "--tag", tag)
+        first = f"**Summary:** The launcher got a thing; see [the notes]({R}/blob/{tag}/docs/X.md)."
+        check(rc == 0 and body.split("\n")[0] == first and body.split("\n")[1] == "" and body[len(first) + 2:] == plain_body,
+              f"{tag}: Summary is the body's first line; the rest is the old body byte for byte (no duplicate in the intro)")
+        check(body.count("The launcher got a thing") == 1 and "Summary:" not in plain_body,
+              f"{tag}: the summary appears once; no Summary line, no Summary text (old notes unchanged)")
+    for tag in ("launcher-v0.3.0", "tods-v0.3.0"):
+        check(run(base, "--tag", tag)[1].startswith(P), f"{tag}: no Summary line: the body starts as before")
+    # the repository's own CHANGELOG: every released version before 0.4.0 still builds without a summary
+    real = pathlib.Path(release_notes.ROOT)
+    if (real / "public" / "CHANGELOG.md").is_file():
+        for v in ("0.3.1", "0.3.0"):              # (0.2.x and 0.1.0 predate the launcher release and build no notes)
+            rc, body, _ = run(real, "--tag", f"launcher-v{v}")
+            check(rc == 0 and body.startswith(P) and "**Summary:**" not in body, f"the repository's launcher-v{v} notes have no summary and build")
+    two = CL.replace("Since 0.2.1", SUM + "\nSummary: Second.\n\nSince 0.2.1", 1)
+    rc, _, err = run(layout(d + "/c", two, True), "--tag", "launcher-v0.3.0")
+    check(rc == 1 and "2 'Summary:' lines" in err, "two Summary lines: refused")
+    rc, _, err = run(layout(d + "/e", CL.replace("Since 0.2.1", "Summary:\n\nSince 0.2.1", 1), True), "--tag", "launcher-v0.3.0")
+    check(rc == 1 and "empty" in err, "an empty Summary line: refused")
+    in_item = CL.replace("- Launcher item.", "- Launcher item.\nSummary: not intro.", 1)
+    rc, body, _ = run(layout(d + "/f", in_item, True), "--tag", "launcher-v0.3.0")
+    check(rc == 0 and not body.startswith("**Summary:**"), "a 'Summary:' text after the first item is not the summary")
+    for tag in ("launcher-v0.4.0", "tods-v0.4.0"):
+        rc, out, err = run(layout(d + "/g", "# C\n\n## [0.4.0] - 2026-11-17 (pre-release)\n\nIntro.\n\n### [All games]\n- x\n### [ToD]\n- y\n", True), "--tag", tag)
+        check(rc == 1 and out == "" and "no 'Summary: ' line" in err, f"{tag}: 0.4.0 without a Summary line: refused")
+    rc, out, _ = run(layout(d + "/h", "# C\n\n## [0.4.0] - 2026-11-17 (pre-release)\n\nSummary: s.\n\nIntro.\n\n### [All games]\n- x\n### [ToD]\n- y\n", True), "--tag", "tods-v0.4.0")
+    check(rc == 0 and out.startswith("**Summary:** s.\n\n"), "tods-v0.4.0 with a Summary line: accepted, summary first")
+    rc, out, err = run(layout(d + "/i", "# C\n\n## [0.10.0] - 2026-11-17\n\nIntro.\n\n### [All games]\n- x\n", True), "--tag", "launcher-v0.10.0")
+    check(rc == 1 and "Summary" in err, "0.10.0 is compared as a number, not text: required")
 
 print("test_release_notes: " + ("FAIL" if bad else "PASS"))
 sys.exit(1 if bad else 0)

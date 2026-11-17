@@ -15,7 +15,10 @@ by the tag:
     "[R&C 1], [R&C 2], [R&C 3] ...", "[DLHD] ..."), and a line with the game's playability state from the catalogue;
   - the "Test setup" group (where and how the runs were made): always for the launcher; for a game when one of its
     items names a date the group names.
-The body: a first paragraph (what the release is; "a pre-release (STATUS)" with a link to docs/RELEASE-CRITERIA.md
+The body: a line "**Summary:** TEXT" first when the section's intro has a line `Summary: TEXT` (one line, taken out of
+the intro; the Discord post shows only the body's first 1,800 characters, so what changed comes before the downloads;
+launcher and game bodies alike; REQUIRED from 0.4.0 on, older versions without one keep their body byte for byte),
+then a paragraph (what the release is; "a pre-release (STATUS)" with a link to docs/RELEASE-CRITERIA.md
 while the heading says "(pre-release)", STATUS being the README's "**Status: ...**" line in lower case), the section's
 intro (the text between its heading and its first item or ### heading, each paragraph joined into one line), the
 picked groups (item text verbatim), "See CHANGELOG.md for the full list.", a known-issues line when
@@ -72,6 +75,8 @@ def downloads(version, link=lambda path, label=None: label or path):
             "`appimage-run`.",
             f"- `{names.symbols_zip_name(version)}`: the Windows launcher's debug information, only for bug reports.", ""]
 SETUP_GROUP = "Test setup"
+SUMMARY_REQUIRED_FROM = (0, 4, 0)       # versions from here on must carry a `Summary: ` line (older ones are exempt)
+SUMMARY_PREFIX = "Summary: "
 STATE = {"not_built": "not built", "boots": "boots", "menus": "menus", "in_game": "in game",
          "playable": "playable", "completed": "completed"}          # badges.py's labels
 
@@ -127,6 +132,30 @@ def section(text, version):
                         if re.search(r"^## \[Unreleased\]", text, re.M) else ""))
 
 
+def take_summary(body, version):
+    """-> (summary or None, body without its Summary line). Only the intro (before the first ### heading or item) is
+    searched; one line, once. From SUMMARY_REQUIRED_FROM on a missing summary is an error."""
+    found, rest, intro = [], [], True
+    for ln in body:
+        if ln.startswith(("### ", "- ")):
+            intro = False
+        if intro and ln.startswith("Summary:"):
+            found.append(ln)
+        else:
+            rest.append(ln)
+    if len(found) > 1:
+        raise NotesError(f"the '## [{version}]' section has {len(found)} 'Summary:' lines; give one")
+    if found:
+        text = found[0][len(SUMMARY_PREFIX):].strip() if found[0].startswith(SUMMARY_PREFIX) else ""
+        if not text:
+            raise NotesError(f"the '## [{version}]' section's 'Summary:' line is empty (write 'Summary: ' then one line)")
+        return text, rest
+    if tuple(int(x) for x in version.split(".")) >= SUMMARY_REQUIRED_FROM:
+        raise NotesError(f"the '## [{version}]' section has no 'Summary: ' line (one line on what changed, in the "
+                         "intro; required from 0.4.0 on)")
+    return None, body
+
+
 def split(body):
     """-> (intro paragraphs, [(group name, [items])]) of a section body."""
     intro, groups, cur = [[]], [], None
@@ -177,6 +206,7 @@ def build(text, tag, status=None, known_issues=False, games=None):
     """-> (title, body) for a release tag."""
     who, version = parse_tag(tag)
     heading, body = section(text, version)
+    summary, body = take_summary(body, version)
     intro, groups = split(body)
     pre = "(pre-release)" in heading
     if pre and not status:
@@ -222,7 +252,7 @@ def build(text, tag, status=None, known_issues=False, games=None):
     days = {d for _, items in picked for i in items for d in day.findall(i)}
     picked += [g for g in groups if g[0] == SETUP_GROUP and g not in picked
                and (who == "launcher" or days & {d for i in g[1] for d in day.findall(i)})]
-    out = first
+    out = ([f"**Summary:** {pin_links(summary, tag)}", ""] if summary else []) + first
     for p in intro:
         out += [pin_links(p, tag), ""]
     out += [f"New in {version}:", ""]
