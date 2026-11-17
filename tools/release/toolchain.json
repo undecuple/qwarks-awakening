@@ -1,6 +1,6 @@
 {
  "format": 1,
- "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships. Linux launcher (linux-launcher-plan.md): entries with a 'linux' field are fetched on the player's Linux PC, never shipped by us: 'runtime' = the pinned GE-Proton the launcher downloads after the player confirms (tools/release/proton.py), 'build' = the Linux build tools (llvm-mingw-linux, cmake-linux, ninja-linux and sdl3; tools/release/linux_kit.py). 'exec' lists files made executable after unpacking (a zip keeps no file modes).",
+ "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships. Linux launcher (linux-launcher-plan.md): entries with a 'linux' field are fetched on the player's Linux PC, never shipped by us: 'runtime' = the pinned GE-Proton the launcher downloads after the player confirms (tools/release/proton.py), 'build' = the Linux build tools (llvm-mingw-linux, cmake-linux, ninja-linux and sdl3; tools/release/linux_kit.py). 'repo_copy' (optional, repo-relative path) is a verbatim copy of the file kept in the repository: fetch_toolchain.py uses it first, never touches the network for it, and refuses a copy whose SHA-256 differs from the pin (no fallback to the url then); the url is used only when the copy file is absent (gnu.org timed out and failed two release dry runs, 2026-11-16). 'exec' lists files made executable after unpacking (a zip keeps no file modes).",
  "build_tools": [
   {
    "name": "innosetup",
@@ -183,13 +183,14 @@
    "version": "2.1",
    "pin": "confirmed",
    "release_page": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html",
+   "repo_copy": "tools/release/licenses/lgpl-2.1.txt",
    "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
    "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
    "archive": "file",
    "file_name": "lgpl-2.1.txt",
    "kit_license": "llvm-mingw/LGPL-2.1.txt",
    "license": "LGPL-2.1 text",
-   "about": "Licence text in the full build zip's licenses/llvm-mingw/LGPL-2.1.txt, for the Wine-derived MinGW-w64 headers (shipped unmodified, as source). Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+   "about": "Verbatim copy in the repository (repo_copy), so a release never depends on gnu.org being up; the SHA-256 stays the pin. Licence text in the full build zip's licenses/llvm-mingw/LGPL-2.1.txt, for the Wine-derived MinGW-w64 headers (shipped unmodified, as source). Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
   },
   {
    "name": "ninja-license",

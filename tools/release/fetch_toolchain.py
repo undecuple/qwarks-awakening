@@ -124,6 +124,8 @@ def validate(m, schemes=("https",), strict=False):
         ex = e.get("exec", [])
         if not isinstance(ex, list) or not all(isinstance(x, str) and safe_rel(x) for x in ex):
             bad.append(f"{where}: exec must be a list of safe relative paths")
+        if "repo_copy" in e and not (isinstance(e["repo_copy"], str) and safe_rel(e["repo_copy"])):
+            bad.append(f"{where}: repo_copy must be a safe repo-relative path")
         if e.get("linux") not in (None, "build", "runtime", "release"):
             bad.append(f"{where}: linux must be build, runtime or release")
     return bad
@@ -176,6 +178,14 @@ def download(url, dest, opener=open_url):
     finally:
         if os.path.exists(part):
             os.remove(part)
+    return h.hexdigest()
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
     return h.hexdigest()
 
 
@@ -366,13 +376,25 @@ def fetch_one(raw, cache, fill, manifest_path, opener=open_url, out=sys.stdout):
     url = e["url"]
     fname = url.rstrip("/").rsplit("/", 1)[-1]
     dl = os.path.join(cache, "downloads", name, fname)
-    try:
-        got = download(url, dl, opener)
-    except (OSError, ValueError) as ex:
-        print(f"FAIL {name}: download {url}: {ex} (check the version on {e['release_page']})", file=out)
-        return False
     want = e["sha256"]
-    if e.get("sha256_list"):
+    copy = os.path.join(REPO, *e["repo_copy"].split("/")) if e.get("repo_copy") else None
+    from_repo = bool(copy) and os.path.isfile(copy)
+    if from_repo:    # the repository's own copy: no network; a wrong hash is a hard error, never a fallback to the url
+        os.makedirs(os.path.dirname(dl), exist_ok=True)
+        shutil.copyfile(copy, dl)
+        got = sha256_file(dl)
+        if want != TO_FILL and got != want:
+            print(f"FAIL {name}: repo copy {e['repo_copy']} has SHA-256 {got}, manifest {want}; refused (no fallback "
+                  "to the url)", file=out)
+            drop(e, dl)
+            return False
+    else:
+        try:
+            got = download(url, dl, opener)
+        except (OSError, ValueError) as ex:
+            print(f"FAIL {name}: download {url}: {ex} (check the version on {e['release_page']})", file=out)
+            return False
+    if e.get("sha256_list") and not from_repo:
         try:
             lst = os.path.join(cache, "downloads", name, "sha256-list.txt")
             download(e["sha256_list"], lst, opener)

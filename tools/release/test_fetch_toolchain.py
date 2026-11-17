@@ -259,6 +259,48 @@ def test_fetch(tmp):
           "validate refuses an unsafe exec path and an unknown linux kind")
 
 
+def test_repo_copy(tmp):
+    base = os.path.join(tmp, "rc")
+    os.makedirs(os.path.join(base, "lic"))
+    body = b"licence text\n"
+    with open(os.path.join(base, "lic", "l.txt"), "wb") as f:
+        f.write(body)
+    good = hashlib.sha256(body).hexdigest()
+    man, cache = os.path.join(tmp, "rc.json"), os.path.join(tmp, "rc-cache")
+
+    def boom(u):
+        raise OSError("network down")
+
+    def run(extra_sha, copy="lic/l.txt", u="https://example.org/l.txt"):
+        write_manifest(man, [comp("l", u, archive="file", file_name="l.txt", sha256=extra_sha, repo_copy=copy)])
+        buf = io.StringIO()
+        with patch.object(ft, "REPO", base):
+            rc = ft.main(["--manifest", man, "--cache", cache], out=buf, opener=boom, schemes=SCHEMES)
+        return rc, buf.getvalue()
+
+    rc, out = run(good)
+    check(rc == 0 and open(os.path.join(cache, "trees", "l", "l.txt"), "rb").read() == body,
+          "repo copy used without network", out)
+    rc, out = run("0" * 64)
+    check(rc == 1 and "repo copy" in out and "no fallback" in out and not os.path.exists(os.path.join(cache, "downloads", "l", "l.txt")),
+          "wrong-hash repo copy refused (no url fallback)", out)
+    rc, out = run(good, copy="lic/missing.txt")
+    check(rc == 1 and "download" in out, "missing repo copy falls back to url (network down here -> download error)", out)
+    src = os.path.join(tmp, "rc-src", "l.txt")
+    os.makedirs(os.path.dirname(src))
+    with open(src, "wb") as f:
+        f.write(body)
+    write_manifest(man, [comp("l", url(src), archive="file", file_name="l.txt", sha256=good, repo_copy="lic/missing.txt")])
+    buf = io.StringIO()
+    with patch.object(ft, "REPO", base):
+        rc = ft.main(["--manifest", man, "--cache", cache + "2"], out=buf, opener=file_opener, schemes=SCHEMES)
+    check(rc == 0 and os.path.isfile(os.path.join(cache + "2", "trees", "l", "l.txt")),
+          "missing repo copy falls back to the url and succeeds", buf.getvalue())
+    m = {"format": 1, "components": [comp("l", "https://example.org/l.txt", archive="file", file_name="l.txt",
+                                          sha256=good, repo_copy="../x")]}
+    check(any("repo_copy" in p for p in ft.validate(m)), "unsafe repo_copy path is a manifest problem")
+
+
 def tree_snapshot(root):
     """Owned synthetic tree bytes/types/mtimes; reading does not compare atime."""
     root = pathlib.Path(root)
@@ -438,6 +480,7 @@ def main():
     try:
         test_fetch(tmp)
         test_publication(tmp)
+        test_repo_copy(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("test_fetch_toolchain:", "FAIL" if FAILS else "PASS")
