@@ -3,7 +3,7 @@
 # Windows (MinGW cross):   nix develop .#win --command bash -c 'cmake -S launcher -B build/launcher-win -G Ninja \
 #                              -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/launcher-win'
 cmake_minimum_required(VERSION 3.20)
-project(qwark_launcher VERSION 0.3.1 LANGUAGES CXX)
+project(qwark_launcher VERSION 0.4.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -74,6 +74,11 @@ target_compile_definitions(launcher PRIVATE
   LAUNCHER_KIT_UNPACKED=${LAUNCHER_KIT_UNPACKED}LL LAUNCHER_REPO_API="${LAUNCHER_REPO_API}"
   LAUNCHER_SYMBOLS_URL="${LAUNCHER_SYMBOLS_URL}"
   IMGUI_DISABLE_DEBUG_TOOLS IMGUI_DISABLE_DEMO_WINDOWS)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # A Linux launcher run from its build folder finds the engine of the source tree it was built from (main.cpp
+  # DefaultEngine looks beside the exe and in ../share/qwarks-awakening first). Never set for Windows builds.
+  target_compile_definitions(launcher PRIVATE LAUNCHER_ENGINE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../tools/release/catalog.py")
+endif()
 if(MSVC)
   target_compile_options(launcher PRIVATE /W3)
 else()
@@ -95,4 +100,27 @@ elseif(WIN32)
   if(SDL3_DLL)
     add_custom_command(TARGET launcher POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL3_DLL} $<TARGET_FILE_DIR:launcher>)
   endif()
+endif()
+
+# Linux install (cmake --install): bin/launcher, share/qwarks-awakening/{fonts,tools/release,data/titles,licences},
+# a desktop entry. Proton, umu-launcher and the build tools are not part of it: proton.py and linux_kit.py download
+# the pinned ones on the player's PC after they confirm, or use what the player installed.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(GNUInstallDirs)
+  set(_qa_share ${CMAKE_INSTALL_DATADIR}/qwarks-awakening)
+  install(TARGETS launcher RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(DIRECTORY fonts DESTINATION ${_qa_share})
+  install(DIRECTORY ../tools/release/ DESTINATION ${_qa_share}/tools/release
+          FILES_MATCHING PATTERN "*.py" PATTERN "toolchain.json" PATTERN "test_*" EXCLUDE PATTERN "__pycache__" EXCLUDE
+          PATTERN "wizard_test" EXCLUDE)
+  install(DIRECTORY ../data/titles DESTINATION ${_qa_share}/data)
+  # LICENSE and NOTICE.md: public/ in this repository, the root of the public one (export-public.sh moves public/ up)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../public/LICENSE)
+    set(_qa_docs ../public)
+  else()
+    set(_qa_docs ..)
+  endif()
+  install(FILES ${_qa_docs}/LICENSE ${_qa_docs}/NOTICE.md DESTINATION ${_qa_share})
+  install(FILES ../third_party/imgui/LICENSE.txt DESTINATION ${_qa_share}/licenses RENAME imgui-LICENSE.txt)
+  install(FILES qwarks-awakening.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 endif()

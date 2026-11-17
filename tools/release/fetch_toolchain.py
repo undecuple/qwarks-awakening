@@ -17,6 +17,10 @@ hash, published-list and unpack checks are KZ3's.
   --check   validate the manifest only (no network); --strict also refuses TO-FILL hashes and TO-CONFIRM pins
             (the release build's gate)
 
+An entry's optional "exec" list names files made executable after unpacking (a zip keeps no modes: Ninja's Linux
+zip); "linux": "build" | "runtime" marks the entries the Linux launcher fetches on the player's PC (linux_kit.py,
+proton.py), never shipped by us.
+
 A filled hash that does not match the download is refused and the download deleted (if the version was changed
 on purpose, set its sha256 back to TO-FILL and use --fill). Zip (and tar) members with absolute paths, "..", drive letters,
 zip symlink modes, or two zip names that differ only by letter case (one file on NTFS) are refused; a tarball is
@@ -115,6 +119,11 @@ def validate(m, schemes=("https",), strict=False):
                 bad.append(f"{where}: archive 'file' needs file_name (a plain file name)")
         elif e["archive"] not in ("zip", "tar"):
             bad.append(f"{where}: archive must be zip, tar or file")
+        ex = e.get("exec", [])
+        if not isinstance(ex, list) or not all(isinstance(x, str) and safe_rel(x) for x in ex):
+            bad.append(f"{where}: exec must be a list of safe relative paths")
+        if e.get("linux") not in (None, "build", "runtime"):
+            bad.append(f"{where}: linux must be build or runtime")
     return bad
 
 
@@ -397,6 +406,12 @@ def fetch_one(raw, cache, fill, manifest_path, opener=open_url, out=sys.stdout):
     except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as ex:
         print(f"FAIL {name}: unpack: {ex}", file=out)
         return False
+    for rel in e.get("exec", []):   # a zip keeps no file modes (Ninja's Linux zip): mark the listed programs executable
+        p = os.path.join(tree, *rel.split("/"))
+        if not os.path.isfile(p) or os.path.islink(p):
+            print(f"FAIL {name}: exec: {rel} is not a file in the tree", file=out)
+            return False
+        os.chmod(p, 0o755)
     data = read_fetched(cache)
     data[name] = {"sha256": got, "url": url, "version": e["version"], "files": n}
     write_fetched(cache, data)

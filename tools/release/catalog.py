@@ -78,6 +78,7 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOG_PATH = os.path.join(HERE, "..", "..", "data", "titles", "catalog.json")
@@ -2054,9 +2055,21 @@ def build_targets(lib, gid):
     return [gid] if g.get("state") in ok else []
 
 
+def default_build_folder(env=None):
+    """<root>/games on Windows (beside the launcher); on Linux $XDG_DATA_HOME/qwarks-awakening/games, because an
+    installed launcher's folder is not the player's to write (linux-launcher-plan.md)."""
+    if not sys.platform.startswith("linux"):
+        return os.path.join(ROOT, "games")
+    env = os.environ if env is None else env
+    base = env.get("XDG_DATA_HOME", "")
+    if not os.path.isabs(base):
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "qwarks-awakening", "games")
+
+
 def stage_folder(lib, gid):
-    """Where a game's exe goes: locations.build (the player's build folder) or <root>/games, then the game's id."""
-    base = ((lib or {}).get("locations") or {}).get("build") or os.path.join(ROOT, "games")
+    """Where a game's exe goes: locations.build (the player's build folder) or default_build_folder(), then the id."""
+    base = ((lib or {}).get("locations") or {}).get("build") or default_build_folder()
     return os.path.join(base, gid)
 
 
@@ -2197,7 +2210,20 @@ def update_lower(g):
     return None
 
 
-def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen):
+def stop_tree(p):
+    """End a started game and what it started: taskkill /T on Windows (a terminate() leaves child processes), else
+    SIGTERM to its process group (run_play starts it in a new session)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            os.killpg(p.pid, 15)
+    except (OSError, AttributeError):
+        p.terminate()
+
+
+def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen, stop_file=None):
     lib = read_library(library)
     if lib is None:
         print("REASON The library has not been made yet; start the launcher once.", file=out, flush=True)
@@ -2217,7 +2243,9 @@ def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen
     e = dict(os.environ)
     e.update(env)
     t0 = datetime.datetime.now()
-    kw = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+    kw = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {"start_new_session": True}
+    if stop_file and os.path.exists(stop_file):
+        os.remove(stop_file)
     try:
         p = popen(argv, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                   encoding="utf-8", errors="replace", bufsize=1, **kw)
@@ -2225,9 +2253,27 @@ def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen
         print("REASON The game program could not be started on this PC.", file=out, flush=True)
         return 3
     print(f"STARTED game={gid} pid={p.pid}", file=out, flush=True)
-    for line in p.stdout:
-        print(line.rstrip("\r\n"), file=out, flush=True)
-    rc = p.wait()
+    # Stop: the launcher writes stop_file; the game (and what it started) is ended
+    done, stopped = threading.Event(), threading.Event()
+
+    def watch():
+        while not done.wait(0.25):
+            if os.path.exists(stop_file):
+                stopped.set()
+                stop_tree(p)
+                return
+    if stop_file:
+        threading.Thread(target=watch, daemon=True).start()
+    try:
+        for line in p.stdout:
+            print(line.rstrip("\r\n"), file=out, flush=True)
+        rc = p.wait()
+    finally:
+        done.set()
+        if stop_file and os.path.exists(stop_file):
+            os.remove(stop_file)
+    if stopped.is_set():
+        print(f"STOPPED game={gid}", file=out, flush=True)
     secs = int((datetime.datetime.now() - t0).total_seconds())
     print(f"EXITED game={gid} code={rc} seconds={secs}", file=out, flush=True)
     return 0
@@ -2238,7 +2284,16 @@ def _parse_bool(v):
             "off": False}.get(str(v).lower())
 
 
+LINUX_TOOLS = {"proton": "proton.py", "linux-kit": "linux_kit.py"}   # Linux-only helpers, run as their own programs
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in LINUX_TOOLS:   # the launcher talks to one engine command; these verbs go to their scripts
+        if not sys.platform.startswith("linux"):
+            print("REASON This is for the Linux launcher only.", flush=True)
+            return 2
+        return subprocess.call([sys.executable, os.path.join(HERE, LINUX_TOOLS[argv[0]]), *argv[1:]])
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan")
@@ -2308,6 +2363,8 @@ def main(argv=None):
     pp.add_argument("--library", required=True)
     pp.add_argument("--game", required=True)
     pp.add_argument("--dry-run", action="store_true", help="print the command, environment and folder only")
+    pp.add_argument("--stop-file", help="the launcher's Stop: the game is ended when this file appears")
+    pp.add_argument("--data", help="Linux: the launcher's settings folder, linked into the game folder (proton.py)")
     a = ap.parse_args(argv)
 
     if a.cmd == "build":
@@ -2316,11 +2373,23 @@ def main(argv=None):
             v = getattr(a, k)
             if v:
                 extra += ["--" + k.replace("_", "-"), str(v)]
+        if not a.toolchain and sys.platform.startswith("linux"):   # the Linux build tools, once the player fetched them
+            r = subprocess.run([sys.executable, os.path.join(HERE, "linux_kit.py"), "toolchain"], capture_output=True,
+                               text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                extra += ["--toolchain", r.stdout.strip()]
         extra += build_config_args(read_library(a.library), a.config, a.debug_info)
         return run_build(a.library, a.game, extra)
 
     if a.cmd == "play":
-        return run_play(a.library, a.game, dry_run=a.dry_run)
+        if sys.platform.startswith("linux") and not a.dry_run:   # the Windows game through Proton (proton.py)
+            args = [sys.executable, os.path.join(HERE, "proton.py"), "play", "--library", a.library, "--game", a.game]
+            for k in ("data", "stop_file"):
+                if getattr(a, k):
+                    args += ["--" + k.replace("_", "-"), getattr(a, k)]
+            sys.stdout.flush()
+            return subprocess.call(args)
+        return run_play(a.library, a.game, dry_run=a.dry_run, stop_file=a.stop_file)
 
     if a.cmd in ("get-online", "set-online"):
         folder = os.path.abspath(a.shared_dir) if a.shared_dir else online_dir()

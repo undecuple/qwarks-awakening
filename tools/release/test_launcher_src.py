@@ -110,20 +110,21 @@ def test_theme():
     check(not extra, "launcher/fonts: no font the launcher does not load", extra)
 
 
-def test_split_view():
-    """pass 2: a navigation split view (Library, Files, Settings, About) that collapses to one column, keyboard
-    and controller back on Esc / B, the screens on the boxed-list widgets, the empty library as a status page."""
+def test_library_navigation():
+    """Library-first destinations, compact header, Back inputs and preserved setup/settings groups.
+    These are source contracts; compiled keyboard/visual checks are separate."""
     with open(os.path.join(ROOT, "launcher", "src", "main.cpp"), encoding="utf-8") as f:
         code = re.sub(r"//[^\n]*", "", f.read())
     pages = re.search(r"kPages\[4\] = \{(.*?)\};", code, re.S)
     names = re.findall(r'\{"(\w+)", Ico::\w+, App::Sc(\w+)\}', pages.group(1)) if pages else []
-    check([n for n, _ in names] == ["Library", "Files", "Settings", "About"], "main.cpp: sidebar pages Library, Files, Settings, About", names)
+    check([n for n, _ in names] == ["Library", "Files", "Settings", "About"], "main.cpp: navigation includes Library, Files, Settings, About", names)
     check(re.search(r"kCollapseW = 600\.f", code) is not None and "W < A.S(kCollapseW)" in code,
-          "main.cpp: the split view collapses below 600 px (scaled)")
+          "main.cpp: compact header below 600 px (scaled)")
     check("ImGuiKey_Escape" in code and "ImGuiKey_GamepadFaceRight" in code and "GoBack()" in code,
           "main.cpp: Esc and controller B go back")
-    check("ImGuiKey_GamepadDpadLeft" in code and "FocusSidebar" in code and "FocusContent" in code,
-          "main.cpp: arrows / D-pad move focus between sidebar and content")
+    menu = re.search(r"static void HeaderBar\(float x0, float W\) \{(.*?)\n\}", code, re.S)
+    check(menu is not None and "kPages" in menu.group(1) and "ImGuiKey_GamepadStart" in menu.group(1),
+          "main.cpp: all destinations reachable from header menu and controller Start")
     check('ToggleGroup("filters"' in code, "main.cpp: Library filters are a linked toggle group")
     check('"No games added yet"' in code and '"loc|library_folders|--add"' in code,
           "main.cpp: an empty library shows a status page with Add folder")
@@ -162,12 +163,17 @@ def test_phase4():
         cm = f.read()
     check("file(SHA256 \"${LAUNCHER_KIT_MANIFEST}\" LAUNCHER_KIT_SHA256)" in cm and "LAUNCHER_KIT_URL=" in cm
           and "releases/download/" in cm, "CMakeLists.txt: the kit hash and GitHub release URL come from kit.json")
+    linux = re.search(r"static void StartLinuxTask\(.*?\n\}", code, re.S)
+    check(linux is not None and len(re.findall(r"StartLinuxTask\(", code)) == 2
+          and 'StartLinuxTask(rt ? "runtime" : "tools")' in code,
+          "main.cpp: the Linux downloads (proton.py / linux_kit.py fetch) start only from their dialog's Download")
+    kit_code = code.replace(linux.group(0), "") if linux else code
     for verb in ("fetch", "symbols", "check-release"):
-        n = len(re.findall(r'"%s"' % verb, code))
+        n = len(re.findall(r'"%s"' % verb, kit_code))
         check(n == 1, f"main.cpp: kit.py {verb} is started from one place only", n)
     m = re.search(r"static void StartTask\(.*?\n\}", code, re.S)
     check(m is not None and "KitNeeded()" in m.group(0) and "A.kit.open = true" in m.group(0)
-          and m.group(0).index("KitNeeded()") < m.group(0).index("A.task.running.exchange(true)"),
+          and m.group(0).index("KitNeeded()") < m.group(0).index("ClaimTask("),
           "main.cpp: Build without the kit opens the kit dialog before anything starts")
     m = re.search(r"static void KitDialog\(.*?\n\}", code, re.S)
     body = m.group(0) if m else ""
@@ -195,7 +201,7 @@ def main():
     test_catalog_imports()
     test_main_cpp()
     test_theme()
-    test_split_view()
+    test_library_navigation()
     test_build_play()
     test_phase4()
     print("test_launcher_src:", "FAIL" if FAILS else "PASS")

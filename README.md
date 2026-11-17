@@ -18,7 +18,7 @@
 [![Renderer: Direct3D 12](https://img.shields.io/badge/renderer-Direct3D%2012-1e70b9?style=flat-square&labelColor=0a1942)](#how-it-works)
 [![CI](https://img.shields.io/github/actions/workflow/status/undecuple/qwarks-awakening/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
 
-**[Download](https://github.com/undecuple/qwarks-awakening/releases/latest)** · **[Installing](#install)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Report an issue](https://github.com/undecuple/qwarks-awakening/issues/new/choose)** · **[Building](docs/BUILDING.md)**
+**[Download](https://github.com/undecuple/qwarks-awakening/releases/latest)** · **[Installing](#install)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Report an issue](https://github.com/undecuple/qwarks-awakening/issues/new/choose)** · **[Building](docs/BUILDING.md)** · **[Linux](docs/LINUX.md)**
 
 </div>
 
@@ -29,7 +29,7 @@
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
-**Status: early work, not playable yet.** Version <!-- version -->0.3.1<!-- /version -->. The launcher builds the
+**Status: early work, not playable yet.** Version <!-- version -->0.4.0<!-- /version -->. The launcher builds the
 games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; nothing was
 tested on Windows itself. An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
 has played it through. How far each other game gets in scripted runs is in the [status table](#status). No game is
@@ -55,9 +55,9 @@ The launcher lists the games, finds your files, builds a game from your own copy
 compiler come with it; nothing else needs to be installed.
 
 <p align="center"><img src="docs/screenshots/launcher-library.png" width="720"
-  alt="The launcher's library on its first start: eight games with drawn tiles, all marked Not added"></p>
+  alt="The launcher's library on its first start: eight game cards with drawn strips in each game's colour, all marked Not added"></p>
 
-*The launcher on its first start, before any game was added (version 0.3.0, under Proton on Linux, 2026-11-13).*
+*The launcher on its first start, before any game was added (version 0.4.0, the Linux launcher's own screenshot mode on a new, empty library, 2026-11-16). The Windows launcher is built from the same code.*
 
 ### What you need
 
@@ -66,6 +66,7 @@ compiler come with it; nothing else needs to be installed.
 | **Your game** | Your own copy of each game, as a decrypted folder or ISO | Title IDs and updates per game: the table below |
 | **Decrypted EBOOT** | `EBOOT.elf`, made from your own copy | This project gives no decryption tools or instructions. [RPCS3](https://rpcs3.net) and its documentation are the place to start. |
 | **Windows** | Windows 10 or 11, 64-bit | Not tested on Windows itself; tested under Proton on Linux |
+| **Linux** | x86-64 with a 64-bit Vulkan driver | The launcher runs natively and starts each game through Proton; no Linux download yet, build the launcher from source; run once on NixOS up to the title screen of *Tools of Destruction* (2026-11-16): [docs/LINUX.md](docs/LINUX.md) |
 | **GPU** | Direct3D 12 | Tested only on an NVIDIA GeForce RTX 4060 |
 | **CPU and memory** | x86-64; 16 GB of memory to build | Tested only on an Intel Core i7-12700KF |
 | **Disk** | The install, plus several GB for each game you build | The setup download is about 100 MB; the space a build needs is not measured yet |

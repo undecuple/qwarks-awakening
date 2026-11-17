@@ -10,7 +10,7 @@ if(NOT RC_EXE)
     set(RC_EXE "${RC_GAME}")
 endif()
 project(rc_${RC_GAME}
-    VERSION 0.3.1
+    VERSION 0.4.0
     LANGUAGES C CXX
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )

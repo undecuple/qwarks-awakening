@@ -1,6 +1,6 @@
 {
  "format": 1,
- "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships.",
+ "about": "Pinned toolchain of the release: fetch_toolchain.py downloads each entry, checks its SHA-256 and unpacks it under work/release/toolchain-cache/trees/<name>/. '{version}' in a URL is the entry's own field. sha256 TO-FILL = never fetched (fetch_toolchain.py --fill records it); pin TO-CONFIRM = version not checked against the release page yet. Versions follow the Killzone 3 port's toolchain.json (same author) where it pins the same tool. The launcher is built with llvm-mingw, SDL3's devel package, CMake and Ninja (release.yml). What players get (launcher phase 4, pack_zip.py): the bare launcher zip carries SDL3.dll and the Python embeddable package; the full build zip also carries the build kit, whose toolchain/ is the entries with a 'kit' block (llvm-mingw, CMake, Ninja: unmodified, the listed 'prune' patterns left out) and licenses/ the files of the entries with 'kit_license' (their licence texts, as published). llvm-mingw-linux is CI only and never ships. Linux launcher (linux-launcher-plan.md): entries with a 'linux' field are fetched on the player's Linux PC, never shipped by us: 'runtime' = the pinned GE-Proton the launcher downloads after the player confirms (tools/release/proton.py), 'build' = the Linux build tools (llvm-mingw-linux, cmake-linux, ninja-linux and sdl3; tools/release/linux_kit.py). 'exec' lists files made executable after unpacking (a zip keeps no file modes).",
  "build_tools": [
   {
    "name": "innosetup",
@@ -61,7 +61,8 @@
    "archive": "tar",
    "strip_top": true,
    "license": "Apache-2.0 WITH LLVM-exception (clang, lld, compiler-rt, libc++, libunwind); MinGW-w64 and winpthreads under their own permissive terms; build scripts ISC",
-   "about": "CI only (ci.yml launcher-build on ubuntu-latest): the same llvm-mingw release built for a Linux host, so every push cross-compiles the launcher for Windows the way the release does (fetch_toolchain.py --only llvm-mingw-linux,sdl3). Never fetched by release.yml. Hash from a download on 2026-11-03."
+   "about": "The same llvm-mingw release built for a Linux host. CI (ci.yml launcher-build on ubuntu-latest) cross-compiles the launcher for Windows with it (fetch_toolchain.py --only llvm-mingw-linux,sdl3), and the Linux launcher's Build downloads it as part of the Linux build tools (linux_kit.py, after the player confirms). Never fetched by release.yml, never in a zip of ours. Hash from a download on 2026-11-03.",
+   "linux": "build"
   },
   {
    "name": "sdl3",
@@ -202,6 +203,51 @@
    "kit_license": "ninja/COPYING.txt",
    "license": "Apache-2.0",
    "about": "Licence text in the full build zip's licenses/ninja/COPYING.txt, for Ninja. Hash equal to the Killzone 3 port's pin of the same file (downloaded 2026-10-12)."
+  },
+  {
+   "name": "cmake-linux",
+   "version": "4.4.4",
+   "pin": "confirmed",
+   "release_page": "https://cmake.org/download/",
+   "url": "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-linux-x86_64.tar.gz",
+   "sha256_list": "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-SHA-256.txt",
+   "sha256": "e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb",
+   "archive": "tar",
+   "strip_top": true,
+   "license": "BSD-3-Clause",
+   "linux": "build",
+   "about": "CMake for a Linux host, same version as the Windows entry: configures the game build of the Linux launcher's Build (linux_kit.py). Hash from Kitware's published SHA-256 list for 4.4.4 (read 2026-11-16), equal to the digest GitHub shows for the release asset; fetch_one checks the list again on every download."
+  },
+  {
+   "name": "ninja-linux",
+   "version": "1.13.2",
+   "pin": "confirmed",
+   "release_page": "https://github.com/ninja-build/ninja/releases",
+   "url": "https://github.com/ninja-build/ninja/releases/download/v{version}/ninja-linux.zip",
+   "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6",
+   "archive": "zip",
+   "strip_top": false,
+   "exec": [
+    "ninja"
+   ],
+   "license": "Apache-2.0",
+   "linux": "build",
+   "about": "Ninja for a Linux host, same version as the Windows entry (whose pin equals GitHub's digest of ninja-win.zip). Hash = the digest GitHub shows for ninja-linux.zip (read 2026-11-16)."
+  },
+  {
+   "name": "ge-proton",
+   "version": "GE-Proton11-7",
+   "pin": "confirmed",
+   "release_page": "https://github.com/GloriousEggroll/proton-ge-custom/releases",
+   "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/{version}/{version}-x86_64.tar.gz",
+   "sha256": "c5448b76a230384e2d7bc6beb5ccb97bafb7e2c3b6c527cb03a1a546bbcb00a0",
+   "sha512_published": "7db87e9787e20c35cbdac26018431d5794626b626e4067b050684e45a88cc2ca229d7d263519eafb2e168cde5bef57611065d159d3685aaec152ccb9abe3073f",
+   "archive": "tar",
+   "strip_top": true,
+   "license": "Proton: BSD-3-Clause; Wine, vkd3d-proton and other parts LGPL-2.1+ and their own licences (its LICENSE file and each component's)",
+   "linux": "runtime",
+   "about": "The compatibility runtime the Linux launcher runs the Windows games with: GloriousEggroll's GE-Proton, the release the project's own Proton runs and the 2026-11-13 hand play used. Downloaded from its upstream release only after the player confirms in the launcher (proton.py fetch), never re-hosted or shipped by us. sha256 = the digest GitHub shows for the release asset (read 2026-11-16); sha512_published = the release's own .sha512sum file, for a cross-check.",
+   "bytes": 563784602
   }
  ]
 }

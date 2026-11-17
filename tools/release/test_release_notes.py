@@ -187,6 +187,20 @@ with tempfile.TemporaryDirectory() as d:
     check(rc == 0 and ", a pre-release (early work, not playable yet), see" in first,
           f"a game's line 1 keeps the pre-release wording ({first[:90]})")
 
+# a launcher-only version (0.4.0): no game group, so line 1 points to no game release of the same version
+with tempfile.TemporaryDirectory() as d:
+    root = layout(d, "# C\n\n## [0.4.0] - 2026-11-17 (pre-release)\n\n### [Launcher]\n- Only launcher item\n", True)
+    rc, body, _ = run(root, "--tag", "launcher-v0.4.0")
+    first = body.split("\n")[0]
+    check(rc == 0 and "this version changes no game, so it has no game releases" in first
+          and "its own release of the same version" not in first and "Only launcher item" in body,
+          f"launcher-only version: line 1 names no game release ({first[-90:]})")
+    rc, _, err = run(root, "--tag", "tods-v0.4.0")
+    check(rc == 1 and "no items for tods-v0.4.0" in err, "launcher-only version: a game tag is refused")
+    rc, body, _ = run(layout(d + "/g", CL, True), "--tag", "launcher-v0.3.0")
+    check(rc == 0 and "its own release of the same version" in body.split("\n")[0],
+          "a version with game groups keeps the game-release pointer")
+
 with tempfile.TemporaryDirectory() as d:
     root = layout(d, CL, True)
     rc, out, _ = run(root, "--tag", "launcher-v1.2.3")

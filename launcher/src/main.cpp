@@ -1,9 +1,9 @@
-// Qwark's Awakening launcher, phase 3 MVP (UI only). Four screens: Library, Game details, Add game (drawer), Settings.
+// Qwark's Awakening launcher: library-first game cards, focused details, file setup and grouped settings.
 // SDL3 + Dear ImGui (SDL3 + SDLRenderer3 backends). No game art is embedded or fetched: tiles are drawn procedurally
 // unless the library entry points at the player's own PNG files.
 // Build and Play run the setup engine (tools/release/catalog.py build / play, which runs firstrun.py) as a child
 // process, one at a time; its LOG / PROGRESS / REASON / RESULT / STARTED / EXITED lines drive the progress bar, the
-// stage words and the Details page's log. TEMP still marks the stubs left (Open saves, Remove build, the drawer's checks).
+// stage words and the Details page's log. Unimplemented Manage actions remain visibly disabled.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <atomic>
@@ -45,19 +45,30 @@
 #ifndef LAUNCHER_REPO_API
 #define LAUNCHER_REPO_API ""
 #endif
+#ifndef LAUNCHER_ENGINE_PATH   // Linux: the source tree's catalog.py (CMakeLists.txt), for a launcher run from its build folder
+#define LAUNCHER_ENGINE_PATH ""
+#endif
 #ifndef LAUNCHER_SYMBOLS_URL
 #define LAUNCHER_SYMBOLS_URL ""
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------
 // Colours: the token table in theme_tokens.h, generated from data/theme.json by tools/release/theme_tokens.py
-// (libadwaita's light and dark named colours, accent #1e70b9). T points at the set in use (Settings > Appearance:
+// (the shared Ratchet & Clank inspired navy/orange/steel palette). T points at the set in use (Settings > Appearance:
 // System / Light / Dark; System follows SDL_GetSystemTheme() and SDL_EVENT_SYSTEM_THEME_CHANGED).
 static const theme::Tokens* T = &theme::kDark;
+static const theme::Tokens* BaseTheme = &theme::kDark;
 static ImU32 Col(unsigned rgba, float a = 1.f) {   // token 0xRRGGBBAA, its alpha times `a`
     return IM_COL32((rgba >> 24) & 255, (rgba >> 16) & 255, (rgba >> 8) & 255, (int)((rgba & 255) * a + 0.5f));
 }
 static ImVec4 ColV(unsigned rgba, float a = 1.f) { return ImGui::ColorConvertU32ToFloat4(Col(rgba, a)); }
+// Scoped title accents never replace semantic success/warning/error colors or appearance surfaces.
+struct GameThemeScope {
+    const theme::Tokens* previous;
+    theme::Tokens tokens;
+    explicit GameThemeScope(const std::string& id) : previous(T), tokens(theme::ForGame(*T, id.c_str())) { T = &tokens; }
+    ~GameThemeScope() { T = previous; }
+};
 // The procedural tiles are game art (keeps game art on the tiles): their own fixed colours, 0xRRGGBB.
 static ImU32 Art(unsigned rgb, float a = 1.f) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, (int)(a * 255.f)); }
 enum : unsigned { artGold = 0xffd65c, artStar = 0xe4ebf4, artSteel = 0x96bade, artOrange = 0xff9a1e };
@@ -116,6 +127,20 @@ struct KitInfo {
     std::string pendingGame;                  // the Build that asked for the kit: started once the kit is in place
 };
 
+// Linux (linux-launcher-plan.md): the games are Windows programs and run through Proton (tools/release/proton.py, via
+// the engine's `proton` verb); Build uses the Linux build tools (tools/release/linux_kit.py, `linux-kit`). Both download
+// only after the player confirms in their dialog.
+struct ProtonVersion { std::string id, name, version; bool added = false; };
+struct LinuxInfo {
+    bool asked = false, loaded = false, nixos = false, pinnedReady = false, ready = false;
+    std::string selected = "pinned", umuMode = "auto", umu, steamRun, pinnedVersion, pinnedPath, pinnedUrl, error;
+    long long pinnedBytes = 0;
+    std::vector<ProtonVersion> versions;
+    bool toolsAsked = false, toolsLoaded = false, toolsReady = false;
+    std::string toolsPath, toolsError; std::vector<std::string> toolsMissing, toolsEntries;
+    std::string dialog;                       // "runtime" | "tools": the download dialog that is open
+};
+
 struct App {
     SDL_Window* win = nullptr; SDL_Renderer* ren = nullptr;
     Library lib; std::string libPath, fontDir;
@@ -124,8 +149,8 @@ struct App {
     ImFont *fBody = nullptr, *fBodySemi = nullptr, *fHead = nullptr, *fHeadBold = nullptr, *fMono = nullptr, *fMark = nullptr;
     std::string themePref = "system";       // "system", "light", "dark": library.json prefs.theme (engine set-pref), or --theme
     enum Screen { ScLibrary, ScDetails, ScSettings, ScFiles, ScAbout } screen = ScLibrary;
-    // Navigation split view: sidebar of pages beside the content; below kCollapseW (logical px) one column, where
-    // `showSidebar` = the sidebar is the page on screen (the content's Back leads there).
+    // Library-first pages use the full window. `collapsed` selects compact header labels;
+    // showSidebar retains the explicit navigation-page screenshot fixture, without a persistent sidebar.
     bool collapsed = false, showSidebar = false;
     enum Focus { FocusNone, FocusSidebar, FocusContent, FocusBack } focusReq = FocusContent;   // move keyboard focus on the next frame
     int focusFrame = -1;                     // the frame the request was made in: items of a later frame take it
@@ -142,7 +167,7 @@ struct App {
     Toast toast; Dialog dlg; Task task; Engine eng;
     Settings set; std::string dataDir;       // display/control settings (engine get-settings); --data DIR for the engine
     Online online; std::string sharedDir;    // shared online settings; --shared-dir DIR for the engine (tests, screenshots)
-    Job kitJob; KitInfo kit;
+    Job kitJob; KitInfo kit; LinuxInfo lx;
     std::map<std::string, std::pair<std::string, unsigned>> kitMsg;   // a job's last answer, by its key (row message, colour)
     std::string newRelease, newReleaseUrl;   // the release check found a newer release
     std::vector<std::string> engineCmd;      // argv prefix of the engine command; the verb and its arguments are appended
@@ -195,7 +220,7 @@ static const char* StateWord(const Game& g, std::string& tmp) {
         case State::NotPorted: return "Not ported yet";
         case State::ReadyToBuild: return "Ready to build";
         case State::Building: return "Building";
-        case State::Built: return "Ready";
+        case State::Built: return "Built";
         case State::PortUpdated: return "Update available: rebuild";   // only when this game's build inputs changed
         case State::NeedsAttention: return "Needs attention";
     }
@@ -269,15 +294,9 @@ static void TileCorners(ImDrawList* dl, ImVec2 a, ImVec2 b, unsigned bg) {
         dl->PathFillConvex(Col(bg));
     }
 }
-// `top` composited over the opaque `under` (both 0xRRGGBBAA): a translucent token as the opaque colour it shows.
-static unsigned Opaque(unsigned top, unsigned under) {
-    float a = (top & 255) / 255.f; unsigned out = 255;
-    for (int sh = 24; sh >= 8; sh -= 8) out |= (unsigned)(((top >> sh) & 255) * a + ((under >> sh) & 255) * (1 - a) + 0.5f) << sh;
-    return out;
-}
 // One tile: the player's art when the entry has it, otherwise our own drawing (palette gradient, planet, stars, title).
-static void DrawTile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, Game& g, float brighten, float titleScale) {
-    float W = p1.x - p0.x, H = p1.y - p0.y, col = g.colour;
+static void DrawTile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, Game& g, float brighten, float titleScale, bool selected = false) {
+    float W = p1.x - p0.x, H = p1.y - p0.y, col = selected ? 1.f : g.colour;
     LoadArt(g);
     dl->PushClipRect(p0, p1, true);
     if (g.art.grey) {
@@ -287,9 +306,8 @@ static void DrawTile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, Game& g, float bright
         dl->AddImage((ImTextureID)(intptr_t)g.art.grey, p0, p1, ImVec2(u0, v0), ImVec2(u1, v1));
         if (col > 0.01f) dl->AddImage((ImTextureID)(intptr_t)g.art.colour, p0, p1, ImVec2(u0, v0), ImVec2(u1, v1), IM_COL32(255, 255, 255, (int)(255 * col)));
     } else {
-        static const unsigned tops[4] = {0x1d3f86, 0x6a3510, 0x1d5f80, 0x35307a}, bots[4] = {0x08102a, 0x14080a, 0x07161f, 0x0a0a1e};
-        int v = (g.order + 3) % 4;
-        ImU32 t = Look(Art(tops[v]), col), b = Look(Art(bots[v]), col);
+        theme::Tokens game = theme::ForGame(theme::kDark, g.id.c_str());
+        ImU32 t = Look(Col(game.accentBg), col), b = Col(theme::kDark.viewBg);
         dl->AddRectFilledMultiColor(p0, p1, t, t, b, b);
         ImVec2 c(p0.x + W * 0.5f, p0.y + H * 0.36f);
         dl->AddCircleFilled(c, W * 0.30f, Look(Art(artGold, 0.10f), col), 48);
@@ -298,18 +316,48 @@ static void DrawTile(ImDrawList* dl, ImVec2 p0, ImVec2 p1, Game& g, float bright
         dl->AddCircleFilled(ImVec2(c.x + W * 0.40f * 0.7f, c.y - W * 0.40f * 0.7f), W * 0.035f, Look(Art(artOrange), col), 12);
         Stars(dl, p0, p1, 17u + g.order, (int)(14 + W / 14), col, 0.8f);
     }
-    // title block on a scrim, always full contrast
+    // Selected images have a separate title beside/below them; keep their portrait crop unobscured.
+    if (selected && g.art.grey) { dl->PopClipRect(); return; }
+    // Procedural fallback/title tiles use an opaque surface independent of cover pixels.
     std::string series, name; SplitTitle(g.title, series, name);
     float sz = A.S(19.f) * titleScale, ss = A.S(11.5f) * titleScale, wrap = W - A.S(16.f) * titleScale;
     ImVec2 ns = A.fHeadBold->CalcTextSizeA(sz, FLT_MAX, wrap, name.c_str());
     float sh = series.empty() ? 0 : ss + A.S(4.f);
     float top = p1.y - ns.y - sh - A.S(14.f) * titleScale;
-    dl->AddRectFilledMultiColor(ImVec2(p0.x, top - A.S(26.f)), p1, 0, 0, IM_COL32(4, 7, 14, 235), IM_COL32(4, 7, 14, 235));
+    dl->AddRectFilled(ImVec2(p0.x, top), p1, Col(theme::kDark.cardBg));
     ImVec2 tp(p0.x + A.S(8.f) * titleScale, top + A.S(2.f));
-    if (!series.empty()) { dl->AddText(A.fBodySemi, ss, tp, Col(theme::kDark.accent), series.c_str()); tp.y += sh; }
+    if (!series.empty()) { dl->AddText(A.fBodySemi, ss, tp, Col(theme::ForGame(theme::kDark, g.id.c_str()).accent), series.c_str()); tp.y += sh; }
     dl->AddText(A.fHeadBold, sz, tp, Col(theme::kDark.windowFg), name.c_str(), nullptr, wrap);
     if (brighten > 0) dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, (int)(26 * brighten)));
     dl->PopClipRect();
+}
+// The library card's game-identity strip when the entry has no art of its own (point 4 keeps game art on the
+// cards): the procedural tile's drawing laid out as a banner, in the game's series accent, with the series line and the
+// year. Fixed dark colours like the tiles, so it reads the same in both appearances; colour fades in as the game is built.
+static void CardBanner(ImDrawList* dl, ImVec2 a, ImVec2 b, const Game& g) {
+    float W = b.x - a.x, H = b.y - a.y, col = g.colour, r = A.S(8.f);
+    theme::Tokens game = theme::ForGame(theme::kDark, g.id.c_str());
+    dl->PushClipRect(a, b, true);
+    ImU32 lt = Look(Col(game.accentBg), col), rt = Col(theme::kDark.viewBg);
+    dl->AddRectFilledMultiColor(a, b, lt, rt, rt, lt);
+    Stars(dl, a, b, 17u + g.order, (int)(8 + W / 22), col, 0.8f);
+    ImVec2 c(b.x - H * 1.05f, a.y + H * 0.62f);
+    dl->AddCircleFilled(c, H * 0.55f, Look(Art(artGold, 0.10f), col), 40);
+    dl->AddCircle(c, H * 0.55f, Look(Art(artGold, 0.55f), col), 40, A.S(1.5f));
+    dl->AddCircle(c, H * 0.75f, Look(Art(artSteel, 0.25f), col), 40, A.S(1.f));
+    dl->AddCircleFilled(ImVec2(c.x - H * 0.75f * 0.7f, c.y - H * 0.75f * 0.7f), H * 0.07f, Look(Art(artOrange), col), 12);
+    std::string series, name; SplitTitle(g.title, series, name);
+    float ss = A.S(12.f), pad = A.S(12.f);
+    if (series.empty()) series = "Ratchet & Clank";
+    // the series line in the game's accent on the grey (not yet built) strip, in white once the strip has its colour
+    dl->AddText(A.fBodySemi, ss, ImVec2(a.x + pad, a.y + pad * 0.8f), Col(col > 0.5f ? theme::kDark.windowFg : game.accent), series.c_str());
+    char year[24]; snprintf(year, sizeof year, "%d", g.year);
+    dl->AddText(A.fBody, A.S(13.f), ImVec2(a.x + pad, b.y - pad * 0.8f - A.S(13.f)), Col(theme::kDark.dimFg), year);
+    dl->PopClipRect();
+    // rounded corners: fill each corner outside an r-radius arc with the card colour
+    const struct { float x, y, cx, cy, a0; } k[4] = {{a.x, a.y, a.x + r, a.y + r, IM_PI}, {b.x, a.y, b.x - r, a.y + r, IM_PI * 1.5f},
+                                                    {b.x, b.y, b.x - r, b.y - r, 0.f}, {a.x, b.y, a.x + r, b.y - r, IM_PI * 0.5f}};
+    for (auto& q : k) { dl->PathLineTo(ImVec2(q.x, q.y)); dl->PathArcTo(ImVec2(q.cx, q.cy), r, q.a0, q.a0 + IM_PI * 0.5f, 6); dl->PathFillConvex(Col(T->cardBg)); }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -355,7 +403,7 @@ static float StateLine(ImDrawList* dl, ImVec2 pos, const Game& g, float fontPx, 
     float r = fontPx * 0.5f, gap = fontPx * 0.4f;
     ImVec2 ts = A.fHeadBold->CalcTextSizeA(fontPx, FLT_MAX, 0, w);
     if (draw) {
-        ImU32 col = Playable(g) ? Col(T->success) : (g.state == State::NeedsAttention || g.state == State::PortUpdated) ? Col(T->accent) : Col(T->windowFg);
+        ImU32 col = Playable(g) ? Col(BaseTheme->success) : (g.state == State::NeedsAttention || g.state == State::PortUpdated) ? Col(BaseTheme->accent) : Col(BaseTheme->windowFg);
         StateIcon(dl, ImVec2(pos.x + r, pos.y + ts.y * 0.5f), r * 0.86f, g.state, col);
         dl->AddText(A.fHeadBold, fontPx, ImVec2(pos.x + r * 2 + gap, pos.y), Col(T->windowFg), w);
     }
@@ -424,7 +472,7 @@ static void Icon(ImDrawList* dl, ImVec2 c, float s, Ico k, ImU32 col) {
 
 // ---------------------------------------------------------------------------------------------------------------
 static std::string Fit(const std::string& t, float maxW, ImFont* f, float px);
-// Widgets: libadwaita's shapes drawn with ImGui. Every interactive one is an ImGui item, so keyboard and
+// Widgets: shared rounded surfaces drawn with ImGui. Every interactive one is an ImGui item, so keyboard and
 // controller navigation reach it (Enter / A activates); the focus ring is ImGui's nav cursor in the accent colour.
 enum class Kind { Normal, Suggested, Flat, Destructive };
 static void FocusRing(ImVec2 a, ImVec2 b, float rounding) {
@@ -451,7 +499,7 @@ static void NavItemDone(const char* label) {
 }
 // A button: `pill` = fully round ends (libadwaita .pill), else 6 px corners. Suggested = accent fill, Destructive = red
 // fill, Normal = a faint fill, Flat = no fill until hovered. A label "Text##id" keeps ImGui's id rules.
-static bool PillButton(const char* label, Kind k, ImVec2 size = ImVec2(0, 0), bool pill = true, Ico icon = Ico::None, bool on = false) {
+static bool PillButton(const char* label, Kind k, ImVec2 size = ImVec2(0, 0), bool pill = false, Ico icon = Ico::None, bool on = false) {
     ImFont* f = A.fBodySemi; float px = A.S(17.f);
     const char* end = ImGui::FindRenderedTextEnd(label);
     ImVec2 ts = f->CalcTextSizeA(px, FLT_MAX, 0, label, end);
@@ -484,7 +532,7 @@ static bool PillButton(const char* label, Kind k, ImVec2 size = ImVec2(0, 0), bo
 }
 // The launcher's older call sites: primary = a suggested pill, else a normal button; `active` = a toggled filter.
 static bool Btn(const char* label, ImVec2 size, bool primary, bool active = false) {
-    return PillButton(label, primary ? Kind::Suggested : Kind::Normal, size, primary, Ico::None, active);
+    return PillButton(label, primary ? Kind::Suggested : Kind::Normal, size, false, Ico::None, active);
 }
 // Width of a PillButton with this label (and icon), to reserve a row's control column.
 static float BtnW(const char* label, Ico icon = Ico::None, bool pill = false) {
@@ -567,6 +615,7 @@ static void RowX(const char* title, const std::string& subtitle, float ctrlW, F 
     if (ctrlW > 0) {
         ImGui::SetCursorScreenPos(stacked ? ImVec2(p.x + padX, ty + textH + A.S(8.f)) : ImVec2(p.x + gList.w - padX - ctrlW, p.y + (h - ctrlH) * 0.5f));
         ImGui::BeginGroup(); control(); ImGui::EndGroup();
+        h = std::max(h, ImGui::GetItemRectMax().y - p.y + padY);
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
     ImGui::Dummy(ImVec2(gList.w, 0));
@@ -638,10 +687,18 @@ static float ToggleGroupW(const std::vector<std::string>& labels) {
     for (auto& l : labels) t += A.fBodySemi->CalcTextSizeA(A.S(16.f), FLT_MAX, 0, l.c_str(), ImGui::FindRenderedTextEnd(l.c_str())).x + A.S(16.f) * 2;
     return t;
 }
-static bool ToggleGroup(const char* id, const std::vector<std::string>& labels, int* cur) {
+static bool ToggleGroup(const char* id, const std::vector<std::string>& labels, int* cur, float maxW = 0.f) {
     float pad = A.S(3.f), h = A.S(34.f), px = A.S(16.f), segPad = A.S(16.f);
     std::vector<float> ws; float total = pad * 2;
     for (auto& l : labels) { ws.push_back(A.fBodySemi->CalcTextSizeA(px, FLT_MAX, 0, l.c_str(), ImGui::FindRenderedTextEnd(l.c_str())).x + segPad * 2); total += ws.back(); }
+    float available = ImGui::GetContentRegionAvail().x;
+    if (maxW > 0) available = std::min(available, maxW);
+    if (total > available) {
+        bool changed = false; ImGui::PushID(id);
+        for (size_t i = 0; i < labels.size(); i++)
+            if (PillButton(labels[i].c_str(), Kind::Normal, ImVec2(std::max(A.S(40.f), available), h), false, Ico::None, *cur == (int)i)) { *cur = (int)i; changed = true; }
+        ImGui::PopID(); return changed;
+    }
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + total, p.y + h + pad * 2), Col(T->buttonBg), A.S(theme::kRadiusButton) + pad);
@@ -774,11 +831,22 @@ static std::vector<std::string> DefaultEngine(const std::string& dir) {
         if (!dir.empty() && SDL_GetPathInfo(py.c_str(), &pi) && pi.type == SDL_PATHTYPE_FILE)
             return {py, dir + "tools\\release\\catalog.py"};
     }
-#else
-    (void)dir;
+#else   // beside the launcher, an installed share/qwarks-awakening/, or the source tree it was built from
+    SDL_PathInfo pi;
+    for (const std::string& path : {dir + "tools/release/catalog.py", dir + "../share/qwarks-awakening/tools/release/catalog.py", std::string(LAUNCHER_ENGINE_PATH)})
+        if (!path.empty() && SDL_GetPathInfo(path.c_str(), &pi) && pi.type == SDL_PATHTYPE_FILE) return {"python3", path};
 #endif
     return {"python3", "tools/release/catalog.py"};
 }
+#ifdef __linux__
+// $XDG_DATA_HOME / $XDG_CONFIG_HOME (an absolute value only, as the XDG spec says) or ~/.local/share / ~/.config, + our folder
+static std::string LinuxUserDir(const char* key, const char* fallback) {
+    const char* x = SDL_getenv(key);
+    if (x && x[0] == '/') return std::string(x) + "/qwarks-awakening";
+    const char* home = SDL_getenv("HOME");
+    return std::string(home && *home ? home : ".") + fallback + "/qwarks-awakening";
+}
+#endif
 static int RunCapture(const std::vector<std::string>& argv, std::string& out) {   // the whole output, then the exit code
     std::vector<const char*> a; for (auto& x : argv) a.push_back(x.c_str());
     a.push_back(nullptr);
@@ -925,6 +993,9 @@ static bool LitState(const Game& g) { return g.state == State::ReadyToBuild || g
 static void SyncBuildFolder() {
     const char* base = SDL_GetBasePath();
     std::string b = !A.lib.loc.build.empty() ? A.lib.loc.build : std::string(base ? base : "") + "games";
+#ifdef __linux__   // catalog.py default_build_folder(): the launcher's own folder is not the player's to write on Linux
+    if (A.lib.loc.build.empty()) b = LinuxUserDir("XDG_DATA_HOME", "/.local/share") + "/games";
+#endif
     snprintf(A.buildFolder, sizeof A.buildFolder, "%s", b.c_str());
 }
 // Reloads library.json after the engine rewrote it; runtime state (art) is carried over by game id.
@@ -969,6 +1040,37 @@ static void SetOnline(const std::string& rowKey, std::vector<std::string> args) 
     a.insert(a.end(), args.begin(), args.end());
     RunEngine(rowKey, a);
 }
+// Linux: proton.py get/select/add/umu and linux_kit.py status answer with one "STATUS {json}" line.
+static bool StatusJson(const std::string& out, Json& j) {
+    size_t at = out.rfind("STATUS {"); std::string err;
+    return at != std::string::npos && Json::parse(out.substr(at + 7), j, err) && !j.isNull();
+}
+static bool ParseProton(const std::string& out) {
+    Json j; if (!StatusJson(out, j)) return false;
+    LinuxInfo& x = A.lx;
+    x.loaded = true; x.error = j["error"].str(); x.ready = j["ready"].boolean();
+    x.selected = j["selected"].str("pinned"); x.umuMode = j["umu_mode"].str("auto"); x.umu = j["umu"].str();
+    x.steamRun = j["steam_run"].str(); x.nixos = j["nixos"].boolean();
+    x.pinnedVersion = j["pinned"]["version"].str(); x.pinnedReady = j["pinned"]["ready"].boolean();
+    x.pinnedPath = j["pinned"]["path"].str(); x.pinnedUrl = j["pinned"]["url"].str(); x.pinnedBytes = (long long)j["pinned"]["bytes"].dbl();
+    x.versions.clear();
+    for (auto& v : j["versions"].a) x.versions.push_back({v["id"].str(), v["name"].str(), v["version"].str(), v["added"].boolean()});
+    return true;
+}
+static bool ParseTools(const std::string& out) {
+    Json j; if (!StatusJson(out, j)) return false;
+    LinuxInfo& x = A.lx;
+    x.toolsLoaded = true; x.toolsReady = j["ready"].boolean(); x.toolsPath = j["path"].str(); x.toolsError.clear();
+    x.toolsMissing.clear(); for (auto& m : j["missing"].a) x.toolsMissing.push_back(m.str());
+    x.toolsEntries.clear(); for (auto& e : j["entries"].a) x.toolsEntries.push_back(e["name"].str() + " " + e["version"].str());
+    return true;
+}
+static void ProtonAction(const std::string& verb, const std::vector<std::string>& extra = {}) {
+    std::vector<std::string> a = {"proton", verb, "--library", A.libPath};
+    a.insert(a.end(), extra.begin(), extra.end());
+    A.lx.asked = true; RunEngine("p|" + verb, a);
+}
+static void ToolsStatus() { A.lx.toolsAsked = true; RunEngine("lk|status", {"linux-kit", "status"}); }
 static void PumpEngine() {
     if (!A.eng.done.exchange(false)) return;
     std::string key, out; int rc;
@@ -983,6 +1085,14 @@ static void PumpEngine() {
     if (rc == 0 && online) {
         if (!ParseOnline(out, key != "o|load")) { A.online.loading = false; A.online.err = "The engine's answer could not be read."; }
         else if (key == "o|add") A.online.pNameBuf[0] = A.online.pAddrBuf[0] = 0;   // added: the fields are free again
+        return;
+    }
+    if (key.compare(0, 2, "p|") == 0) {   // Linux: the Proton choice
+        if (!(rc == 0 && ParseProton(out))) { A.lx.loaded = true; std::string r = LastLine(out, "REASON "); A.lx.error = r.empty() ? "The Proton settings could not be read." : r; }
+        return;
+    }
+    if (key.compare(0, 3, "lk|") == 0) {  // Linux: the build tools
+        if (!(rc == 0 && ParseTools(out))) { A.lx.toolsLoaded = true; A.lx.toolsError = "The build tools' state could not be read."; }
         return;
     }
     if (rc == 0) { ReloadLibrary(); return; }
@@ -1002,6 +1112,7 @@ static void HandleTag(const std::string& tag, const std::string& path) {
     std::string kind = tag.substr(0, a), x = tag.substr(a + 1, b - a - 1), y = tag.substr(b + 1);
     if (kind == "ov") EngineOverride(x, y, path);
     else if (kind == "loc") EngineLocation(x, path, y);
+    else if (kind == "proton") ProtonAction("add", {"--path", path});
 }
 static void PumpDialog() {
     std::string tag, path; int field;
@@ -1033,6 +1144,7 @@ static void TaskLine(const std::string& raw) {
     else if (line.compare(0, 7, "REASON ") == 0) t.reasons.push_back(line.substr(7));
     else if (line.compare(0, 7, "RESULT ") == 0) { t.result = Field(line, "ok") == "1" ? 1 : 0; t.cancelled = Field(line, "step") == "cancelled"; }
     else if (line.compare(0, 5, "GAME ") == 0) { t.curGame = Field(line, "id"); t.step.clear(); t.pct = 0; }
+    else if (line.compare(0, 8, "STOPPED ") == 0) t.cancelled = true;   // play: ended by Stop
     else if (line.compare(0, 7, "EXITED ") == 0) { t.exited = true; t.exitCode = atoi(Field(line, "code").c_str()); t.secs = atoi(Field(line, "seconds").c_str()); }
     t.lines.push_back(line);
     if (t.lines.size() > kTaskLines) t.lines.erase(t.lines.begin(), t.lines.begin() + (t.lines.size() - kTaskLines));
@@ -1076,21 +1188,31 @@ static bool BuildingGame(const Game& g) {   // this entry (or a game inside it) 
 // A release launcher builds only with its build kit in place (kit.py status "ready"); otherwise Build opens the kit
 // dialog, which downloads nothing until the player chooses Download. A developer build (no kit hash) builds as before.
 static bool KitNeeded() { return *LAUNCHER_KIT_SHA256 && A.kit.state != "ready" && A.kit.state != "none"; }
+// One task at a time: claims the slot and clears the last task's state (false = busy, said in a toast).
+static bool ClaimTask(const std::string& kind, const std::string& id, const std::string& title) {
+    if (A.task.running.exchange(true)) {
+        const std::string& k = A.task.kind;
+        Say(k == "build" ? "A build is running; one at a time" : k == "kit" ? "The build kit is downloading" : k == "runtime" ? "GE-Proton is downloading"
+            : k == "tools" ? "The build tools are downloading" : "A game is running");
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> l(A.task.m);
+        A.task.kind = kind; A.task.game = id; A.task.title = title; A.task.step.clear(); A.task.curGame.clear();
+        A.task.logPath.clear(); A.task.lines.clear(); A.task.reasons.clear(); A.task.pct = 0; A.task.result = -1;
+        A.task.exited = false; A.task.exitCode = 0; A.task.secs = 0; A.task.procRc = 0; A.task.cancelled = false; A.task.stopAsked = false;
+        A.task.replay = false;
+    }
+    A.task.finished = false;
+    return true;
+}
 static void StartTask(const std::string& kind, const Game& g) {
     if (kind == "build" && KitNeeded()) {
         A.kit.open = true; A.kit.pendingGame = g.id;
         if (A.kit.state == "unknown" && !JobBusy()) KitStatus();
         return;
     }
-    if (A.task.running.exchange(true)) { Say(A.task.kind == "build" ? "A build is running; one at a time" : A.task.kind == "kit" ? "The build kit is downloading" : "A game is running"); return; }
-    {
-        std::lock_guard<std::mutex> l(A.task.m);
-        A.task.kind = kind; A.task.game = g.id; A.task.title = g.title; A.task.step.clear(); A.task.curGame.clear();
-        A.task.logPath.clear(); A.task.lines.clear(); A.task.reasons.clear(); A.task.pct = 0; A.task.result = -1;
-        A.task.exited = false; A.task.exitCode = 0; A.task.secs = 0; A.task.procRc = 0; A.task.cancelled = false; A.task.stopAsked = false;
-        A.task.replay = false;
-    }
-    A.task.finished = false;
+    if (!ClaimTask(kind, g.id, g.title)) return;
     std::vector<std::string> argv = A.engineCmd;
     if (kind == "build") {
         for (const char* x : {"build", "--library"}) argv.push_back(x);
@@ -1102,17 +1224,32 @@ static void StartTask(const std::string& kind, const Game& g) {
                                      std::string("--url"), A.kit.url, std::string("--stop-file"), StopFile()}) argv.push_back(x);
         if (A.kit.allowLocal) argv.push_back("--allow-local");
         SDL_RemovePath(StopFile().c_str());
-    } else {
+    } else {   // Stop writes the stop file; on Linux the game starts through Proton with the launcher's settings folder
         for (const char* x : {"play", "--library"}) argv.push_back(x);
-        argv.push_back(A.libPath); argv.push_back("--game"); argv.push_back(g.id);
+        argv.push_back(A.libPath); argv.push_back("--game"); argv.push_back(g.id); argv.push_back("--stop-file"); argv.push_back(StopFile());
+#ifdef __linux__
+        if (!A.dataDir.empty()) { argv.push_back("--data"); argv.push_back(A.dataDir); }
+#endif
+        SDL_RemovePath(StopFile().c_str());
     }
     if (A.shotMode && !A.liveShot) { A.task.running = false; return; }   // screenshots never start a process (unless --live)
     std::thread(TaskThread, argv).detach();
 }
 static void StartBuild(const Game& g) { StartTask("build", g); }
+// Linux downloads (the dialogs' Download): "runtime" = proton.py fetch (the pinned GE-Proton), "tools" = linux_kit.py fetch.
+static void StartLinuxTask(const std::string& kind) {
+    if (!ClaimTask(kind, "", kind == "runtime" ? "GE-Proton" : "the Linux build tools")) return;
+    std::vector<std::string> argv = A.engineCmd;
+    if (kind == "runtime") for (const std::string& x : {std::string("proton"), std::string("fetch"), std::string("--library"), A.libPath}) argv.push_back(x);
+    else for (const char* x : {"linux-kit", "fetch"}) argv.push_back(x);
+    argv.push_back("--stop-file"); argv.push_back(StopFile());
+    SDL_RemovePath(StopFile().c_str());
+    if (A.shotMode && !A.liveShot) { A.task.running = false; return; }
+    std::thread(TaskThread, argv).detach();
+}
 static void StartPlay(const Game& g) { StartTask("play", g); }
-static void CancelBuild() {   // a build or the kit download: both watch the stop file
-    if (!TaskRunning() || (A.task.kind != "build" && A.task.kind != "kit")) return;
+static void CancelBuild() {   // a build, a download or a running game (Stop): each watches the stop file
+    if (!TaskRunning()) return;
     SDL_IOStream* f = SDL_IOFromFile(StopFile().c_str(), "w");
     if (f) SDL_CloseIO(f);
     std::lock_guard<std::mutex> l(A.task.m); A.task.stopAsked = true;
@@ -1132,13 +1269,20 @@ static void PumpTask() {
         } else if (cancelled) Say("Download stopped. Nothing was installed.");
         return;
     }
+    if (kind == "runtime" || kind == "tools") {   // Linux downloads: their dialog shows a failure; read the state again
+        if (result == 1) { A.lx.dialog.clear(); Say(kind == "runtime" ? "GE-Proton is in place" : "The Linux build tools are in place"); }
+        else if (cancelled) Say("Download stopped. Nothing was installed.");
+        if (kind == "runtime") A.lx.asked = false; else A.lx.toolsAsked = false;
+        return;
+    }
     if (kind == "build") {
         ReloadLibrary();   // the engine recorded the build (or nothing changed)
         if (result == 1) Say(title + " is built");
         else if (cancelled) Say("Build stopped. Build again to continue where it stopped.");
         else Say(reason.empty() ? "The build stopped. The log on the Details page says why." : reason);
     } else {
-        if (exited) { char b[160]; snprintf(b, sizeof b, "%s closed (exit code %d)", title.c_str(), code); Say(b); }
+        if (exited && cancelled) Say(title + " was stopped");
+        else if (exited) { char b[160]; snprintf(b, sizeof b, "%s closed (exit code %d)", title.c_str(), code); Say(b); }
         else Say(reason.empty() ? "The game could not be started." : reason);
     }
 }
@@ -1206,7 +1350,7 @@ static void AddDrawer(float W, float H) {
     Game* gp = Sel(); if (!gp) { A.addOpen = false; return; }
     Game& g = *gp;
     if (A.addJustOpened) { ImGui::OpenPopup("add_game"); A.addJustOpened = false; }
-    float dw = std::min(A.S(580.f), W * 0.56f);
+    float dw = std::min(A.S(580.f), std::max(W * 0.56f, std::min(W, A.S(480.f))));
     ImGui::SetNextWindowPos(ImVec2(W - dw, 0)); ImGui::SetNextWindowSize(ImVec2(dw, H));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(A.S(24.f), A.S(20.f)));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
@@ -1302,7 +1446,7 @@ static void AddDrawer(float W, float H) {
         }
         if (justDone) {
             ImGui::Dummy(ImVec2(0, A.S(6.f)));
-            Wrapped("Done. The game is ready, and its art has its colour back.", T->success, 16.f);
+            Wrapped("Build complete. Check compatibility before playing.", T->success, 16.f);
             ImGui::Dummy(ImVec2(0, A.S(4.f)));
             if (Btn("Play##d", ImVec2(A.S(160.f), A.S(48.f)), true)) { ImGui::CloseCurrentPopup(); A.addOpen = false; StartPlay(g); }
         }
@@ -1339,10 +1483,10 @@ static void ManageMenu(Game& g, int idx) {
             if (dir.empty() || !SDL_GetPathInfo(dir.c_str(), &pi)) Say(dir.empty() ? "No folder recorded for this game yet" : "That folder does not exist on this PC");
             else { std::string url = "file://" + std::string(dir[0] == '/' ? "" : "/"); for (char ch : dir) url += ch == '\\' ? '/' : ch; if (!SDL_OpenURL(url.c_str())) Say(std::string("Could not open the folder: ") + SDL_GetError()); }
         }
-        if (item("Open saves")) Say("TEMP: Open saves is not connected yet");
+        ImGui::BeginDisabled(); item("Open saves (not available)"); ImGui::EndDisabled();
         if (item("Change game files")) { if (g.state == State::NotPorted) Say("Not ported yet: nothing to change"); else { A.sel = idx; GoPage(App::ScFiles); } }
         if (item("Build log")) { A.sel = idx; GoPage(App::ScDetails); }
-        if (item("Remove build")) Say("TEMP: Remove build is not connected yet");
+        ImGui::BeginDisabled(); item("Remove build (not available)"); ImGui::EndDisabled();
         ImGui::PopFont();
         ImGui::EndPopup();
     }
@@ -1350,170 +1494,170 @@ static void ManageMenu(Game& g, int idx) {
 }
 
 // The selected-game panel: art, title, year, state word, one primary action, Manage. `expanded` = Game details screen.
-static void SelectedPanel(float h, bool expanded) {
+static void SelectedPanel(float h, bool expanded, float panelW) {
     Game* gp = Sel(); if (!gp) return;
-    Game& g = *gp;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p0 = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
-    ImVec2 p1(p0.x + w, p0.y + h);
-    Panel(p0, p1);   // a libadwaita card: 12 px corners, faint outline
-    float pad = A.S(18.f), tx = p0.x + pad;
-    if (w >= A.S(620.f)) {   // the art beside the text; a narrow pane keeps the text only (the tile below shows the art)
-        ImVec2 a0(p0.x + pad, p0.y + pad), a1(a0.x + (h - pad * 2) * 0.75f, p1.y - pad);
-        DrawTile(dl, a0, a1, g, 0.f, 1.35f);
-        TileCorners(dl, a0, a1, Opaque(T->cardBg, T->windowBg));
-        dl->AddRect(a0, a1, Col(T->border), A.S(theme::kRadiusCard), 0, 1.f);
-        tx = a1.x + A.S(28.f);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(tx, p0.y + pad));
-    char meta[160];
-    snprintf(meta, sizeof meta, "%d%s%s", g.year, g.titleId.empty() ? "" : "   ·   ", g.titleId.c_str());
-    ImGui::PushFont(A.fMono, A.S(15.f)); ImGui::PushStyleColor(ImGuiCol_Text, ColV(T->accent)); ImGui::TextUnformatted(meta); ImGui::PopStyleColor(); ImGui::PopFont();
-    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y));
-    ImGui::PushFont(A.fHeadBold, A.S(expanded ? 32.f : 30.f)); ImGui::PushTextWrapPos(p1.x - pad - ImGui::GetWindowPos().x + ImGui::GetScrollX()); ImGui::TextUnformatted(g.title.c_str()); ImGui::PopTextWrapPos(); ImGui::PopFont();
-    ImVec2 sp = ImGui::GetCursorScreenPos(); sp.x = tx; sp.y += A.S(6.f);
-    float sw = StateLine(dl, sp, g, A.S(22.f));
-    (void)sw;
-    ImGui::SetCursorScreenPos(ImVec2(tx, sp.y + A.S(34.f)));
+    Game& g = *gp; ImDrawList* dl = ImGui::GetWindowDrawList();
+    GameThemeScope gameTheme(g.id);
+    ImVec2 p0 = ImGui::GetCursorScreenPos(); float w = std::min(panelW, ImGui::GetContentRegionAvail().x), pad = A.S(24.f);
+    bool sideArt = w >= A.S(720.f), art = w >= A.S(220.f);
+    float tx = p0.x + pad + (sideArt ? A.S(128.f) : 0.f), right = p0.x + w - pad;
+    ImDrawListSplitter split; split.Split(dl, 2); split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(tx, p0.y + pad + (art && !sideArt ? A.S(164.f) : 0.f)));
+    ImGui::BeginGroup();
+    ImGui::PushTextWrapPos(right - ImGui::GetWindowPos().x + ImGui::GetScrollX());
+    char meta[160]; snprintf(meta, sizeof meta, "%d%s%s", g.year, g.titleId.empty() ? "" : "   /   ", g.titleId.c_str());
+    Wrapped(meta, T->dimFg, 14.f);
+    Heading(g.title.c_str(), expanded ? 28.f : 24.f);
+    ImVec2 sp = ImGui::GetCursorScreenPos(); StateLine(dl, sp, g, A.S(18.f));
+    ImGui::Dummy(ImVec2(1, A.S(28.f)));
     std::string line;
-    bool bld = BuildingGame(g) || (g.state == State::Building);
+    bool bld = BuildingGame(g) || g.state == State::Building;
     if (bld) { std::lock_guard<std::mutex> l(A.task.m); char b[96]; snprintf(b, sizeof b, "Step %d of 5: %s, %d%%", StageOf(A.task.step) + 1, kStages[StageOf(A.task.step)], (int)A.task.pct); line = b; }
     else if (g.state == State::ReadyToBuild && g.hasEstimate) { char b[96]; snprintf(b, sizeof b, "Your files are in place. About %d min, %.1f GB.", g.estMinutes, g.estGb); line = b; }
-    else if (g.state == State::NotAdded) line = "No game files found. This only means the launcher has not seen them; it cannot tell whether you own the game.";
-    else if (g.state == State::WrongVersion) line = "Your files are version " + g.version + ". The port needs " + g.needsUpdate + ": add the update package.";
-    else if (g.state == State::NotPorted) line = g.children.empty() ? "Listed as in the README table; it cannot be built yet." : "Holds Ratchet & Clank, Going Commando and Up Your Arsenal. Not ported yet.";
-    else if (g.state == State::Built) line = "Built with port " + g.builtPortVersion + ". Ready to play.";
+    else if (g.state == State::NotAdded) line = "Choose your own game files to begin setup.";
+    else if (g.state == State::WrongVersion) line = "Your files are version " + g.version + ". The port needs " + g.needsUpdate + ": locate the update package.";
+    else if (g.state == State::NotPorted) line = g.children.empty() ? "Setup is not available for this entry yet." : "Collection games are listed below with their individual setup and compatibility states.";
+    else if (g.state == State::Built) line = "Executable built with port " + g.builtPortVersion + ".";
     else if (g.state == State::PortUpdated) line = ChangedWhy(g);
     else if (!g.reason.empty()) line = g.reason;
-    ImGui::PushTextWrapPos(p1.x - pad - ImGui::GetWindowPos().x + ImGui::GetScrollX());
     Wrapped(line.c_str(), T->dimFg, 16.f);
-    if (!bld && (g.state == State::ReadyToBuild || g.state == State::Built || g.state == State::PortUpdated)) {   // 
-        std::string d = PlayDisclaimer(g); unsigned c = 0;
-        if (!d.empty()) { ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y)); PlayWord(g.playability, c); Wrapped(d.c_str(), c == T->accent || c == T->success ? T->dimFg : T->warning, 15.f); }
-    }
+    std::string compatibility = PlayDisclaimer(g);
+    Wrapped(compatibility.empty() ? "Compatibility: not recorded for this entry." : compatibility.c_str(), T->dimFg, 15.f);
     ImGui::PopTextWrapPos();
-
-    // buttons at the bottom of the panel
-    float by = p1.y - pad - A.S(50.f);
+    float by = std::max(p0.y + h - pad - A.S(42.f), ImGui::GetCursorScreenPos().y + A.S(18.f));
     ImGui::SetCursorScreenPos(ImVec2(tx, by));
-    const char* lab = PrimaryLabel(g);
-    ImVec2 bs(std::min(A.S(190.f), std::max(A.S(120.f), p1.x - pad - tx - BtnW("Manage") - BtnW("Details") - A.S(24.f))), A.S(50.f));
+    const char* lab = PrimaryLabel(g); float available = right - tx;
     if (bld) {
-        float pr = std::min(1.f, A.task.pct / 100.f); ImVec2 q = ImGui::GetCursorScreenPos();
-        dl->AddRectFilled(q, ImVec2(q.x + A.S(300.f), q.y + A.S(14.f)), Col(T->windowBg), A.S(7.f)); dl->AddRect(q, ImVec2(q.x + A.S(300.f), q.y + A.S(14.f)), Col(T->border), A.S(7.f));
-        dl->AddRectFilledMultiColor(q, ImVec2(q.x + A.S(300.f) * pr, q.y + A.S(14.f)), Col(T->accentBg), Col(T->accent), Col(T->accent), Col(T->accentBg));
-        ImGui::Dummy(ImVec2(A.S(300.f), A.S(14.f)));
-        ImGui::SameLine(0, A.S(14.f)); ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, q.y - A.S(12.f)));
+        float pr = std::clamp(A.task.pct / 100.f, 0.f, 1.f), pw = std::max(A.S(40.f), std::min(A.S(260.f), available - A.S(120.f)));
+        ImVec2 q = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(ImVec2(q.x, q.y + A.S(16.f)), ImVec2(q.x + pw, q.y + A.S(23.f)), Col(T->buttonBg), A.S(3.f));
+        dl->AddRectFilled(ImVec2(q.x, q.y + A.S(16.f)), ImVec2(q.x + pw * pr, q.y + A.S(23.f)), Col(T->accentBg), A.S(3.f));
+        ImGui::Dummy(ImVec2(pw, A.S(42.f))); ImGui::SameLine(0, A.S(12.f));
         ImGui::BeginDisabled(A.task.stopAsked);
-        if (Btn(A.task.stopAsked ? "Stopping...##cancel" : "Cancel##cancel", ImVec2(BtnW("Stopping..."), A.S(38.f)), false)) CancelBuild();
+        if (Btn(A.task.stopAsked ? "Stopping...##cancel" : "Cancel##cancel", ImVec2(0, A.S(42.f)), false)) CancelBuild();
         ImGui::EndDisabled();
-        if (!expanded) { ImGui::SameLine(0, A.S(12.f)); if (Btn("Details##d", ImVec2(BtnW("Details"), A.S(38.f)), false)) GoPage(App::ScDetails); }
-    } else if (lab) {
-        if (Btn((std::string(lab) + "##primary").c_str(), bs, true)) Action(g, A.sel);
-        if (ImGui::IsWindowAppearing() || A.firstFrame) ImGui::SetItemDefaultFocus();
-        ImGui::SameLine(0, A.S(12.f));
     } else {
-        Dim("Nothing to do yet. The entry follows the README table.");
-        ImGui::SetCursorScreenPos(ImVec2(tx + A.S(420.f), by));
-    }
-    if (!bld) {
-        if (Btn("Manage##m", ImVec2(BtnW("Manage"), A.S(50.f)), false)) ImGui::OpenPopup("manage");
+        if (lab) {
+            bool inlineActions = BtnW(lab) + BtnW("Manage") + A.S(12.f) <= available;
+            float primaryW = inlineActions ? std::max(BtnW(lab), A.S(120.f)) : available;
+            if (Btn((std::string(lab) + "##primary").c_str(), ImVec2(primaryW, A.S(42.f)), true)) Action(g, A.sel);
+            if (inlineActions) ImGui::SameLine(0, A.S(12.f));
+        }
+        if (Btn("Manage##m", ImVec2(BtnW("Manage"), A.S(42.f)), false)) ImGui::OpenPopup("manage");
         ManageMenu(g, A.sel);
-        if (!expanded) { ImGui::SameLine(0, A.S(12.f)); if (Btn("Details##d", ImVec2(BtnW("Details"), A.S(50.f)), false)) GoPage(App::ScDetails); }
     }
-    ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y));
-    ImGui::Dummy(ImVec2(w, A.S(14.f)));
+    float bottom = std::max(by + A.S(42.f) + pad, ImGui::GetCursorScreenPos().y + pad);
+    ImGui::EndGroup();
+    split.SetCurrentChannel(dl, 0); Panel(p0, ImVec2(p0.x + w, bottom));
+    dl->AddRectFilled(ImVec2(p0.x + pad, p0.y + A.S(8.f)), ImVec2(p0.x + w - pad, p0.y + A.S(11.f)), Col(T->accent), A.S(1.5f));
+    if (art) {
+        ImVec2 a(sideArt ? p0.x + pad : p0.x + (w - A.S(104.f)) * .5f, p0.y + pad);
+        ImVec2 b(a.x + A.S(104.f), std::min(bottom - pad, a.y + A.S(144.f)));
+        DrawTile(dl, a, b, g, 0.f, 0.8f, true);
+        TileCorners(dl, a, b, T->cardBg);
+    }
+    split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, bottom)); ImGui::Dummy(ImVec2(w, A.S(20.f)));
 }
 
+// Each card is one navigable action. Focus selects; activation opens details without starting a game.
 static void DrawCard(Game& g, int idx, ImVec2 size, bool& selectMe) {
+    GameThemeScope gameTheme(g.id);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImVec2 p = ImGui::GetCursorScreenPos(), b(p.x + size.x, p.y + size.y);
     char id[32]; snprintf(id, sizeof id, "card%d", idx);
-    ImGui::PushStyleColor(ImGuiCol_NavCursor, IM_COL32(0, 0, 0, 0));   // our own ring, shaped like the widget
-    ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, IM_COL32(0, 0, 0, 0));
+    selectMe = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
+    bool body = A.inBody;
+    if (FocusDue(App::FocusContent) && A.sel != idx) A.inBody = false;
     NavItemDone(("tile " + g.id).c_str());
-    bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused(), clicked = ImGui::IsItemClicked() || ImGui::IsItemActivated();
-    if (clicked || (foc && A.sel != idx && (ImGui::GetCurrentContext()->NavCursorVisible || ImGui::IsItemActive()))) selectMe = true;
-    ImVec2 a0 = p, a1(p.x + size.x, p.y + size.x * 1.333f);
-    DrawTile(dl, a0, a1, g, (hov || foc) ? 1.f : 0.f, 0.75f + 0.25f * (size.x / A.S(150.f)));
-    TileCorners(dl, a0, a1, T->windowBg);
-    float rr = A.S(theme::kRadiusCard);
-    dl->AddRect(a0, a1, Col(T->border), rr, 0, 1.f);
-    if (A.sel == idx) dl->AddRect(ImVec2(a0.x - A.S(3.f), a0.y - A.S(3.f)), ImVec2(a1.x + A.S(3.f), a1.y + A.S(3.f)), Col(T->accent), rr + A.S(3.f), 0, A.S(theme::kFocusRing));
-    if (foc && ImGui::GetCurrentContext()->NavCursorVisible)
-        dl->AddRect(ImVec2(a0.x - A.S(6.f), a0.y - A.S(6.f)), ImVec2(a1.x + A.S(6.f), a1.y + A.S(6.f)), Col(T->accent), rr + A.S(6.f), 0, A.S(theme::kFocusRing));
-    StateLine(dl, ImVec2(p.x + A.S(2.f), a1.y + A.S(8.f)), g, A.S(15.f));
-    if (BuildingGame(g)) {
-        float pr = std::min(1.f, A.task.pct / 100.f);
-        dl->AddRectFilled(ImVec2(a0.x, a1.y - A.S(5.f)), ImVec2(a0.x + size.x * pr, a1.y), Col(T->accentBg));
+    A.inBody = body;
+    bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused();
+    if (foc && ImGui::GetCurrentContext()->NavCursorVisible && A.focusReq != App::FocusContent) A.sel = idx;
+    float rr = A.S(theme::kRadiusCard), pad = A.S(18.f), artH = A.S(72.f), textW = size.x - pad * 2;
+    dl->AddRectFilled(p, b, Col(T->cardBg), rr);
+    dl->AddRect(p, b, Col((hov || foc) ? T->accent : T->border), rr, 0, A.S(1.f));
+    dl->PushClipRect(ImVec2(p.x + 1, p.y + 1), ImVec2(b.x - 1, b.y - 1), true);
+    LoadArt(g);
+    if (g.art.grey) {
+        ImVec2 a0(p.x + pad, p.y + A.S(12.f)), a1(b.x - pad, p.y + artH);
+        float ta = (a1.x - a0.x) / (a1.y - a0.y), ia = (float)g.art.w / g.art.h;
+        float u = ia > ta ? (1.f - ta / ia) * 0.5f : 0.f;
+        float v = ia < ta ? (1.f - ia / ta) * 0.5f : 0.f;
+        dl->AddImage((ImTextureID)(intptr_t)(g.art.colour ? g.art.colour : g.art.grey), a0, a1, ImVec2(u, v), ImVec2(1-u, 1-v));
+    } else {
+        CardBanner(dl, ImVec2(p.x + pad, p.y + A.S(12.f)), ImVec2(b.x - pad, p.y + artH), g);
     }
+    dl->AddText(A.fHeadBold, A.S(18.f), ImVec2(p.x + pad, p.y + artH + A.S(8.f)), Col(T->windowFg), g.title.c_str(), nullptr, textW);
+    StateLine(dl, ImVec2(p.x + pad, b.y - A.S(56.f)), g, A.S(14.f));
+    unsigned pc; const char* word = PlayWord(g.playability, pc);
+    std::string compatibility = std::string("Compatibility: ") + (word ? word : "Not recorded");
+    std::string label = Fit(compatibility, textW, A.fBody, A.S(13.f));
+    dl->AddText(A.fBody, A.S(13.f), ImVec2(p.x + pad, b.y - A.S(30.f)), Col(T->dimFg), label.c_str());
+    if (BuildingGame(g)) {
+        float pr = std::clamp(A.task.pct / 100.f, 0.f, 1.f);
+        dl->AddRectFilled(ImVec2(p.x + pad, b.y - A.S(8.f)), ImVec2(p.x + pad + textW * pr, b.y - A.S(5.f)), Col(T->accentBg), A.S(2.f));
+    }
+    dl->PopClipRect();
+    FocusRing(p, b, rr);
 }
 
 static void RowStatus(const std::string& key);
 static void LibraryScreen(float W) {
     (void)W;
     float pad = A.S(24.f);
-    ImGui::SetCursorPos(ImVec2(pad, A.S(14.f)));
-    float availW = ImGui::GetContentRegionAvail().x - pad;
-    if (A.lib.empty) {   // the engine's library lists no game at all: libadwaita's empty state
+    ImGui::SetCursorPos(ImVec2(pad, A.S(22.f)));
+    float availW = std::max(A.S(80.f), ImGui::GetContentRegionAvail().x - pad);
+    if (A.lib.empty) {
         ImGui::Dummy(ImVec2(0, A.S(30.f))); ImGui::SetCursorPosX(pad);
         ImGui::BeginDisabled(EngineBusy());
-        if (StatusPage(Ico::Library, "No games added yet", "Add the folder that holds your game files. The launcher looks in it and in the folders inside it.",
-                       "Add folder##empty", availW))
-            BrowseFolder(-1, "loc|library_folders|--add");
+        if (StatusPage(Ico::Library, "No games added yet", "Choose a folder containing your own game files to get started. Nothing is downloaded.",
+                       "Add folder##empty", availW)) BrowseFolder(-1, "loc|library_folders|--add");
         ImGui::EndDisabled();
-        ImGui::SetCursorPosX(pad);
-        RowStatus("l|library_folders");
+        ImGui::SetCursorPosX(pad); RowStatus("l|library_folders");
         return;
     }
     if (!A.lib.error.empty()) {
-        if (EngineBusy() && A.busyKey == kFirstScan) {     // first start: the engine is writing library.json
+        if (EngineBusy() && A.busyKey == kFirstScan) {
             Dim("First start: looking for your games and writing library.json next to the launcher.");
-            RowStatus(kFirstScan);
-            return;
+            RowStatus(kFirstScan); return;
         }
-        StatusPage(Ico::Warning, "The library could not be read", (A.lib.error + ". Start the launcher with --library FILE, or put library.json next to it.").c_str(), nullptr, availW);
-        ImGui::SetCursorPosX(pad);
-        RowStatus(kFirstScan);                              // the first-start scan's message when it failed
-        return;
+        StatusPage(Ico::Warning, "The library could not be read", (A.lib.error + ". Check the library file or start with --library FILE.").c_str(), nullptr, availW);
+        ImGui::SetCursorPosX(pad); RowStatus(kFirstScan); return;
     }
-    // filters: a linked toggle group
-    int nReady = 0, nNot = 0;
-    for (auto& g : A.lib.games) (InReady(g) ? nReady : nNot)++;
-    int counts[3] = {(int)A.lib.games.size(), nReady, nNot};
-    const char* names[3] = {"All", "Ready", "Not added"};
-    std::vector<std::string> labels;
-    for (int i = 0; i < 3; i++) { char b[48]; snprintf(b, sizeof b, "%s  %d##flt%d", names[i], counts[i], i); labels.push_back(b); }
-    A.inBody = false;   // a request to focus the content skips the filters and lands on the selected game's action
-    ToggleGroup("filters", labels, &A.filter);
-    A.inBody = true;
-    ImGui::Dummy(ImVec2(0, A.S(6.f)));
-    ImGui::SetCursorPosX(pad);
     ImGui::BeginGroup();
-    float ph = std::clamp(ImGui::GetIO().DisplaySize.y * 0.36f, A.S(250.f), A.S(340.f));
-    ImGui::PushItemWidth(availW);
-    ImGui::BeginChild("selpanel", ImVec2(availW, ph + A.S(14.f)), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
-    SelectedPanel(ph, false);
-    ImGui::EndChild();
-    ImGui::PopItemWidth();
-    // grid of all games, series order, filtered only by hiding
-    float gap = A.S(14.f), minW = A.S(128.f);
-    int cols = std::max(1, std::min(8, (int)((availW + gap) / (minW + gap))));
-    float cw = std::min(A.S(240.f), (availW - gap * (cols - 1)) / cols);
-    float ch = cw * 1.333f + A.S(40.f);
+    Heading("Your library", 28.f);
+    Wrapped("Your games, files and builds in one place. Open a game to continue setup or launch a build.", T->dimFg, 15.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f))); ImGui::SetCursorPosX(pad);
+    int nReady = 0; for (auto& g : A.lib.games) if (InReady(g)) nReady++;
+    int counts[3] = {(int)A.lib.games.size(), nReady, (int)A.lib.games.size() - nReady};
+    const char* names[3] = {"All", "Files ready", "Needs setup"};
+    std::vector<std::string> labels;
+    for (int i = 0; i < 3; i++) { char b[64]; snprintf(b, sizeof b, "%s  %d##flt%d", names[i], counts[i], i); labels.push_back(b); }
+    A.inBody = false;
+    ToggleGroup("filters", labels, &A.filter, availW);
+    A.inBody = true;
+    ImGui::Dummy(ImVec2(0, A.S(16.f)));
+    float gap = A.S(16.f), minW = A.S(260.f);
+    int cols = std::max(1, std::min(4, (int)((availW + gap) / (minW + gap))));
+    float cw = (availW - gap * (cols - 1)) / cols, maxTitle = A.S(42.f);
+    for (auto& g : A.lib.games) maxTitle = std::max(maxTitle, A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, cw - A.S(36.f), g.title.c_str()).y);
+    float ch = A.S(72.f + 8.f + 24.f + 56.f) + maxTitle;
+    auto visible = [&](const Game& g) { return A.filter == 0 || (A.filter == 1 ? InReady(g) : !InReady(g)); };
+    if (!Sel() || !visible(*Sel())) {
+        for (int i = 0; i < (int)A.lib.games.size(); i++) if (visible(A.lib.games[i])) { A.sel = i; break; }
+    }
     int n = 0;
     for (int i = 0; i < (int)A.lib.games.size(); i++) {
         Game& g = A.lib.games[i];
         if ((A.filter == 1 && !InReady(g)) || (A.filter == 2 && InReady(g))) continue;
-        if (n % cols) ImGui::SameLine(0, gap);
-        else ImGui::SetCursorPosX(pad);
-        bool sm = false;
-        DrawCard(g, i, ImVec2(cw, ch), sm);
-        if (sm) A.sel = i;
+        if (n % cols) ImGui::SameLine(0, gap); else ImGui::SetCursorPosX(pad);
+        bool open = false; DrawCard(g, i, ImVec2(cw, ch), open);
+        if (open) { A.sel = i; GoPage(App::ScDetails); }
         n++;
     }
-    if (n == 0) StatusPage(Ico::Library, "No games here", A.filter == 1 ? "No game is ready yet. Add a game to build it." : "Every game has been added.", nullptr, availW);
+    if (n == 0) { ImGui::SetCursorPosX(pad); StatusPage(Ico::Library, "No games here", A.filter == 1 ? "No game has its files ready yet. Add a folder to begin setup." : "Every entry has its files ready.", nullptr, availW); }
     ImGui::EndGroup();
 }
 
@@ -1599,11 +1743,18 @@ static void BuildAndPlay(Game& g, float x, float w) {
             Row("Last build did not finish", why.empty() ? "The build stopped. The log below says why." : why, 0, [] {}, T->destructive);
         }
     } else if (mine && A.task.kind == "play") {
-        if (running) Row("Playing", "The game is running. The launcher waits until it closes.", 0, [] {}, T->accent);
+        if (running) Row("Playing", stopAsked ? "Stopping the game..." : "The game is running. The launcher waits until it closes; Stop ends it.",
+                         BtnW("Stopping..."), [&] {
+            ImGui::BeginDisabled(stopAsked);
+            if (Btn(stopAsked ? "Stopping...##stopg" : "Stop##stopg", ImVec2(BtnW("Stopping..."), A.S(38.f)), false)) CancelBuild();
+            ImGui::EndDisabled();
+        }, T->accent);
+        else if (exited && cancelled) { char b[160]; snprintf(b, sizeof b, "Stopped after %d s.", secs); Row("Last game run", b, 0, [] {}); }
         else if (exited) { char b[160]; snprintf(b, sizeof b, "Closed with exit code %d after %d s.", code, secs); Row("Last game run", b, 0, [] {}, code == 0 ? T->success : T->destructive); }
         else if (!reasons.empty()) Row("Could not start the game", reasons[0], 0, [] {}, T->destructive);
     }
     auto actions = [&](Game& e) {   // Build / Rebuild and Play for one game
+        GameThemeScope gameTheme(e.id);
         bool can = !TaskRunning();
         std::string bl = (e.state == State::Built || e.state == State::PortUpdated) ? "Rebuild" : "Build";
         bool canBuild = e.state == State::ReadyToBuild || e.state == State::Built || e.state == State::PortUpdated || e.state == State::NeedsAttention;
@@ -1744,7 +1895,7 @@ static const char* PlayWord(const std::string& p, unsigned& col) {
     col = T->warning;
     if (p == "boots") return "Boots";
     if (p == "menus") return "Menus";
-    if (p == "in_game") { col = T->accent; return "In game"; }
+    if (p == "in_game") { col = BaseTheme->accent; return "In game"; }
     if (p == "playable") { col = T->success; return "Playable"; }
     if (p == "completed") { col = T->success; return "Completed"; }
     if (p == "not_built") { col = T->dimFg; return "Not built"; }
@@ -1764,9 +1915,8 @@ static void DetailsScreen() {
     if (NoGame()) return;
     Game& g = *Sel();
     float w; float x = Column(1100.f, w);
-    ImGui::BeginChild("detpanel", ImVec2(w, A.S(250.f)), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
-    SelectedPanel(A.S(236.f), true);
-    ImGui::EndChild();
+    ImGui::SetCursorPosX(x);
+    SelectedPanel(A.S(260.f), true, w);
     BuildAndPlay(g, x, w);
     // boxed lists of key/value rows: two columns when the pane is wide, one when it is narrow
     bool two = w >= A.S(820.f);
@@ -1787,7 +1937,7 @@ static void DetailsScreen() {
         group(t2, two ? x + cw + gap : x, b2);
         if (two) ImGui::SetCursorPosY(std::max(y1, ImGui::GetCursorPosY()));
     };
-    pair("Readme state", [&] {
+    pair("Compatibility and setup", [&] {
         PropRow("State", g.readme.empty() ? "unknown" : g.readme);
         PropRow("Port supports it", g.supported ? "yes, it can be built" : "not yet");
         PropRow("Launcher state", StateWord(g, tmp));
@@ -1995,12 +2145,13 @@ static void SettingRow(const std::string& scope, const SDef& d) {
     RowOpt o; o.subCol = has ? col : 0; o.mono = d.kind == SK::Keys && !has;
     RowX(d.title, sub, ctrlW, [&] {
         bool busy = EngineBusy();
-        float y0 = ImGui::GetCursorPosY();
+        float x0 = ImGui::GetCursorPosX(), y0 = ImGui::GetCursorPosY();
+        bool tailBelow = ctrlW > gList.w - A.S(28.f);
         ImGui::BeginDisabled(busy || useShared);
         if (d.kind == SK::Choice) {
             ImGui::SetCursorPosY(y0 - A.S(1.f));
             int cur = ChoiceIndex(d, v);
-            if (ToggleGroup("v", d.labels, &cur) && cur >= 0) SetSetting(scope, d.key, d.values[cur]);
+            if (ToggleGroup("v", d.labels, &cur, std::max(A.S(40.f), gList.w - A.S(28.f))) && cur >= 0) SetSetting(scope, d.key, d.values[cur]);
         } else if (d.kind == SK::OnOff) {
             ImGui::SetCursorPosY(y0 + A.S(6.f));
             bool on = Lower(v) == "on";
@@ -2020,8 +2171,9 @@ static void SettingRow(const std::string& scope, const SDef& d) {
             if (PillButton("+##inc", Kind::Normal, ImVec2(A.S(38.f), 0), false) && f + d.step <= d.hi + 1e-4f) { snprintf(b, sizeof b, "%g", f + d.step); SetSetting(scope, d.key, b); }
         }
         ImGui::EndDisabled();
+        if (tailBelow && valW > 0) { ImGui::SetCursorPosX(x0); y0 = ImGui::GetCursorPosY() + A.S(4.f); }
         if (perGame) {
-            if (valW > 0) ImGui::SameLine(0, gap * 2);
+            if (valW > 0 && !tailBelow) ImGui::SameLine(0, gap * 2);
             ImGui::SetCursorPosY(y0);
             ImVec2 p = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddText(A.fBody, A.S(15.f), ImVec2(p.x, p.y + (A.S(38.f) - lblSz.y) / 2), Col(T->dimFg), "Shared");
@@ -2036,7 +2188,7 @@ static void SettingRow(const std::string& scope, const SDef& d) {
             }
             ImGui::EndDisabled();
         } else {
-            if (valW > 0) ImGui::SameLine(0, gap);
+            if (valW > 0 && !tailBelow) ImGui::SameLine(0, gap);
             ImGui::SetCursorPosY(y0);
             ImGui::BeginDisabled(busy || !inShared);   // Reset: back to the default (the shared file drops the key)
             if (PillButton("Reset##r", Kind::Flat, ImVec2(resetW, 0), false)) SetSetting(scope, d.key, "", true);
@@ -2142,7 +2294,12 @@ static void FilesScreen() {
 static std::string BaseDir() { const char* b = SDL_GetBasePath(); return b ? b : ""; }
 // ASSUMPTION: the defaults sit next to the launcher until the installer decides (launcher-plan.md "Locations").
 static std::string DefaultLocation(const std::string& key) {
-    return BaseDir() + (key == "build" ? "games" : key == "saves" ? "saves" : key == "logs" ? "logs" : "art-cache");
+    std::string leaf = key == "build" ? "games" : key == "saves" ? "saves" : key == "logs" ? "logs" : "art-cache";
+#ifdef __linux__
+    return LinuxUserDir("XDG_DATA_HOME", "/.local/share") + "/" + leaf;
+#else
+    return BaseDir() + leaf;
+#endif
 }
 static std::string LastPart(const std::string& p) {
     std::string t = p; while (t.size() > 1 && (t.back() == '/' || t.back() == '\\')) t.pop_back();
@@ -2212,6 +2369,7 @@ static void ApplyStyle();
 static void ApplyTheme() {
     bool dark = A.themePref == "dark" || (A.themePref != "light" && SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK);
     T = dark ? &theme::kDark : &theme::kLight;
+    BaseTheme = T;
     if (A.scale > 0) ApplyStyle();
 }
 static void SetThemePref(const std::string& v) {
@@ -2240,6 +2398,22 @@ static void SetPref(const char* key, bool on) { RunEngine(std::string("l|") + ke
 static void BuildingGroup(float w) {
     GroupTitle("Building", "How the launcher builds your games on this PC.", w);
     BeginBoxedList(w);
+#ifdef __linux__
+    {   // the Linux build tools (linux_kit.py): Build uses them once they are in place
+        LinuxInfo& x = A.lx;
+        if (!x.toolsAsked && !EngineBusy() && !A.shotMode) ToolsStatus();
+        bool dl = TaskRunning() && A.task.kind == "tools";
+        std::string sub = !x.toolsLoaded ? std::string("Checking...") : !x.toolsError.empty() ? x.toolsError
+                        : x.toolsReady ? "In place: Build compiles with them (llvm-mingw, CMake and Ninja for Linux)."
+                        : "Not downloaded. Building a game on Linux needs llvm-mingw, CMake and Ninja for Linux and SDL3's package, each at "
+                          "the version this launcher pins. Without them Build uses a MinGW-w64 compiler on your PATH, if you have one.";
+        Row("Linux build tools", dl ? std::string("Downloading...") : sub, BtnW("Download"), [&] {
+            ImGui::BeginDisabled(TaskRunning() || !x.toolsLoaded || x.toolsReady);
+            if (PillButton("Download##lk", Kind::Normal, ImVec2(BtnW("Download"), 0), false)) x.dialog = "tools";
+            ImGui::EndDisabled();
+        }, x.toolsReady ? T->success : 0);
+    }
+#endif
     {
         std::string msg; unsigned col = 0;
         bool has = RowMsg("l|debug_info", msg, col);
@@ -2343,7 +2517,7 @@ static void OnlineGroup(float w) {
         Row("Online play", has ? msg : sub, ToggleGroupW(kLabels), [&] {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() - A.S(1.f));
             ImGui::BeginDisabled(EngineBusy());
-            if (ToggleGroup("onlinemethod", kLabels, &cur)) SetOnline("o|method", {"--method", kVals[cur]});
+            if (ToggleGroup("onlinemethod", kLabels, &cur, std::max(A.S(40.f), gList.w - A.S(28.f)))) SetOnline("o|method", {"--method", kVals[cur]});
             ImGui::EndDisabled();
         }, col);
     }
@@ -2408,6 +2582,139 @@ static void OnlineGroup(float w) {
     EndBoxedList();
 }
 
+#ifdef __linux__
+// Proton (Linux): which Proton the games run with. The pinned GE-Proton (downloaded after the Download dialog), or one
+// the player already has (Steam's compatibility tools, Valve's Proton, or a folder they add); umu-launcher when installed.
+static void ProtonGroup(float w) {
+    LinuxInfo& x = A.lx;
+    if (!x.asked && !EngineBusy() && !A.shotMode) ProtonAction("get");
+    GroupTitle("Proton", "The games are Windows programs: on Linux they run through Proton, each game in its own Wine prefix.", w);
+    BeginBoxedList(w);
+    std::string pinnedName = x.pinnedVersion.empty() ? std::string("GE-Proton") : x.pinnedVersion;
+    std::string label = x.selected == "pinned" ? pinnedName + " (tested)" : LastPart(x.selected);
+    for (auto& v : x.versions) if (v.id == x.selected) label = v.name + (v.version != v.name ? "  ·  " + v.version : "");
+    float cw = std::min(A.S(300.f), std::max(A.S(160.f), w * 0.4f));
+    Row("Run games with", !x.loaded ? std::string("Checking...") : x.selected == "pinned" ? "GE-Proton at the release this port is tested with, downloaded once from its GitHub release."
+                                                                                       : "A Proton already on this PC: " + x.selected,
+        cw, [&] {
+        ImGui::BeginDisabled(EngineBusy() || TaskRunning());
+        ImGui::SetNextItemWidth(cw);
+        std::string pick;
+        if (ImGui::BeginCombo("##proton_choice", label.c_str())) {
+            if (ImGui::Selectable((pinnedName + " (tested)").c_str(), x.selected == "pinned")) pick = "pinned";
+            for (auto& v : x.versions) {
+                ImGui::PushID(v.id.c_str());
+                if (ImGui::Selectable((v.name + (v.version != v.name ? "  ·  " + v.version : "")).c_str(), x.selected == v.id)) pick = v.id;
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        if (!pick.empty() && pick != x.selected) ProtonAction("select", {"--id", pick});
+        ImGui::EndDisabled();
+    }, 0, x.selected != "pinned");
+    bool dl = TaskRunning() && A.task.kind == "runtime";
+    Row(pinnedName.c_str(), dl ? std::string("Downloading...") : x.pinnedReady ? "Downloaded and checked." : "Not downloaded yet (" + Megabytes(x.pinnedBytes) + ").",
+        BtnW("Download"), [&] {
+        ImGui::BeginDisabled(TaskRunning() || x.pinnedReady || !x.loaded);
+        if (PillButton("Download##ge", Kind::Normal, ImVec2(BtnW("Download"), 0), false)) x.dialog = "runtime";
+        ImGui::EndDisabled();
+    }, x.pinnedReady ? T->success : 0);
+    Row("Add a Proton folder", "A Proton the launcher did not find: choose its folder (the one holding the files proton and version).",
+        BtnW("Add folder", Ico::Folder), [&] {
+        ImGui::BeginDisabled(EngineBusy() || TaskRunning());
+        if (PillButton("Add folder##proton", Kind::Normal, ImVec2(BtnW("Add folder", Ico::Folder), 0), false, Ico::Folder)) BrowseFolder(-1, "proton|add|");
+        ImGui::EndDisabled();
+    });
+    Row("Use umu-launcher when installed", x.umu.empty() ? std::string("Not installed: games start with Proton directly, as Steam would, without Steam.")
+                                                          : "Installed (" + x.umu + "): games start through it, in Steam's runtime container.",
+        A.S(48.f), [&] {
+        bool on = x.umuMode != "off";
+        ImGui::BeginDisabled(EngineBusy());
+        if (Switch("##umu", &on)) ProtonAction("umu", {"--mode", on ? "auto" : "off"});
+        ImGui::EndDisabled();
+    });
+    if (x.loaded && !x.error.empty() && !(x.selected == "pinned" && !x.pinnedReady)) PropRow("Status", x.error, false, T->destructive);
+    else if (x.loaded && x.ready) PropRow("Status", "Ready to play.", false, T->success);
+    EndBoxedList();
+}
+// The two Linux download dialogs: what is downloaded, from where, how it is checked; nothing until Download.
+static void LinuxDialog(float W, float H) {
+    LinuxInfo& x = A.lx;
+    bool rt = x.dialog == "runtime";
+    if (!ImGui::IsPopupOpen("linuxdl")) ImGui::OpenPopup("linuxdl");
+    float dw = std::min(A.S(640.f), W - A.S(32.f));
+    ImGui::SetNextWindowPos(ImVec2(W * 0.5f, H * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(dw, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(A.S(24.f), A.S(20.f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, A.S(theme::kRadiusCard));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ColV(T->dialogBg)); ImGui::PushStyleColor(ImGuiCol_Border, ColV(T->border));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ColV(0x00000666u));
+    bool open = ImGui::BeginPopupModal("linuxdl", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleColor(3); ImGui::PopStyleVar(2);
+    if (!open) { x.dialog.clear(); return; }
+    float w = dw - A.S(48.f);
+    bool mine = A.task.kind == (rt ? "runtime" : "tools"), running = mine && TaskRunning();
+    int result; float pct; bool stopAsked, cancelled; std::string step; std::vector<std::string> reasons;
+    { std::lock_guard<std::mutex> l(A.task.m); result = A.task.result; pct = A.task.pct; stopAsked = A.task.stopAsked; cancelled = A.task.cancelled; step = A.task.step; reasons = A.task.reasons; }
+    bool failed = mine && !running && result == 0 && !cancelled;
+    std::string ver = x.pinnedVersion.empty() ? std::string("GE-Proton") : x.pinnedVersion;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + w);
+    ImGui::PushFont(A.fHeadBold, A.S(26.f));
+    ImGui::TextUnformatted(rt ? (running ? "Downloading GE-Proton" : "Download GE-Proton?") : (running ? "Downloading the build tools" : "Download the Linux build tools?"));
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, A.S(4.f)));
+    Wrapped(rt ? ("The games are Windows programs; on Linux they run through Proton. This downloads " + ver + ", the release this port "
+                  "is tested with, from its own GitHub release. It is not made by this project and keeps its own licences.").c_str()
+               : "Building a game on Linux needs a compiler for Windows programs: llvm-mingw, CMake and Ninja for Linux, and SDL3's "
+                 "package for the game folder. Each comes from its own project's release page, at the version this launcher pins.",
+            T->windowFg, 16.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f)));
+    BeginBoxedList(w);
+    if (rt) {
+        PropRow("Download", Megabytes(x.pinnedBytes) + ", once");
+        PropRow("From", HostOf(x.pinnedUrl) + "  (GloriousEggroll/proton-ge-custom)");
+        PropRow("Address", x.pinnedUrl, true);
+        PropRow("Goes to", x.pinnedPath, true);
+    } else {
+        std::string what; for (auto& e : x.toolsEntries) what += (what.empty() ? "" : ", ") + e;
+        PropRow("What", what.empty() ? std::string("llvm-mingw, CMake, Ninja, SDL3") : what);
+        PropRow("From", "github.com (each project's own releases)");
+        PropRow("Goes to", x.toolsPath, true);
+    }
+    PropRow("Checked", "Against the SHA-256 this launcher pins for it. A download that does not match is deleted; nothing of it is kept.");
+    EndBoxedList();
+    ImGui::Dummy(ImVec2(0, A.S(6.f)));
+    Wrapped(rt ? "Nothing is downloaded unless you choose Download. Already have Proton (Steam, or GE-Proton you installed)? Choose it under "
+                 "Run games with instead; nothing is downloaded then."
+               : "Nothing is downloaded unless you choose Download, and nothing about you or your games is sent.", T->dimFg, 14.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f)));
+    if (running) {
+        ProgressBar(w, pct / 100.f);
+        char b[96]; snprintf(b, sizeof b, "%d%%   ·   %s", (int)pct, step.empty() ? "starting" : step == "download" ? "downloading" : step == "unpack" ? "unpacking" : step.c_str());
+        Dim(b, 14.f);
+        ImGui::Dummy(ImVec2(0, A.S(6.f)));
+        ImGui::BeginDisabled(stopAsked);
+        if (Btn(stopAsked ? "Stopping...##lc" : "Cancel##lc", ImVec2(BtnW("Stopping..."), A.S(42.f)), false)) CancelBuild();
+        ImGui::EndDisabled();
+    } else {
+        if (failed) {
+            std::string r; for (auto& m : reasons) r += (r.empty() ? "" : "\n") + m;
+            Wrapped(r.empty() ? "The download did not finish. Nothing was installed." : r.c_str(), T->destructive, 15.f);
+            ImGui::Dummy(ImVec2(0, A.S(6.f)));
+        } else if (mine && cancelled) { Wrapped("Download stopped. Nothing was installed.", T->dimFg, 15.f); ImGui::Dummy(ImVec2(0, A.S(6.f))); }
+        ImGui::BeginDisabled(TaskRunning());
+        if (Btn(failed ? "Try again##ld" : "Download##ld", ImVec2(BtnW("Try again") + A.S(20.f), A.S(42.f)), true)) StartLinuxTask(rt ? "runtime" : "tools");
+        ImGui::EndDisabled();
+        if (A.firstFrame || ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+        ImGui::SameLine(0, A.S(10.f));
+        if (Btn("Not now##ln", ImVec2(BtnW("Not now") + A.S(12.f), A.S(42.f)), false) || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+            x.dialog.clear(); ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+}
+#endif
 static void SettingsScreen() {
     float side = A.S(24.f), avail = ImGui::GetContentRegionAvail().x;
     float w = std::min(avail - side * 2, A.S(760.f)), x = std::max(side, (avail - w) / 2);
@@ -2415,6 +2722,9 @@ static void SettingsScreen() {
     ImGui::BeginGroup();
     ImGui::PushID("settings");
 
+#ifdef __linux__
+    ProtonGroup(w);
+#endif
     GroupTitle("Appearance", nullptr, w);
     BeginBoxedList(w);
     {
@@ -2426,7 +2736,7 @@ static void SettingsScreen() {
         Row("Style", has ? msg : std::string(A.themePref == "system" ? "Follows your system's light or dark setting." : "Always this style, whatever the system uses."),
             ToggleGroupW(kLabels), [&] {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() - A.S(1.f));   // the group is 40 px high, the row's control slot 38
-            if (ToggleGroup("style", kLabels, &cur)) SetThemePref(kModes[cur]);
+            if (ToggleGroup("style", kLabels, &cur, std::max(A.S(40.f), gList.w - A.S(28.f)))) SetThemePref(kModes[cur]);
         }, col);
     }
     EndBoxedList();
@@ -2552,20 +2862,17 @@ static void DrawBackdrop(float W, float H) {
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), Col(T->windowBg));
 }
 
-static const float kHeaderH = 56.f, kFooterH = 40.f;
-static const float kCollapseW = 600.f;   // below this window width (logical px) the split view is one column
-// Navigation split view (libadwaita AdwNavigationSplitView): the sidebar's pages. Game Details is a page under Library.
+static const float kHeaderH = 64.f, kFooterH = 36.f;
+static const float kCollapseW = 600.f;   // below this logical width the header uses compact labels
+// Header-menu destinations. Game Details is a page under Library.
 static const struct { const char* label; Ico icon; App::Screen screen; } kPages[4] = {
     {"Library", Ico::Library, App::ScLibrary}, {"Files", Ico::Folder, App::ScFiles}, {"Settings", Ico::Gear, App::ScSettings}, {"About", Ico::Info, App::ScAbout}};
-// Back (the header's Back button, Esc, controller B): Game Details goes back to the Library; any other page goes to
-// the sidebar (in one column, the sidebar becomes the page; side by side, focus moves to the page's sidebar row).
+// Back (header, Esc or controller B) returns to Library with the selected game retained.
 static void GoBack() {
-    if (A.screen == App::ScDetails) { A.screen = App::ScLibrary; RequestFocus(App::FocusContent); return; }
-    if (A.collapsed) A.showSidebar = true;
-    RequestFocus(App::FocusSidebar);
+    GoPage(App::ScLibrary);
 }
 static const char* PageTitle() {
-    if (A.collapsed && A.showSidebar) return "Qwark's Awakening";
+    if (A.showSidebar) return "Navigation";
     switch (A.screen) {
         case App::ScLibrary: return "Library";
         case App::ScDetails: return "Game Details";
@@ -2585,39 +2892,48 @@ static void SidebarItems(float w) {
         ImGui::Dummy(ImVec2(0, A.S(2.f)));
     }
 }
-// Header bar (libadwaita) over the content pane, from x0 to W: the page title centred in Adwaita Sans Bold, Back at the
-// left where there is somewhere to go back to, and the main menu (three lines) at the right: Library, Settings, About.
+// A compact header over the full-width page: title and Back on the left, discovery and page menu on the right.
 // F10 or the controller's Start opens it.
 static void HeaderBar(float x0, float W) {
-    float hh = A.S(kHeaderH);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 wp = ImGui::GetWindowPos();
+    float hh = A.S(kHeaderH), bh = A.S(38.f), by = (hh - bh) / 2, pad = A.S(20.f);
+    ImDrawList* dl = ImGui::GetWindowDrawList(); ImVec2 wp = ImGui::GetWindowPos();
     dl->AddRectFilled(ImVec2(wp.x + x0, wp.y), ImVec2(wp.x + W, wp.y + hh), Col(T->headerbarBg));
-    dl->AddLine(ImVec2(wp.x + x0, wp.y + hh - 1), ImVec2(wp.x + W, wp.y + hh - 1), Col(T->border), 1.f);
-    const char* t = PageTitle();
-    ImVec2 ts = A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, 0, t);
-    dl->AddText(A.fHeadBold, A.S(18.f), ImVec2(wp.x + x0 + (W - x0 - ts.x) / 2, wp.y + (hh - ts.y) / 2), Col(T->windowFg), t);
-    float bh = A.S(38.f), by = (hh - bh) / 2;
-    bool back = A.screen == App::ScDetails || (A.collapsed && !A.showSidebar);
+    dl->AddLine(ImVec2(wp.x + x0, wp.y + hh - 1), ImVec2(wp.x + W, wp.y + hh - 1), Col(T->border));
+    bool back = A.screen != App::ScLibrary || A.showSidebar;
+    float left = x0 + pad;
     if (back) {
-        ImGui::SetCursorPos(ImVec2(x0 + A.S(8.f), by));
-        bool toLib = A.screen == App::ScDetails;
-        if (PillButton(toLib && !A.collapsed ? "Library##back" : "##back", Kind::Flat, ImVec2(toLib && !A.collapsed ? 0 : A.S(42.f), bh), false, Ico::Back)) GoBack();
+        ImGui::SetCursorPos(ImVec2(left, by));
+        if (PillButton("Library##back", Kind::Flat, ImVec2(0, bh), false, Ico::Back)) GoBack();
         if (FocusDue(App::FocusBack)) TakeFocus();
+        left += ImGui::GetItemRectSize().x + A.S(16.f);
     }
-    ImGui::SetCursorPos(ImVec2(W - A.S(8.f) - A.S(42.f), by));
-    if (PillButton("##mainmenu", Kind::Flat, ImVec2(A.S(42.f), bh), false, Ico::Menu) ||
+    const char* menu = "Menu##mainmenu"; float menuW = BtnW("Menu", A.collapsed ? Ico::None : Ico::Menu);
+    float right = W - pad - menuW;
+    if (A.screen == App::ScLibrary && !A.showSidebar) {
+        const char* add = A.collapsed ? "Add files##addfiles" : "Add game files##addfiles";
+        float addW = BtnW(add, Ico::Plus); right -= addW + A.S(8.f);
+        ImGui::SetCursorPos(ImVec2(right, by));
+        ImGui::BeginDisabled(EngineBusy() || TaskRunning());
+        if (PillButton(add, Kind::Suggested, ImVec2(addW, bh), false, Ico::Plus)) BrowseFolder(-1, "loc|library_folders|--add");
+        ImGui::EndDisabled();
+    }
+    const char* title = A.screen == App::ScLibrary && !A.collapsed && !A.showSidebar ? "Qwark's Awakening" : PageTitle();
+    std::string shown = Fit(title, std::max(0.f, right - left - A.S(16.f)), A.fHeadBold, A.S(18.f));
+    dl->AddText(A.fHeadBold, A.S(18.f), ImVec2(wp.x + left, wp.y + (hh - A.S(18.f)) * 0.5f), Col(T->windowFg), shown.c_str());
+    ImGui::SetCursorPos(ImVec2(W - pad - menuW, by));
+    if (PillButton(menu, Kind::Flat, ImVec2(menuW, bh), false, A.collapsed ? Ico::None : Ico::Menu) ||
         ImGui::IsKeyPressed(ImGuiKey_F10) || ImGui::IsKeyPressed(ImGuiKey_GamepadStart)) ImGui::OpenPopup("mainmenu");
-    ImGui::SetNextWindowPos(ImVec2(wp.x + W - A.S(8.f), wp.y + hh - A.S(4.f)), ImGuiCond_Always, ImVec2(1.f, 0.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(A.S(6.f), A.S(6.f)));
+    if (FocusDue(App::FocusBack)) TakeFocus();
+    ImGui::SetNextWindowPos(ImVec2(wp.x + W - pad, wp.y + hh - A.S(4.f)), ImGuiCond_Always, ImVec2(1.f, 0.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(A.S(8.f), A.S(8.f)));
     if (ImGui::BeginPopup("mainmenu")) {
         ImGui::PushFont(A.fBody, A.S(17.f));
-        auto item = [&](const char* label) { return ImGui::Selectable(label, false, 0, ImVec2(A.S(240.f), A.S(34.f))); };
-        if (item("Library")) GoPage(App::ScLibrary);
-        if (item("Settings")) GoPage(App::ScSettings);
-        if (item("About Qwark's Awakening")) GoPage(App::ScAbout);
-        ImGui::PopFont();
-        ImGui::EndPopup();
+        for (auto& page : kPages) {
+            bool chosen = ImGui::Selectable(page.label, A.screen == page.screen, 0, ImVec2(A.S(220.f), A.S(36.f)));
+            NavItemDone(page.label);
+            if (chosen) GoPage(page.screen);
+        }
+        ImGui::PopFont(); ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
 }
@@ -2631,7 +2947,7 @@ static void Footer(float x0, float W, float H) {
     dl->AddRectFilled(ImVec2(wp.x + x0, wp.y + H - fh), ImVec2(wp.x + W, wp.y + H), Col(T->headerbarBg));
     dl->AddLine(ImVec2(wp.x + x0, wp.y + H - fh), ImVec2(wp.x + W, wp.y + H - fh), Col(T->border), 1.f);
     int ready = 0; for (auto& g : A.lib.games) if (Playable(g)) ready++;
-    char b[96]; snprintf(b, sizeof b, "%d of %d games ready", ready, (int)A.lib.games.size());
+    char b[96]; snprintf(b, sizeof b, "%d of %d builds available", ready, (int)A.lib.games.size());
     float px = A.S(15.f), y = wp.y + H - fh;
     ImVec2 ls = A.fBodySemi->CalcTextSizeA(px, FLT_MAX, 0, b);
     dl->AddText(A.fBodySemi, px, ImVec2(wp.x + x0 + A.S(20.f), y + (fh - ls.y) / 2), Col(T->windowFg), b);
@@ -2690,6 +3006,7 @@ static void ApplyStyle() {
 
 static void Frame(float dt) {
     ImGuiIO& io = ImGui::GetIO();
+    static bool popupWasOpen = false;
     float W = io.DisplaySize.x, H = io.DisplaySize.y;
     float ns = std::clamp(H / 720.f, 0.75f, 3.f);
     if (std::fabs(ns - A.scale) > 0.01f) { A.scale = ns; ApplyStyle(); }
@@ -2710,20 +3027,9 @@ static void Frame(float dt) {
     ImGui::SetNextWindowPos(ImVec2(0, 0)); ImGui::SetNextWindowSize(ImVec2(W, H));
     ImGui::Begin("root", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
     float top = A.S(kHeaderH), fh = A.S(kFooterH);
-    bool sidebarPage = A.collapsed && A.showSidebar;
-    float sw = A.collapsed ? 0.f : std::clamp(W * 0.25f, A.S(200.f), A.S(260.f));
+    bool sidebarPage = A.showSidebar;
+    float sw = 0.f;   // all normal pages own the full width; navigation is in the header menu
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (!A.collapsed) {   // the sidebar pane: its own flat header with the app's name, then the pages, full height
-        dl->AddRectFilled(ImVec2(0, 0), ImVec2(sw, H), Col(T->sidebarBg));
-        dl->AddLine(ImVec2(sw - 1, 0), ImVec2(sw - 1, H), Col(T->border), 1.f);
-        const char* app = "Qwark's Awakening";
-        ImVec2 ts = A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, 0, app);
-        dl->AddText(A.fHeadBold, A.S(18.f), ImVec2((sw - ts.x) / 2, (top - ts.y) / 2), Col(T->windowFg), app);
-        ImGui::SetCursorPos(ImVec2(0, top));
-        ImGui::BeginChild("sidebar", ImVec2(sw - 1, H - top), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoBackground);
-        SidebarItems(sw - 1);
-        ImGui::EndChild();
-    }
     HeaderBar(sw, W);
     ImGui::SetCursorPos(ImVec2(sw, top));
     if (sidebarPage) {   // one column: the sidebar is the page
@@ -2747,30 +3053,22 @@ static void Frame(float dt) {
     Footer(sw, W, H);
     // Esc / controller B: back (see GoBack) when nothing else wants the key; in the sidebar it does nothing (the top)
     bool inSidebar = std::find(A.sidebarIds.begin(), A.sidebarIds.end(), ImGui::GetFocusID()) != A.sidebarIds.end();
-    bool free = !A.addOpen && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive();
+    bool free = !popupWasOpen && !A.addOpen && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive();
     if (free && !inSidebar && !sidebarPage && (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight))) GoBack();
-    // Side by side, Left at the content's left edge goes to the sidebar and Right from the sidebar goes to the content.
-    // ImGui's own arrows only reach items that line up with the focused one, so an arrow that moved nothing within two
-    // frames (the focused id unchanged) is taken as "at the edge".
-    static struct { ImGuiID id = 0; int dir = 0, age = 0; } edge;
-    if (edge.dir && ++edge.age >= 2) {
-        if (ImGui::GetFocusID() == edge.id) RequestFocus(edge.dir < 0 ? App::FocusSidebar : App::FocusContent);
-        edge.dir = 0;
-    }
-    if (free && !A.collapsed && ImGui::GetFocusID()) {
-        bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft);
-        bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight);
-        if ((left && !inSidebar) || (right && inSidebar)) { edge.id = ImGui::GetFocusID(); edge.dir = left ? -1 : 1; edge.age = 0; }
-    }
+    // Arrow/D-pad navigation stays within the full-width page; there is no hidden sidebar focus target.
     ImGui::End();
     if (A.addOpen) AddDrawer(W, H);
     if (A.kit.open) KitDialog(W, H);
+#ifdef __linux__
+    if (!A.lx.dialog.empty()) LinuxDialog(W, H);
+#endif
+    popupWasOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
     DrawToast(W, H);
     if (A.firstFrame) ImGui::SetNavCursorVisible(true);
     A.firstFrame = false;
-    // a content page with nothing to focus (About): the page's sidebar row takes it, or in one column the Back button;
-    // any other request nothing took is dropped
-    if (A.focusReq == App::FocusContent && focusAge >= 1) { A.focusReq = A.collapsed ? App::FocusBack : App::FocusSidebar; focusAge = 0; }
+    // A page with no enabled content item returns focus to its header Back/Menu control;
+    // any other request nothing took is dropped.
+    if (A.focusReq == App::FocusContent && focusAge >= 1) { A.focusReq = App::FocusBack; focusAge = 0; }
     else if (A.focusReq != App::FocusNone && focusAge++ >= 1) A.focusReq = App::FocusNone;
 }
 
@@ -2793,6 +3091,10 @@ int main(int argc, char** argv) {
     std::string shot, screenName = "library", selectId, engine, themeArg, keyList, replay, kitUrl, relApi, symUrl, kitState; int W = 1280, H = 720; float progress = -1.f;
     const char* base = SDL_GetBasePath();
     A.libPath = std::string(base ? base : "") + "library.json";
+#ifdef __linux__   // XDG folders: the library and the games' data under ~/.local/share, the settings under ~/.config
+    A.libPath = LinuxUserDir("XDG_DATA_HOME", "/.local/share") + "/library.json";
+    A.dataDir = LinuxUserDir("XDG_CONFIG_HOME", "/.config");
+#endif
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i]; auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--library") A.libPath = next();
@@ -2814,6 +3116,7 @@ int main(int argc, char** argv) {
         else if (a == "--symbols-url") symUrl = next();       // tests: another launcher symbols address
         else if (a == "--kit-allow-local") A.kit.allowLocal = true;   // tests: file:// and 127.0.0.1 (kit.py --allow-local)
         else if (a == "--kit-state") kitState = next();       // screenshots: ready|missing|other|damaged (no kit.py status run)
+        else if (a == "--linux-dialog") A.lx.dialog = next(); // screenshots (Linux): runtime|tools, the download dialog open
         else if (a == "--data") A.dataDir = next();   // the games' data folder for the engine's settings commands (default: the engine's rule)   // screenshots: press these keys first (comma list), then print where focus is
         else if (a == "--theme") { themeArg = next(); if (themeArg != "system" && themeArg != "light" && themeArg != "dark") { fprintf(stderr, "--theme: system, light or dark\n"); return 2; } }
         else { fprintf(stderr, "usage: launcher [--library FILE] [--engine \"CMD\"] [--data DIR] [--shared-dir DIR] [--kit-root DIR] [--kit-url URL] [--release-api URL] [--symbols-url URL] [--kit-allow-local] [--screenshot OUT.png --screen library|details|add|settings|locations|files|about|sidebar|kit [--kit-state S] [--select ID] [--size WxH] [--progress F] [--replay FILE] [--live SECONDS] [--scroll PX] [--keys up,down,left,right,enter,esc,tab,f10,...]] [--theme system|light|dark]\n"); return 2; }
@@ -2827,6 +3130,9 @@ int main(int argc, char** argv) {
     A.kit.symbolsUrl = !symUrl.empty() ? symUrl : LAUNCHER_SYMBOLS_URL;
     if (A.fontDir.empty()) {
         std::string d = std::string(base ? base : "") + "fonts"; SDL_PathInfo pi;
+#ifdef __linux__   // an installed launcher: bin/launcher + share/qwarks-awakening/fonts
+        if (!SDL_GetPathInfo((d + "/AdwaitaSans-Regular.ttf").c_str(), &pi)) d = std::string(base ? base : "") + "../share/qwarks-awakening/fonts";
+#endif
         A.fontDir = SDL_GetPathInfo((d + "/AdwaitaSans-Regular.ttf").c_str(), &pi) ? d : LAUNCHER_FONT_DIR;
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
@@ -2907,6 +3213,12 @@ int main(int argc, char** argv) {
             PumpEngine();
             std::vector<std::string> o = A.engineCmd; o.push_back("get-online"); OnlineArgs(o);
             std::string out; if (RunCapture(o, out) == 0) ParseOnline(out, false); else A.online.err = out;
+#ifdef __linux__   // and the Proton choice and the build tools' state (proton.py get, linux_kit.py status: read only)
+            std::vector<std::string> pg = A.engineCmd; for (const std::string& x : {std::string("proton"), std::string("get"), std::string("--library"), A.libPath}) pg.push_back(x);
+            out.clear(); if (RunCapture(pg, out) != 0 || !ParseProton(out)) { A.lx.loaded = true; A.lx.error = out; }
+            std::vector<std::string> ks = A.engineCmd; ks.push_back("linux-kit"); ks.push_back("status");
+            out.clear(); if (RunCapture(ks, out) != 0 || !ParseTools(out)) { A.lx.toolsLoaded = true; A.lx.toolsError = out; }
+#endif
         }
     }
 
@@ -2957,8 +3269,8 @@ int main(int argc, char** argv) {
         if (A.shotMode && frames >= shotFrame && !liveHold) {
             if (!keys.empty()) {
                 auto it = A.navLabels.find(ImGui::GetFocusID());
-                printf("nav: screen=%s sidebar_page=%d collapsed=%d focus=%s\n", PageTitle(), A.showSidebar ? 1 : 0, A.collapsed ? 1 : 0,
-                       it == A.navLabels.end() ? "(none)" : it->second.c_str());
+                printf("nav: screen=%s sidebar_page=%d collapsed=%d focus=%s selected=%s\n", PageTitle(), A.showSidebar ? 1 : 0, A.collapsed ? 1 : 0,
+                       it == A.navLabels.end() ? "(none)" : it->second.c_str(), Sel() ? Sel()->id.c_str() : "(none)");
             }
             if (A.liveShot) {   // --live: what the task did, for the end-to-end check's log
                 std::lock_guard<std::mutex> l(A.task.m);

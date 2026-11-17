@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Qwark's Awakening
+Comment=Build and play your own Ratchet & Clank games
+Exec=launcher
+Terminal=false
+Categories=Game;
+StartupNotify=true

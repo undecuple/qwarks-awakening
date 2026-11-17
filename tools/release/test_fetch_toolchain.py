@@ -92,9 +92,20 @@ def test_real_manifest():
     check(not ft.validate(m, strict=True), "real toolchain.json passes --strict", ft.validate(m, strict=True))
     names = {c["name"] for c in m["components"]}
     lic = {"llvm-mingw-license", "llvm-license", "mingw-w64-license", "winpthreads-license", "lgpl-2.1-text", "ninja-license"}
-    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic,
-          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python and the kit's licence texts",
-          names)
+    linux = {"cmake-linux", "ninja-linux", "ge-proton"}
+    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic | linux,
+          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python, the kit's licence texts and "
+          "the Linux launcher's build tools and GE-Proton", names)
+    by = {c["name"]: c for c in m["components"]}
+    check({n for n, c in by.items() if c.get("linux") == "build"} == {"llvm-mingw-linux", "cmake-linux", "ninja-linux"}
+          and {n for n, c in by.items() if c.get("linux") == "runtime"} == {"ge-proton"},
+          "linux: build = llvm-mingw-linux, cmake-linux, ninja-linux; runtime = ge-proton")
+    ge = ft.expand(by["ge-proton"])
+    check(ge["url"] == "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/"
+          "GE-Proton11-7-x86_64.tar.gz" and ge["archive"] == "tar" and ge.get("strip_top")
+          and len(ge.get("sha512_published", "")) == 128 and not ge.get("kit"),
+          "ge-proton: the pinned upstream x86_64 tarball, unpacked, never in the kit", ge["url"])
+    check(by["ninja-linux"].get("exec") == ["ninja"], "ninja-linux: the zip's ninja is made executable")
     for c in m["components"]:
         e = ft.expand(c)
         if c["name"] in lic:   # licence texts: the project's own repository at the pinned tag (or the FSF's text)
@@ -232,6 +243,18 @@ def test_fetch(tmp):
     check(rc == 0 and os.path.isfile(os.path.join(cache, "trees", "lic", "X-COPYING.txt")), "--only fetches one file entry", out)
     rc, out = fetch(["--manifest", man, "--cache", cache, "--only", "nosuch"])
     check(rc == 2, "--only with an unknown name is a usage error", out)
+    # exec: a zip keeps no modes, the listed file is made executable; a listed file that is missing fails the entry
+    nz = make_zip(os.path.join(tmp, "src", "ninja-linux.zip"), {"ninja": b"#!/bin/sh\n"})
+    write_manifest(man, [comp("nj", url(nz), strip_top=False, exec=["ninja"], sha256=sha(nz)),
+                         comp("nj2", url(nz), strip_top=False, exec=["bin/ninja"], sha256=sha(nz))])
+    rc, out = fetch(["--manifest", man, "--cache", cache, "--only", "nj"])
+    check(rc == 0 and os.access(os.path.join(cache, "trees", "nj", "ninja"), os.X_OK) or os.name == "nt",
+          "exec: the zip's program is executable after the fetch", out)
+    rc, out = fetch(["--manifest", man, "--cache", cache, "--only", "nj2"])
+    check(rc == 1 and "exec: bin/ninja" in out, "exec: a listed program missing from the tree fails the entry", out)
+    check(ft.validate({"format": 1, "components": [comp("x", "https://e/x.zip", exec=["../x"], sha256="0" * 64)]}) != []
+          and ft.validate({"format": 1, "components": [comp("x", "https://e/x.zip", linux="mac", sha256="0" * 64)]}) != [],
+          "validate refuses an unsafe exec path and an unknown linux kind")
 
 
 def tree_snapshot(root):

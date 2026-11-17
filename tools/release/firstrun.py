@@ -582,20 +582,24 @@ def _find_exe(top, names):
 
 def resolve_toolchain(root, given):
     """-> (llvm_mingw, cmake, ninja). `given` (or <root>/toolchain) may be an llvm-mingw folder or a folder holding
-    llvm-mingw/, cmake/, ninja/ (fetch_toolchain.py's trees/). Nothing found = ("", "cmake", "") = GCC from PATH."""
+    llvm-mingw/, cmake/, ninja/ (fetch_toolchain.py's trees/; on Linux linux_kit.py's llvm-mingw-linux/, cmake-linux/,
+    ninja-linux/). Nothing found = ("", "cmake", "") = GCC from PATH."""
     tops = [given] if given else [os.path.join(root, "toolchain")]
     if given and not os.path.isdir(given):
         raise ValueError("The compiler folder you gave is not there.")
     for top in tops:
         if not top or not os.path.isdir(top):
             continue
-        lm = top if _find_exe(top, ["x86_64-w64-mingw32-clang"]) else os.path.join(top, "llvm-mingw")
+        # the Linux build tools (linux_kit.py) name their trees llvm-mingw-linux/, cmake-linux/, ninja-linux/
+        sub = lambda n: next((os.path.join(top, x) for x in (n, n + "-linux") if os.path.isdir(os.path.join(top, x))),
+                             os.path.join(top, n))
+        lm = top if _find_exe(top, ["x86_64-w64-mingw32-clang"]) else sub("llvm-mingw")
         if not _find_exe(lm, ["x86_64-w64-mingw32-clang"]):
             if given:
                 raise ValueError("The compiler folder you gave holds no llvm-mingw.")
             continue
-        cm = _find_exe(os.path.join(top, "cmake"), ["cmake"]) or "cmake"
-        nj = _find_exe(os.path.join(top, "ninja"), ["ninja"])
+        cm = _find_exe(sub("cmake"), ["cmake"]) or "cmake"
+        nj = _find_exe(sub("ninja"), ["ninja"])
         return lm, cm, nj
     return "", "cmake", ""
 

@@ -3,6 +3,38 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
+## [0.4.0] - 2026-11-17 (pre-release)
+
+A launcher release: a new look for the launcher and the project site, and a Linux launcher that starts the games
+through Proton. The games' code is the same as in 0.3.1, so this version has no game notes; each game's state is in
+its 0.3.1 notes and the [status table](README.md#status). Known issues of this release:
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+
+### [Launcher]
+- New look for the launcher: navy, orange and steel colours, one accent colour per game, a top bar with Add game files
+  and Menu, full-width library cards and a details panel with the game's tile. A game without art of your own shows a
+  drawn strip on its card (the game's accent, a planet, stars, its series line and year), grey until the game is built.
+  Checked in the Linux launcher with test libraries (light and dark, three window widths); the Windows launcher with
+  the new look has not been started yet.
+- The launcher on Linux: it runs natively and starts each Windows game through Proton, with one Wine prefix per game
+  and saves kept outside the prefix. Settings > Proton chooses between the GE-Proton release the port is tested with
+  (GE-Proton11-7, downloaded from its own release only after you confirm, about 564 MB, checked against a pinned
+  SHA-256) and a Proton you already have. With umu-launcher installed, games start through it; without it, through
+  Proton directly. Steam is not needed. No Linux download yet: build the launcher from source
+  ([docs/LINUX.md](docs/LINUX.md)). Run once on NixOS (2026-11-16, GE-Proton11-7, without Steam or umu-launcher):
+  the launcher's Play path started *Tools of Destruction* up to its "Press the START button" screen.
+- Stop on a running game's page ends the game, on both systems. On Linux it ends every Windows process in that game's
+  prefix (checked in the same run); on Windows it has not been tried yet.
+- Linux build tools: Settings > Building > "Linux build tools" downloads llvm-mingw, CMake, Ninja and SDL3's package,
+  each at a pinned version and SHA-256, after you confirm, so that Build works on Linux. No game has been built with
+  them yet.
+- After the update, a game built with 0.3.1 shows "Update available: rebuild". Only the version number in the port's
+  build file changed; the games' code and the patches are the same as in 0.3.1, and Play stays available, so the
+  rebuild can wait.
+- The project site has the same look: a brand bar, a section rail and grouped panels. The README links the new
+  [docs/LINUX.md](docs/LINUX.md) page and has a Linux row in its requirements table; its launcher screenshot shows
+  the new look.
+
 ## [0.3.1] - 2026-11-16 (pre-release)
 
 A fix release on top of 0.3.0: *Tools of Destruction*'s pause menu opens and closes again, *All 4 One*'s first

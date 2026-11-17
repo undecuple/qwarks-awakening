@@ -182,8 +182,13 @@ def build(text, tag, status=None, known_issues=False, games=None):
         word = (status or "").split(",")[0].strip()
         state = f"{word}: no game is playable start to finish yet" if "not playable" in (status or "") else word
         launcher_txt = f" ({state}), see {link('docs/RELEASE-CRITERIA.md')}" if pre else ""
+        # a launcher-only version (0.4.0: no game group in its section) has no game releases to point to
+        has_games = any(not g[0].startswith(LAUNCHER_GROUPS) and g[0] != SETUP_GROUP for g in groups)
+        games_txt = ("the release notes of each game are its own release of the same version." if has_games else
+                     "this version changes no game, so it has no game releases; each game's notes are in its latest "
+                     "release.")
         first = [f"{names.PRODUCT} launcher {version}{launcher_txt}. It builds the games on your PC from your own copy; "
-                 "the release notes of each game are its own release of the same version.", ""] + downloads(version)
+                 + games_txt, ""] + downloads(version)
         last = PARA2
     else:
         game = (games or {}).get(who)
