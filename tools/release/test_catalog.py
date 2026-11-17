@@ -267,7 +267,7 @@ def run(tmp):
     t = by_id(res, "tods")
     check(t["state"] == "ready_to_build" and t["title_id"] == "BCUS98127" and t["files"]["eboot"].endswith("EBOOT.elf"), "state: ToD ready_to_build")
     check(t["art"]["icon"].endswith("ICON0.PNG") and t["art"]["background"].endswith("PIC1.PNG"), "art: disc ICON0/PIC1 paths recorded")
-    check(t["estimate"]["minutes"] == 12, "estimate carried")
+    check(t["estimate"] == {"minutes": 5, "disk_gb": 0.7}, "estimate carried (ToD: measured 293 s / 666 MB, 2026-11-17)")
     a = by_id(res, "acit")
     check(a["state"] == "wrong_version" and a["reason"].startswith("Needs update 01.20") and a["needs_update"] == "01.20", "state: ACiT wrong_version without the update")
     check(by_id(res, "nexus")["state"] == "wrong_version" and by_id(res, "ffa")["state"] == "wrong_version", "state: Nexus and FFA wrong_version (unsupported but update missing)")
@@ -937,7 +937,7 @@ def run_eboot(tmp):
     def ck(entry, path, tid=None):
         return catalog.check_eboot(entry, path, known, tid)
     r = ck(A, a_self)
-    check(r["level"] == "fail" and r["tag"] == "Encrypted" and "encrypted EBOOT.BIN from Game A (disc BCUS00001, version 01.01)"
+    check(r["level"] == "fail" and r["tag"] == "Encrypted" and "encrypted EBOOT.BIN from Game A (disc BCUS00001, disc version 01.01)"
           in r["message"] and "decrypted EBOOT.elf" in r["message"] and catalog.DOCS_HINT in r["message"],
           "check: the game's own encrypted EBOOT.BIN is named (disc and version) and refused")
     r = ck(A, wr_ret(os.path.join(root, "lib", "c.self"), b"SCE\0" + b"\3" * 50))

@@ -66,7 +66,7 @@ compiler come with it; nothing else needs to be installed.
 | **Your game** | Your own copy of each game, as a decrypted folder or ISO | Title IDs and updates per game: the table below |
 | **Decrypted EBOOT** | `EBOOT.elf`, made from your own copy | This project gives no decryption tools or instructions. [RPCS3](https://rpcs3.net) and its documentation are the place to start. |
 | **Windows** | Windows 10 or 11, 64-bit | Not tested on Windows itself; tested under Proton on Linux |
-| **Linux** | x86-64 with glibc 2.34 or newer, Python 3.10 or newer and a 64-bit Vulkan driver | The launcher runs natively (Linux download, or built from source) and starts each game through Proton. The download was installed, started and removed in an Ubuntu 22.04 container (2026-11-16); a launcher built from source ran *Tools of Destruction* on NixOS up to its title screen (2026-11-16): [docs/LINUX.md](docs/LINUX.md) |
+| **Linux** | x86-64 with glibc 2.34 or newer, Python 3.10 or newer and a 64-bit Vulkan driver | The launcher runs natively (Linux download, or built from source) and starts each game through Proton. The download was installed, started and removed in an Ubuntu 22.04 container (2026-11-16); on NixOS the download built *Tools of Destruction* and started it to its title screen (2026-11-17): [docs/LINUX.md](docs/LINUX.md) |
 | **GPU** | Direct3D 12 | Tested only on an NVIDIA GeForce RTX 4060 |
 | **CPU and memory** | x86-64; 16 GB of memory to build | Tested only on an Intel Core i7-12700KF |
 | **Disk** | The install, plus several GB for each game you build | The setup download is about 100 MB; the space a build needs is not measured yet |
@@ -105,7 +105,9 @@ every file.
 
 Linux: download `qwarks-awakening-launcher-<version>-linux-x86_64.tar.gz` from the same release, unpack it and run
 `./install.sh` in its folder. It installs the launcher for your user (no administrator rights) with a menu entry;
-`install.sh --uninstall` removes it again. [docs/LINUX.md](docs/LINUX.md) has the details and the Proton choice.
+`install.sh --uninstall` removes it again. Or take `qwarks-awakening-launcher-<version>-x86_64.AppImage`, the same
+launcher in one file that runs where you keep it: `chmod +x` it and start it (on NixOS: `appimage-run`).
+[docs/LINUX.md](docs/LINUX.md) has the details and the Proton choice.
 
 Uninstall from Windows Settings, Apps, or from the Start menu. The uninstaller removes the program files. It asks
 before it deletes your library, your built games with their saves, and the logs. Then it asks before it deletes the

@@ -5,6 +5,8 @@ project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.m
 
 ## [0.4.0] - 2026-11-17 (pre-release)
 
+Summary: A new look for the launcher and the site, and a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton.
+
 A launcher release: a new look for the launcher and the project site, and a Linux launcher that starts the games
 through Proton. The games' code is the same as in 0.3.1, so this version has no game notes; each game's state is in
 its 0.3.1 notes and the [status table](README.md#status). Known issues of this release:
@@ -29,14 +31,28 @@ its 0.3.1 notes and the [status table](README.md#status). Known issues of this r
   launcher for your user under `~/.local/share/qwarks-awakening/launcher/`, with a menu entry and
   `~/.local/bin/qwarks-awakening`; `install.sh --uninstall` removes them and keeps your library, games and settings.
   Checked on 2026-11-16 with a tarball made the way the release workflow makes it, in a fresh Ubuntu 22.04
-  container under Xvfb: install, a first start whose scan listed the eight games, uninstall. Starting a game from this
-  download has not been tried yet. Building the launcher from source stays possible
-  ([docs/LINUX.md](docs/LINUX.md)).
+  container under Xvfb: install, a first start whose scan listed the eight games, uninstall. On 2026-11-17, on NixOS
+  under Xvfb, the release workflow's tarball installed into an empty home folder built *Tools of Destruction* with the
+  Linux build tools in about 5 minutes and started it through GE-Proton to its "Press the START button" screen. The
+  tarball also holds [docs/LINUX.md](docs/LINUX.md). On NixOS the launcher starts with `steam-run qwarks-awakening`,
+  and the build tools need it or nix-ld; Build says so when they cannot start. Building the launcher from source stays
+  possible ([docs/LINUX.md](docs/LINUX.md)).
+- On Linux, the Proton log (`logs/proton-<game>.log`) starts with the folder of the game's own log, and the game's
+  page has "Open game log folder". A game built from a download names that release's version and public commit in its
+  log, never the commit of a folder it was unpacked into. The build check names the disc version (known build) and
+  the app version (your game files' PARAM.SFO) as such, so the two numbers no longer read as a contradiction.
+- A Linux AppImage: `qwarks-awakening-launcher-0.4.0-x86_64.AppImage` holds the same launcher, engine and build
+  files as the tarball in one file that runs where you keep it (`chmod +x`, then start it; without FUSE add
+  `--appimage-extract-and-run`; on NixOS use `appimage-run`). It keeps the library, games and settings in the same
+  folders as the tarball install and writes nothing inside itself. Checked on 2026-11-17 in a fresh Ubuntu 22.04
+  container under Xvfb (started without FUSE, first start listed the eight games); building and playing from it
+  have not been tried yet.
 - Stop on a running game's page ends the game, on both systems. On Linux it ends every Windows process in that game's
   prefix (checked in the same run); on Windows it has not been tried yet.
 - Linux build tools: Settings > Building > "Linux build tools" downloads llvm-mingw, CMake, Ninja and SDL3's package,
-  each at a pinned version and SHA-256, after you confirm, so that Build works on Linux. No game has been built with
-  them yet.
+  each at a pinned version and SHA-256, after you confirm, so that Build works on Linux (see above for the build that
+  was run). The build estimate for *Tools of Destruction* is now the measured one (about 5 minutes with 16 parallel
+  jobs, about 0.7 GB).
 - After the update, a game built with 0.3.1 shows "Update available: rebuild". Only the version number in the port's
   build file changed; the games' code and the patches are the same as in 0.3.1, and Play stays available, so the
   rebuild can wait.

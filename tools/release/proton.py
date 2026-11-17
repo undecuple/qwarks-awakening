@@ -627,6 +627,18 @@ def _alive(pid):
         return False
 
 
+def game_log_header(gid, game_logs, unofficial=False):
+    """The first lines of logs/proton-<game>.log: where the game's own log is, and that the lines after are Proton's."""
+    when = time.strftime("%Y-%m-%d %H:%M:%S")
+    if unofficial:
+        where = "# This game is another project's program; its own log, if it writes one, is in that project's folder.\n"
+    else:
+        where = (f"# The game's own log: {game_logs} (one folder per game, files QwarksAwakening-<game>-<time>.log).\n")
+    return (f"# Proton output for {gid}, started {when}.\n" + where +
+            "# The lines below come from Proton and Wine. Messages such as \"Failed to open /etc/machine-id\", "
+            "fontconfig warnings or ProtonFixes lines are normal there.\n")
+
+
 def play(library, gid, data=None, stop_file=None, out=sys.stdout, env=None, popen=subprocess.Popen):
     try:
         L = launch(library, gid, data, env)
@@ -645,6 +657,13 @@ def play(library, gid, data=None, stop_file=None, out=sys.stdout, env=None, pope
     full = dict(os.environ if env is None else env)
     full.update(L["env"])
     print("LOG path=" + logfile, file=out, flush=True)
+    # The Proton log holds Proton's and Wine's own output only; the game writes its log beside its exe
+    # (<exe folder>/logs/<game id>/QwarksAwakening-*.log, port/rc/main.cpp; RC_LOG_DIR moves it). Name that folder in
+    # the Proton log's first lines and to the launcher (GAMELOG path=), so a player reading one finds the other.
+    game_logs = full.get("RC_LOG_DIR") or os.path.join(L["exe_dir"], "logs")
+    header = game_log_header(gid, game_logs, L.get("unofficial", False))
+    if not L.get("unofficial", False):
+        print("GAMELOG path=" + game_logs, file=out, flush=True)
     if stop_file:
         _rm(stop_file)
     try:
@@ -674,6 +693,7 @@ def play(library, gid, data=None, stop_file=None, out=sys.stdout, env=None, pope
     left = MAX_LOG
     try:
         with open(logfile, "wb") as log:
+            log.write(header.encode("utf-8"))
             for raw in iter(lambda: p.stdout.readline(), b""):
                 if left > 0:
                     keep = raw[:left]

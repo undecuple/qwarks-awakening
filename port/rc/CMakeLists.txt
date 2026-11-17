@@ -251,14 +251,11 @@ if(EXISTS "${RC_CATALOG}")
         endif()
     endforeach()
 endif()
-set(RC_GIT_COMMIT "")
-find_package(Git QUIET)
-if(GIT_FOUND)
-    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=9 HEAD
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                    OUTPUT_VARIABLE RC_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-endif()
-message(STATUS "Log identity:    ${RC_GAME_ID} / ${RC_GAME_TITLE} / ${RC_GAME_TITLE_ID} / update '${RC_GAME_UPDATE}' / commit '${RC_GIT_COMMIT}'")
+# The commit and release the log header names: a download's release-ident.txt, else git of this checkout only
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rc_build_ident.cmake")
+set(RC_PORT_VERSION "${PROJECT_VERSION}")
+rc_build_ident("${CMAKE_CURRENT_SOURCE_DIR}/../.." RC_GIT_COMMIT RC_PORT_VERSION)
+message(STATUS "Log identity:    ${RC_GAME_ID} / ${RC_GAME_TITLE} / ${RC_GAME_TITLE_ID} / update '${RC_GAME_UPDATE}' / ${RC_PORT_VERSION} commit '${RC_GIT_COMMIT}'")
 # The identity goes into a generated header that only main.cpp includes (a commit change rebuilds one file, not the lift).
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rc_log_ident.h.in" "${CMAKE_CURRENT_BINARY_DIR}/rc_log_ident.h" @ONLY)
 

@@ -229,6 +229,17 @@ def check_paths(r, root, build, env=None):
         r.fail("O1", "The build folder is inside OneDrive. Choose a folder outside OneDrive for the build.")
 
 
+def sfo_version(sfo):
+    """-> {version, version_label}: PARAM.SFO APP_VER ("app version", the program's version) when set, else VERSION
+    ("disc version", the disc's own number; the known-build table's disc_version, which E1 prints). The two differ on
+    the same disc (ToD BCUS98127: APP_VER 01.00, VERSION 02.00), so each is printed with its own name."""
+    if sfo.get("APP_VER"):
+        return {"version": sfo["APP_VER"], "version_label": "app version"}
+    if sfo.get("VERSION"):
+        return {"version": sfo["VERSION"], "version_label": "disc version"}
+    return {"version": None, "version_label": ""}
+
+
 def disc_info(path):
     """-> {kind folder|iso, title_id, version, encrypted} or {error}."""
     if os.path.isdir(path):
@@ -243,16 +254,14 @@ def disc_info(path):
                 break
         if sfo is None:
             return {"error": "No PS3 game was found in the folder you chose (no PARAM.SFO)."}
-        return {"kind": "folder", "title_id": sfo.get("TITLE_ID"), "version": sfo.get("APP_VER") or sfo.get("VERSION"),
-                "encrypted": False}
+        return {"kind": "folder", "title_id": sfo.get("TITLE_ID"), **sfo_version(sfo), "encrypted": False}
     if os.path.isfile(path):
         sfo, enc = catalog.sfo_from_iso(path)
         if enc:
             return {"kind": "iso", "encrypted": True, "title_id": None, "version": None}
         if sfo is None:
             return {"error": "The file you chose is not a readable game disc image."}
-        return {"kind": "iso", "title_id": sfo.get("TITLE_ID"), "version": sfo.get("APP_VER") or sfo.get("VERSION"),
-                "encrypted": False}
+        return {"kind": "iso", "title_id": sfo.get("TITLE_ID"), **sfo_version(sfo), "encrypted": False}
     return {"error": "The game files you chose are not there any more."}
 
 
@@ -342,7 +351,8 @@ def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=
         elif di.get("title_id") not in game_ids(entry, parent):
             r.fail("D1", f"These game files are {di.get('title_id') or 'not a known game'}, not {title}.")
         else:
-            r.ok("D1", f"Game files: {di['title_id']}" + (f", version {di['version']}" if di.get("version") else "") + ".")
+            r.ok("D1", f"Game files: {di['title_id']}"
+                 + (f", {di.get('version_label') or 'version'} {di['version']}" if di.get("version") else "") + ".")
             if di["kind"] == "iso" and not extracted:
                 try:
                     iso_bytes = os.path.getsize(disc)

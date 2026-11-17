@@ -110,6 +110,7 @@ def make_root(tmp):
     wr(os.path.join(r, "third_party", "imgui", "LICENSE.txt"), "The MIT License (MIT) imgui")
     wr(os.path.join(r, "public", "LICENSE"), "MIT License port")
     wr(os.path.join(r, "public", "NOTICE.md"), "# Notice")
+    wr(os.path.join(r, "public", "docs", "LINUX.md"), "# The launcher on Linux")
     for n in pack_linux.ENGINE:
         wr(os.path.join(r, "tools", "release", n), "# " + n)
     for rel in pack_zip.KIT_FILES:
@@ -135,6 +136,8 @@ def make_root(tmp):
 
 def pack(r, tk, b, out, *extra, version="1.2.3"):
     s = io.StringIO()
+    if "--commit" not in extra:   # deterministic under CI too ($GITHUB_SHA is the default)
+        extra = extra + ("--commit", "0522150bf0fb")
     rc = pack_linux.main(["--program", os.path.join(b, "qwarks-awakening"), "--sdl3-licenses",
                           os.path.join(b, "licenses"), "--toolkit", tk, "--version", version, "--out", out,
                           "--root", r, *extra], out=s)
@@ -194,7 +197,7 @@ def test_pack(tmp):
             "licenses/SDL3-hidapi-LICENSE.txt", "licenses/SDL3-yuv2rgb-LICENSE.txt",
             "licenses/imgui-LICENSE.txt", "licenses/LICENSE.txt", "licenses/ps3recomp-LICENSE.txt",
             "port/rc/CMakeLists.txt", "port/rc/tests/run.sh", "data/titles/catalog.json", "tools/spu/spu_lift.py",
-            "cmake/llvm-mingw.cmake", "ps3recomp/runtime/x.c"}
+            "cmake/llvm-mingw.cmake", "ps3recomp/runtime/x.c", "docs/LINUX.md", pack_zip.IDENT}
     want |= {f"tools/release/{n}" for n in pack_linux.ENGINE} | set(pack_zip.KIT_FILES)
     want |= {f"ps3recomp/{n}" for n in pack_zip.TOOLKIT_NEEDS}
     check(files == want, "the packaging list, exactly", sorted(files ^ want))
@@ -208,6 +211,16 @@ def test_pack(tmp):
           and all(ms[n].isdir() for n in ms if not ms[n].isfile()), "owner 0/0 without names, fixed dates, directories listed")
     with tarfile.open(tar) as t:
         rd = t.extractfile(f"{top}/README.txt").read().decode()
+    with tarfile.open(tar) as t:
+        ident = t.extractfile(f"{top}/{pack_zip.IDENT}").read()
+        guide = t.extractfile(f"{top}/docs/LINUX.md").read()
+    check(ident == pack_zip.release_ident("1.2.3", "0522150bf0fb") and guide == b"# The launcher on Linux",
+          "release-ident.txt names the version and the public commit; docs/LINUX.md is the public guide")
+    check("steam-run " + names.LINUX_PROGRAM in rd and "nix-ld" in rd and "docs/LINUX.md" in rd
+          and "QwarksAwakening-" in rd and "machine-id" in rd,
+          "README.txt: NixOS (steam-run for the launcher, nix-ld for the build tools) and where the game log is")
+    rc9, t9 = pack(r, tk, b, os.path.join(tmp, "out9"), "--commit", "v1.2.3")
+    check(rc9 == 2 and "not a git commit" in t9, "a --commit that is not a hash refused", t9)
     check("install.sh" in rd and "--uninstall" in rd and "Python 3.10" in rd and "glibc" in rd and names.NAME_NOTE in rd,
           "README.txt: install, removal, Python and glibc requirements, the name note")
     s1 = pack_zip.sha256_file(tar)
@@ -316,9 +329,45 @@ def test_install(tmp, tar):
     check(p.returncode == 0 and "--uninstall" in p.stdout and "set -euo" not in p.stdout, "--help prints the header")
 
 
+def test_build_ident(tmp):
+    """cmake/rc_build_ident.cmake (the game log's commit): a download's release-ident.txt wins; git only when the
+    folder is the top of its own checkout, never a repository found by walking up (the 0.4.0 Linux test stamped the
+    private hash of the repository its test home lay in). Needs cmake and git; SKIP without them."""
+    cmake, git = shutil.which("cmake"), shutil.which("git")
+    if not (cmake and git):
+        print("SKIP cmake/rc_build_ident.cmake (cmake or git not on PATH)")
+        return
+    src = os.path.join(ROOT, "cmake", "rc_build_ident.cmake")
+
+    def ident(root):   # the module as it sits in a checkout or a download: <root>/cmake/
+        mod = os.path.join(root, "cmake", "rc_build_ident.cmake")
+        if not os.path.isfile(mod):
+            wr(mod, open(src, "rb").read())
+        script = os.path.join(tmp, "ident.cmake")
+        wr(script, f'include("{mod}")\nset(v "9.9.9")\nrc_build_ident("{root}" c v)\nmessage("C=[${{c}}] V=[${{v}}]")\n')
+        r = subprocess.run([cmake, "-P", script], capture_output=True, text=True)
+        return (r.stdout + r.stderr).strip()
+
+    genv = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    outer = os.path.join(tmp, "outer repo")
+    wr(os.path.join(outer, "f"), "x")
+    for args in (["init", "-q"], ["add", "f"], ["commit", "-qm", "x"]):
+        subprocess.run([git, "-C", outer, *args], env=genv, capture_output=True)
+    head = subprocess.run([git, "-C", outer, "rev-parse", "--short=9", "HEAD"], capture_output=True, text=True).stdout.strip()
+    kit = os.path.join(outer, "home", "launcher")
+    check(ident(kit) == "C=[] V=[9.9.9]", "build ident: build files inside another git repository get no commit", ident(kit))
+    check(len(head) == 9 and ident(outer) == f"C=[{head}] V=[9.9.9]", "build ident: a checkout's own top uses git",
+          ident(outer))
+    wr(os.path.join(kit, *pack_zip.IDENT.split("/")), pack_zip.release_ident("1.2.3", "0522150bf0fb"))
+    check(ident(kit) == "C=[0522150bf0fb] V=[1.2.3]", "build ident: cmake/release-ident.txt names the public release",
+          ident(kit))
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="rc-pack-linux-test-")
     try:
+        test_build_ident(tmp)
         test_elf(tmp)
         tar = test_pack(tmp)
         if tar:

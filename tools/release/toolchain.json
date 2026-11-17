@@ -249,6 +249,46 @@
    "about": "SDL3's source release, the same version as the MinGW package: release.yml's linux job (and tools/release/build_launcher_linux.sh) builds it as a static library on the Ubuntu runner and links it into the Linux launcher, whose tarball carries its LICENSE.txt; the launcher job takes from it only the HIDAPI and yuv2rgb licence texts for the code inside the Windows SDL3.dll (stage_sdl3.py --source). Never downloaded on a player's PC. Hash = the digest GitHub shows for the release asset (read 2026-11-16)."
   },
   {
+   "name": "appimagetool",
+   "version": "1.9.1",
+   "pin": "confirmed",
+   "release_page": "https://github.com/AppImage/appimagetool/releases",
+   "url": "https://github.com/AppImage/appimagetool/releases/download/{version}/appimagetool-x86_64.AppImage",
+   "sha256": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+   "archive": "file",
+   "file_name": "appimagetool-x86_64.AppImage",
+   "exec": ["appimagetool-x86_64.AppImage"],
+   "license": "MIT",
+   "linux": "release",
+   "about": "Build-time only: packs the Linux launcher's AppDir into qwarks-awakening-launcher-<version>-x86_64.AppImage (tools/release/pack_appimage.py, release.yml's linux job), run with --appimage-extract-and-run (no FUSE on the runner) and always with --runtime-file (appimage-runtime below), so it downloads nothing itself. Never shipped and never fetched on a player's PC. Release 1.9.1 of 2025-11-18; hash = the digest GitHub shows for the release asset, equal to a download on 2026-11-17."
+  },
+  {
+   "name": "appimage-runtime",
+   "version": "20251108",
+   "pin": "confirmed",
+   "release_page": "https://github.com/AppImage/type2-runtime/releases",
+   "url": "https://github.com/AppImage/type2-runtime/releases/download/{version}/runtime-x86_64",
+   "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+   "archive": "file",
+   "file_name": "runtime-x86_64",
+   "license": "MIT (statically links musl, libfuse (LGPL-2.1), squashfuse, zstd and zlib; see appimage-runtime-license)",
+   "linux": "release",
+   "about": "The AppImage type 2 runtime that appimagetool puts in front of the squashfs image: it ships inside the AppImage (its first part). Given to appimagetool with --runtime-file so the pinned file is used. Release 20251108 of 2025-12-08; hash = the digest GitHub shows for the release asset, equal to a download on 2026-11-17."
+  },
+  {
+   "name": "appimage-runtime-license",
+   "version": "20251108",
+   "pin": "confirmed",
+   "release_page": "https://github.com/AppImage/type2-runtime",
+   "url": "https://raw.githubusercontent.com/AppImage/type2-runtime/{version}/LICENSE",
+   "sha256": "aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1",
+   "archive": "file",
+   "file_name": "LICENSE",
+   "license": "MIT",
+   "linux": "release",
+   "about": "The runtime's licence text at the pinned tag (MIT, with the list of the libraries it links in statically); pack_appimage.py puts it in the AppImage's licenses/ as appimage-runtime-LICENSE.txt, beside the LGPL-2.1 text (lgpl-2.1-text) for libfuse. Hash from a download on 2026-11-17."
+  },
+  {
    "name": "ge-proton",
    "version": "GE-Proton11-7",
    "pin": "confirmed",

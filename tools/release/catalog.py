@@ -431,14 +431,16 @@ def _lc(rec, key):
 
 
 def _where(rec):
-    """'disc BCUS98127, version 02.00' / 'update 01.20 (BCUS98124)' / 'PSN game NPUA80646' for a record."""
+    """'disc BCUS98127, disc version 02.00' / 'update 01.20 (BCUS98124)' / 'PSN game NPUA80646' for a record.
+    disc_version is the disc's PARAM.SFO VERSION; it is named "disc version" so it never reads as a contradiction
+    of the APP_VER ("app version") that firstrun_check's D1 line shows for the same disc (ToD: 02.00 vs 01.00)."""
     tid, media = rec.get("title_id") or "?", rec.get("media")
     if media == "update":
         return f"update {rec.get('app_ver') or '?'} ({tid})"
     if media == "digital":
         return f"PSN game {tid}"
     v = rec.get("disc_version")
-    return f"disc {tid}" + (f", version {v}" if v else "")
+    return f"disc {tid}" + (f", disc version {v}" if v else "")
 
 
 def check_eboot(entry, path, known=(), title_id=None, sha=None):
@@ -2147,7 +2149,7 @@ def run_build(library, gid, extra=(), out=sys.stdout, python=None, firstrun=FIRS
                 except KeyboardInterrupt:
                     p.terminate()
                     rc = 130
-                if rc != 0:
+                if rc != 0 or "--dry-run" in extra:   # a plan writes no build.json: nothing to record
                     return rc
                 code, _ = record_build(library, t, stage, log)
                 if code != 0:
@@ -2347,6 +2349,7 @@ def main(argv=None):
     bp.add_argument("--config", choices=("RelWithDebInfo", "Release"), help="default: Release, or what "
                     "the debug_info pref asks for")
     bp.add_argument("--debug-info", choices=("off", "on"), help="override the debug_info pref for this build")
+    bp.add_argument("--dry-run", action="store_true", help="firstrun.py's plan only: writes nothing, records nothing")
     go = sub.add_parser("get-online", help="print the shared online settings (repsn.ini, community.ini) as JSON")
     so = sub.add_parser("set-online", help="change the shared online settings (one method at a time)")
     for x in (go, so):
@@ -2373,11 +2376,20 @@ def main(argv=None):
             v = getattr(a, k)
             if v:
                 extra += ["--" + k.replace("_", "-"), str(v)]
+        if a.dry_run:
+            extra.append("--dry-run")
         if not a.toolchain and sys.platform.startswith("linux"):   # the Linux build tools, once the player fetched them
             r = subprocess.run([sys.executable, os.path.join(HERE, "linux_kit.py"), "toolchain"], capture_output=True,
                                text=True)
             if r.returncode == 0 and r.stdout.strip():
                 extra += ["--toolchain", r.stdout.strip()]
+                # can the downloaded tools start here (NixOS without nix-ld or steam-run: no)? REASON lines if not
+                c = subprocess.run([sys.executable, os.path.join(HERE, "linux_kit.py"), "check"], capture_output=True,
+                                   text=True)
+                if c.returncode != 0:
+                    print(c.stdout.rstrip() or "REASON The Linux build tools could not be started.", flush=True)
+                    print("RESULT ok=0 step=check elapsed=0", flush=True)
+                    return 1
         extra += build_config_args(read_library(a.library), a.config, a.debug_info)
         return run_build(a.library, a.game, extra)
 

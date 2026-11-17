@@ -150,8 +150,11 @@ for public in (True, False):
               f"{lay}: launcher body lists the installer first, the zips as portable, the SmartScreen step, no .sha256")
         lt = names.linux_tar_name("0.3.0")
         check(lt in body and body.index(bz) < body.index(lt) < body.index("New in 0.3.0:") and "./install.sh" in body
-              and f"[docs/LINUX.md]({B}docs/LINUX.md)" in body and "five files" in body,
+              and f"[docs/LINUX.md]({B}docs/LINUX.md)" in body and "six files" in body,
               f"{lay}: launcher body lists the Linux tarball after the zips, with install.sh and a pinned LINUX.md link")
+        la = names.linux_appimage_name("0.3.0")
+        check(la in body and body.index(lt) < body.index(la) < body.index("New in 0.3.0:") and "appimage-run" in body
+              and "chmod +x" in body, f"{lay}: launcher body lists the AppImage after the tarball (chmod +x, NixOS)")
 
         G = f"{R}/blob/tods-v0.3.0/"
         rc, body, _ = run(root, "--tag", "tods-v0.3.0", "--title-out", str(t))

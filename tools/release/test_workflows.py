@@ -150,8 +150,20 @@ def test_linux_job(lx, pub):
           and "submodules:" not in code(lx) and "bash tools/ps3recomp-patched.sh" in lx,
           "release.yml: linux fetches the imgui and ps3recomp submodules only and patches ps3recomp")
     check("tools/release/linux-build-packages.txt" in lx and "fetch_toolchain.py --check --strict" in lx
-          and "fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux" in lx,
-          "release.yml: linux takes the apt list from the repository and the pinned SDL3 source, CMake and Ninja")
+          and "fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux,appimagetool,appimage-runtime,"
+              "appimage-runtime-license" in lx,
+          "release.yml: linux takes the apt list from the repository and the pinned SDL3 source, CMake, Ninja, "
+          "appimagetool and the AppImage runtime with its licence")
+    for n in ("appimagetool", "appimage-runtime", "appimage-runtime-license"):
+        a = comps_all().get(n, {})
+        check(a.get("linux") == "release" and re.fullmatch(r"[0-9a-f]{64}", a.get("sha256", "")) is not None
+              and a.get("pin") == "confirmed", f"toolchain.json: {n} pinned (version and SHA-256), release-build only", a)
+    ai = lx[lx.index("pack_appimage.py --program"):] if "pack_appimage.py --program" in lx else ""
+    check('--appimagetool "$trees/appimagetool/appimagetool-x86_64.AppImage"' in ai
+          and '--runtime "$trees/appimage-runtime/runtime-x86_64"' in ai
+          and '--runtime-license "$trees/appimage-runtime-license/LICENSE"' in ai and "--glibc-max 2.35" in ai
+          and "names.linux_appimage_name(sys.argv[1])" in lx,
+          "release.yml: the AppImage from the pinned appimagetool and runtime (glibc 2.35 at most); its name from names.py")
     with open(os.path.join(ROOT, "tools", "release", "toolchain.json"), encoding="utf-8") as f:
         comps = {c["name"]: c for c in json.load(f)["components"]}
     s = comps.get("sdl3-source", {})
@@ -160,18 +172,30 @@ def test_linux_job(lx, pub):
           "toolchain.json: sdl3-source pinned, the same SDL version as the Windows package, release-build only", s)
     order = ["test_pack_linux.py", "build_launcher_linux.sh build/launcher-linux",
              "pack_linux.py --check-elf build/launcher-linux/qwarks-awakening --glibc-max 2.35",
-             "pack_linux.py --program build/launcher-linux/qwarks-awakening", "smoke_linux.sh"]
+             "pack_linux.py --program build/launcher-linux/qwarks-awakening", "smoke_linux.sh",
+             "pack_appimage.py --program build/launcher-linux/qwarks-awakening", "smoke_appimage.sh"]
     check(all(o in lx for o in order) and [lx.index(o) for o in order] == sorted(lx.index(o) for o in order),
-          "release.yml: linux tests, builds, checks the imports, packs, then installs/starts/removes the tarball", order)
+          "release.yml: linux tests, builds, checks the imports, packs, installs/starts/removes the tarball, then packs "
+          "and starts the AppImage", order)
+    check("test_pack_appimage.py" in lx and lx.index("test_pack_appimage.py") < lx.index("build_launcher_linux.sh"),
+          "release.yml: linux runs the AppImage packaging test before the build")
     check("--glibc-max 2.35" in lx[lx.index("pack_linux.py --program"):] and "names.linux_tar_name(sys.argv[1])" in lx,
           "release.yml: the tarball is refused above glibc 2.35; its name comes from names.py")
     paths = upload_paths(lx)
-    check(paths == ["build/release-out/${{ steps.ver.outputs.tarball }}"] and "retention-days: 14" in lx
+    check(paths == ["build/release-out/${{ steps.ver.outputs.tarball }}", "build/release-out/${{ steps.ver.outputs.appimage }}"]
+          and "retention-days: 14" in lx
           and "name: ${{ steps.ver.outputs.artifact }}" in lx and "artifact: ${{ steps.ver.outputs.artifact }}" in lx
-          and "tarball: ${{ steps.ver.outputs.tarball }}" in lx, "release.yml: linux uploads the tarball only", paths)
+          and "tarball: ${{ steps.ver.outputs.tarball }}" in lx and "appimage: ${{ steps.ver.outputs.appimage }}" in lx,
+          "release.yml: linux uploads the tarball and the AppImage only", paths)
     check("LINUX_ARTIFACT: ${{ needs.linux.outputs.artifact }}" in pub and "LINUX_TAR: ${{ needs.linux.outputs.tarball }}" in pub
+          and "LINUX_APPIMAGE: ${{ needs.linux.outputs.appimage }}" in pub
           and 'gh run download "$GITHUB_RUN_ID" --name "$LINUX_ARTIFACT"' in pub,
-          "release.yml: publish downloads the Linux tarball from this run")
+          "release.yml: publish downloads the Linux tarball and AppImage from this run")
+
+
+def comps_all():
+    with open(os.path.join(ROOT, "tools", "release", "toolchain.json"), encoding="utf-8") as f:
+        return {c["name"]: c for c in json.load(f)["components"]}
 
 
 def js_launcher_text():
@@ -247,16 +271,18 @@ def test_release():
           "release.yml: gh release create TAG --draft --latest --verify-tag --title 'Launcher vX.Y.Z' --notes-file release-body.md", rc)
     check("--prerelease" not in pub and "$pre" not in pub,
           "release.yml: the launcher release is a full release at every version, never a pre-release")
-    check(re.search(r'"\$SETUP_EXE" "\$ZIP" "\$BUILD_ZIP" "\$SYMBOLS_ZIP" "\$LINUX_TAR" SHA256SUMS\s*$', rc) is not None,
-          "release.yml: assets are the setup exe, the launcher, build and symbols zips, the Linux tarball and SHA256SUMS", rc)
+    check(re.search(r'"\$SETUP_EXE" "\$ZIP" "\$BUILD_ZIP" "\$SYMBOLS_ZIP" "\$LINUX_TAR" "\$LINUX_APPIMAGE" SHA256SUMS\s*$', rc)
+          is not None, "release.yml: assets are the setup exe, the launcher, build and symbols zips, the Linux tarball, "
+          "the AppImage and SHA256SUMS", rc)
     check(not re.search(r"(?<!pin)\.sha256\b", code(t)), "release.yml: no per-file .sha256 is made, uploaded or published (0.3.1)")
     check(not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)|git push", c),
           "release.yml: no clobber, upload, edit or delete; no tag or push")
     check("gh release view" in pub and pub.index("gh release view") < pub.rindex("gh release create"),
           "release.yml: an existing release is refused before anything is created")
-    check('sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" > SHA256SUMS' in pub
+    check('sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" "$LINUX_APPIMAGE" > SHA256SUMS' in pub
           and "sha256sum -c SHA256SUMS" in pub and pub.index("sha256sum -c SHA256SUMS") < pub.rindex("gh release create"),
-          "release.yml: SHA256SUMS lists the setup exe, the three zips and the Linux tarball and is verified before the release")
+          "release.yml: SHA256SUMS lists the setup exe, the three zips, the Linux tarball and the AppImage and is verified "
+          "before the release")
     check("> SHA256SUMS" in pub, "release.yml: SHA256SUMS written beside the assets")
     check('"$RUNNER_TEMP/release-assets"' in pub and "GH_REPO: ${{ github.repository }}" in pub,
           "release.yml: assets downloaded outside any checkout, gh told the repository")

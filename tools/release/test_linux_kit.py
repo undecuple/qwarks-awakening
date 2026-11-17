@@ -106,6 +106,19 @@ def run(tmp):
               "toolchain: prints the trees folder catalog.py build passes as --toolchain")
         check(lk.main(["toolchain", "--dest", os.path.join(tmp, "none")], out=io.StringIO()) == 1,
               "toolchain: exit 1 when the tools are not in place (catalog.py build then passes nothing)")
+        check(lk.main(["check", "--dest", dest], out=io.StringIO()) == 0, "check: fetched tools that start pass")
+        ninja = os.path.join(dest, "trees", "ninja-linux", "ninja")
+        keep = open(ninja, "rb").read()
+        with open(ninja, "w") as f:   # as on NixOS without nix-ld: the interpreter it names is not there
+            f.write("#!/nonexistent/lib64/ld-linux-x86-64.so.2\n")
+        out = io.StringIO()   # the pre-check catalog.py build runs before firstrun.py
+        check(lk.main(["check", "--dest", dest], out=out) == 1 and out.getvalue().startswith("REASON The Linux build tools")
+              and "ninja could not be started" in out.getvalue(), "check: REASON and exit 1 when a fetched tool cannot start",
+              out.getvalue())
+        with open(ninja, "wb") as f:
+            f.write(keep)
+        check(lk.main(["check", "--dest", os.path.join(tmp, "none")], out=io.StringIO()) == 0,
+              "check: nothing to check when the tools are not in place")
     out = io.StringIO()
     check(lk.fetch(dest, out, None, man, lambda u: 1 / 0) == 0 and "PROGRESS step=0/0" in out.getvalue(),
           "fetch again: nothing missing, nothing downloaded")
@@ -116,6 +129,25 @@ def run(tmp):
     out = io.StringIO()
     check(lk.fetch(dest, out, None, man, opener) == 1 and "REASON cmake-linux 1 could not be downloaded or did not match"
           in out.getvalue() and "RESULT ok=0 step=cmake-linux" in out.getvalue(), "fetch: a wrong SHA-256 fails with a REASON")
+    # the pre-check: each tool started once; one the system cannot start (a missing ELF interpreter, as on NixOS without
+    # nix-ld, gives the same ENOENT as the missing script interpreter used here) gets the NixOS message
+    pt = os.path.join(tmp, "probe-trees")
+    for tree, name in lk.PROBES:
+        p = os.path.join(pt, tree, "bin", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\necho 'version 1'\n")
+        os.chmod(p, 0o755)
+    check(lk.start_problem(pt, nixos=True) is None, "check: tools that start pass")
+    with open(os.path.join(pt, "cmake-linux", "bin", "cmake"), "w") as f:
+        f.write("#!/nonexistent/lib64/ld-linux-x86-64.so.2\n")
+    why = lk.start_problem(pt, nixos=True)
+    check(why and "cmake could not be started" in why and "nix-ld" in why and "steam-run qwarks-awakening" in why,
+          "check: a tool the system cannot start on NixOS names nix-ld and steam-run", why)
+    why = lk.start_problem(pt, nixos=False)
+    check(why and "nix-ld" not in why and "Download them again" in why, "check: elsewhere it says to download them again", why)
+    why = lk.start_problem(pt, nixos=True, run=lambda *a, **k: subprocess.CompletedProcess(a, 127, b"", b""))
+    check(why and "exit code 127" in why, "check: exit code 127 counts as not started", why)
     # catalog.py forwards
     r = subprocess.run([sys.executable, os.path.join(HERE, "catalog.py"), "linux-kit", "status", "--dest", dest],
                        capture_output=True, text=True)

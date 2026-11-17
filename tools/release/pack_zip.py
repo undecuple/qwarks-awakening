@@ -37,6 +37,8 @@ The full build zip (names.build_zip_name(version), under names.build_zip_top(ver
 README.txt) + the build kit + kit.json:
   port/, data/titles/ (the rest), tools/spu/, tools/release/firstrun.py, firstrun_check.py, cmake/*.cmake
                                           this release's source subset that firstrun.py builds from
+  cmake/release-ident.txt                 the version and the public commit (--commit, else $GITHUB_SHA) the game's
+                                          log header names (cmake/rc_build_ident.cmake)
   ps3recomp/                              the patched ps3recomp (--toolkit, with its .rc-patchset stamp)
   toolchain/llvm-mingw, cmake, ninja      the toolchain.json entries with a "kit" block (--toolchain = fetch_toolchain
                                           trees/), unmodified, the entry's "prune" patterns left out
@@ -83,7 +85,29 @@ KIT_FILES = ("tools/release/firstrun.py", "tools/release/firstrun_check.py")
 SKIP_DIRS = {".git", "__pycache__", ".firstrun"}
 SKIP_FILES = re.compile(r".*\.(pyc|pyo)$|\.DS_Store$", re.I)
 TOOLKIT_NEEDS = ("CMakeLists.txt", "tools/ppu_lifter.py", "tools/ppu_loader.py", ".rc-patchset", "LICENSE")
+# The release a download's build files come from (cmake/rc_build_ident.cmake reads it; the game's log header names it):
+# the version and the public commit the release workflow packed (--commit, else $GITHUB_SHA), never git of whatever
+# repository the player unpacks the files into. Beside cmake/rc_build_ident.cmake, which reads it; build_inputs() hashes
+# only cmake/*.cmake, so a new commit alone does not ask for a rebuild, and the zips' top level is unchanged (rc.iss).
+IDENT = "cmake/release-ident.txt"
 BARE_ALLOWANCE = 16 << 20       # the bare launcher's part of the full zip, compressed (launcher, Python, SDL3, fonts)
+
+
+def release_commit(given="", env=None):
+    """-> (commit, problem): --commit, else $GITHUB_SHA (the release workflow's checkout of the public repository), as
+    12 lower-case hex digits; "" when neither is set (a local pack names no commit rather than a private one)."""
+    env = os.environ if env is None else env
+    c = (given or env.get("GITHUB_SHA") or "").strip().lower()
+    if c and not re.fullmatch(r"[0-9a-f]{7,40}", c):
+        return "", f"--commit {c!r} is not a git commit (7 to 40 hex digits)"
+    return c[:12], None
+
+
+def release_ident(version, commit):
+    """The bytes of release-ident.txt (IDENT)."""
+    return ("# The release these build files come from, written by the release pack (tools/release/pack_zip.py,\n"
+            "# pack_linux.py). cmake/rc_build_ident.cmake reads it for the game's log header.\n"
+            f"version={version}\ncommit={commit}\n").encode("ascii")
 
 
 def repo_file(root, rel):
@@ -263,9 +287,14 @@ def walk_tree(top, prefix, prune=(), problems=None):
     return out
 
 
-def gather_kit(root, toolkit, trees, toolchain_manifest=None, bare=()):
-    """The build kit -> (problems, [(zip path, source)]). `bare` = the bare launcher's zip paths (never repeated)."""
+def gather_kit(root, toolkit, trees, toolchain_manifest=None, bare=(), ident=None):
+    """The build kit -> (problems, [(zip path, source)]). `bare` = the bare launcher's zip paths (never repeated);
+    `ident` = release_ident() bytes, shipped as IDENT."""
     problems, files = [], []
+    if ident is not None:
+        if os.path.exists(os.path.join(root, *IDENT.split("/"))):
+            problems.append(f"{IDENT}: present in the source tree (the pack writes it; remove it)")
+        files.append((IDENT, ident))
     for rel in KIT_TREE:
         top = os.path.join(root, *rel.split("/"))
         if not os.path.isdir(top):
@@ -314,9 +343,19 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def _size(src):
+    return len(src) if isinstance(src, bytes) else os.path.getsize(src)
+
+
+def _sha(src):
+    return hashlib.sha256(src).hexdigest() if isinstance(src, bytes) else sha256_file(src)
+
+
 def deflated_size(src):
     """The size of src's data after Deflate level 9 (what write_zip stores; a stored entry when it does not shrink)."""
     c, n, raw = zlib.compressobj(9, zlib.DEFLATED, -15), 0, 0
+    if isinstance(src, bytes):
+        return len(c.compress(src)) + len(c.flush())
     with open(src, "rb") as f:
         for blk in iter(lambda: f.read(1 << 20), b""):
             raw += len(blk)
@@ -328,8 +367,8 @@ def make_kit_manifest(files, version, estimate=True):
     """kit.json for the gathered kit files (sorted by path)."""
     entries, unpacked, packed = [], 0, BARE_ALLOWANCE
     for rel, src in sorted(files):
-        size = os.path.getsize(src)
-        entries.append({"path": rel, "sha256": sha256_file(src), "size": size})
+        size = _size(src)
+        entries.append({"path": rel, "sha256": _sha(src), "size": size})
         unpacked += size
         packed += (deflated_size(src) if estimate else size) + 2 * (46 + len(rel.encode())) + 30
     name = names.build_zip_name(version)
@@ -353,7 +392,7 @@ def kit_problems(manifest, files, version):
         bad.append(f"{p}: in the kit, not in the kit manifest (make it again)")
     for p in sorted(set(want) & set(have)):
         src = have[p]
-        if os.path.getsize(src) != want[p]["size"] or sha256_file(src) != want[p]["sha256"]:
+        if _size(src) != want[p]["size"] or _sha(src) != want[p]["sha256"]:
             bad.append(f"{p}: changed since the kit manifest was made")
     return bad
 
@@ -421,19 +460,27 @@ def main(argv=None, out=sys.stdout):
     ap.add_argument("--toolchain", help="fetch_toolchain.py's trees/ folder (llvm-mingw, cmake, ninja, licence texts)")
     ap.add_argument("--symbols", metavar="FILE", help="the launcher's split debug file: also writes "
                     "names.symbols_zip_name; refused unless the exe's .gnu_debuglink names this file and its CRC-32")
+    ap.add_argument("--commit", default="", help="the public commit the build files are from (default $GITHUB_SHA; "
+                    "release-ident.txt, the game log's commit)")
     ap.add_argument("--no-estimate", action="store_true", help=argparse.SUPPRESS)   # tests: sizes instead of Deflate
     a = ap.parse_args(argv)
     if not re.fullmatch(r"\d+\.\d+\.\d+", a.version):
         print(f"--version {a.version!r} is not X.Y.Z", file=out)
         return 2
     root = os.path.abspath(a.root)
+    commit, bad = release_commit(a.commit)
+    if bad:
+        print(bad, file=out)
+        return 2
+    ident = release_ident(a.version, commit)
     kit_wanted = a.make_kit_manifest or a.kit_manifest
     if kit_wanted and not (a.toolkit and a.toolchain):
         print("the build kit needs --toolkit and --toolchain", file=out)
         return 2
     if a.make_kit_manifest:
         bare = {r for r, _ in gather("", "", root, "")[1]} | {"README.txt"}
-        problems, kfiles = gather_kit(root, os.path.abspath(a.toolkit), os.path.abspath(a.toolchain), bare=bare)
+        problems, kfiles = gather_kit(root, os.path.abspath(a.toolkit), os.path.abspath(a.toolchain), bare=bare,
+                                      ident=ident)
         problems += content_problems(kfiles)
         for p in problems:
             print(f"REFUSED {p}", file=out)
@@ -471,7 +518,8 @@ def main(argv=None, out=sys.stdout):
         except (OSError, ValueError) as e:
             manifest = None
             problems.append(f"{a.kit_manifest}: not readable ({e})")
-        kp, kfiles = gather_kit(root, os.path.abspath(a.toolkit), os.path.abspath(a.toolchain), bare={r for r, _ in files})
+        kp, kfiles = gather_kit(root, os.path.abspath(a.toolkit), os.path.abspath(a.toolchain), bare={r for r, _ in files},
+                                ident=ident)
         problems += kp
         if manifest is not None:
             problems += kit_problems(manifest, kfiles, a.version)

@@ -612,12 +612,25 @@ def resolve_toolchain(root, given):
     return "", "cmake", ""
 
 
+APPIMAGE_MARKER = ".qwarks-awakening-appimage"   # in the AppImage's root (pack_appimage.py): a read-only install
+
+
+def appimage_install(root, env=None):
+    """The launcher runs from its AppImage (a read-only squashfs mount): $APPIMAGE (set by the AppImage runtime) or the
+    marker pack_appimage.py puts in its root. Nothing may be written under `root` then; everything goes to the XDG
+    folders, as for the tarball install."""
+    env = os.environ if env is None else env
+    return bool(env.get("APPIMAGE")) or os.path.isfile(os.path.join(root, APPIMAGE_MARKER))
+
+
 def default_build(root, pid, env=None, platform=None):
     """The --build default: <root>/build/firstrun/<pid>, except on Linux for an install with the shipped ps3recomp/
     (the Linux tarball: install.sh replaces that folder on an update, so a build kept there would start over each time)
-    -> $XDG_DATA_HOME/qwarks-awakening/build/<pid>, beside the library and the built games."""
+    or from an AppImage (appimage_install: read-only) -> $XDG_DATA_HOME/qwarks-awakening/build/<pid>, beside the
+    library and the built games."""
     env = os.environ if env is None else env
-    if (platform or sys.platform).startswith("linux") and fc.find_toolkit(root)[1] == "release":
+    if (platform or sys.platform).startswith("linux") and (fc.find_toolkit(root)[1] == "release"
+                                                           or appimage_install(root, env)):
         base = env.get("XDG_DATA_HOME", "")
         if not os.path.isabs(base):
             base = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local", "share")

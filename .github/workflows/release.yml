@@ -263,7 +263,10 @@ jobs:
   # from its pinned source and linked in, libstdc++ and libgcc statically, so the program imports the C library only.
   # The build headers come from Ubuntu's archive (tools/release/linux-build-packages.txt); everything downloaded is
   # pinned by SHA-256 in toolchain.json (sdl3-source, cmake-linux, ninja-linux). smoke_linux.sh then installs the
-  # tarball into a temporary home, starts it under Xvfb, and removes it.
+  # tarball into a temporary home, starts it under Xvfb, and removes it. The AppImage (pack_appimage.py) holds the same
+  # files; appimagetool and the AppImage runtime are pinned too (appimagetool, appimage-runtime, appimage-runtime-license)
+  # and appimagetool runs with --appimage-extract-and-run (no FUSE here) and the pinned --runtime-file;
+  # smoke_appimage.sh starts the AppImage the same way in a temporary home under Xvfb.
   linux:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'launcher-v')
     permissions:
@@ -271,6 +274,7 @@ jobs:
     outputs:
       artifact: ${{ steps.ver.outputs.artifact }}
       tarball: ${{ steps.ver.outputs.tarball }}
+      appimage: ${{ steps.ver.outputs.appimage }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -295,9 +299,9 @@ jobs:
             v="$want"
           fi
           python3 tools/release/bump_version.py --agree
-          # shellcheck disable=SC2046  # two words: the asset stem and the tarball name (no spaces in either)
-          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.linux_tar_name(sys.argv[1]))' "$v")
-          { echo "version=$v"; echo "artifact=$1-$v-linux"; echo "tarball=$2"; } >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2046  # three words: the asset stem, the tarball and AppImage names (no spaces in any)
+          set -- $(python3 -c 'import sys; sys.path.insert(0, "tools/release"); import names; print(names.ASSET_STEM, names.linux_tar_name(sys.argv[1]), names.linux_appimage_name(sys.argv[1]))' "$v")
+          { echo "version=$v"; echo "artifact=$1-$v-linux"; echo "tarball=$2"; echo "appimage=$3"; } >> "$GITHUB_OUTPUT"
 
       - name: Build packages (Ubuntu archive) and Xvfb for the smoke test
         run: |
@@ -308,13 +312,14 @@ jobs:
       - name: Host tests of the Linux packaging
         run: |
           python3 tools/release/test_pack_linux.py
+          python3 tools/release/test_pack_appimage.py
           python3 tools/release/test_fetch_toolchain.py
 
       - name: Toolchain manifest (every download pinned)
         run: python3 tools/release/fetch_toolchain.py --check --strict
 
-      - name: SDL3 source, CMake and Ninja for Linux (SHA-256 checked)
-        run: python3 tools/release/fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux
+      - name: SDL3 source, CMake and Ninja for Linux, appimagetool and the AppImage runtime (SHA-256 checked)
+        run: python3 tools/release/fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux,appimagetool,appimage-runtime,appimage-runtime-license
 
       - name: Patched ps3recomp (the build files' recompiler)
         run: bash tools/ps3recomp-patched.sh
@@ -341,11 +346,30 @@ jobs:
           TARBALL: ${{ steps.ver.outputs.tarball }}
         run: tools/release/smoke_linux.sh "build/release-out/$TARBALL"
 
+      - name: Linux AppImage (the same files; pinned appimagetool and runtime)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          trees=work/release/toolchain-cache/trees
+          python3 tools/release/pack_appimage.py --program build/launcher-linux/qwarks-awakening \
+            --sdl3-licenses build/launcher-linux/licenses --toolkit work/ps3recomp-patched \
+            --version "$VERSION" --out build/release-out --glibc-max 2.35 \
+            --appimagetool "$trees/appimagetool/appimagetool-x86_64.AppImage" \
+            --runtime "$trees/appimage-runtime/runtime-x86_64" \
+            --runtime-license "$trees/appimage-runtime-license/LICENSE"
+          sha256sum build/release-out/*.AppImage
+
+      - name: AppImage start (--appimage-extract-and-run, temporary home, Xvfb)
+        env:
+          APPIMAGE_FILE: ${{ steps.ver.outputs.appimage }}
+        run: tools/release/smoke_appimage.sh "build/release-out/$APPIMAGE_FILE"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ steps.ver.outputs.artifact }}
           path: |
             build/release-out/${{ steps.ver.outputs.tarball }}
+            build/release-out/${{ steps.ver.outputs.appimage }}
           if-no-files-found: error
           # 14 days, as the launcher job's artifact: publish downloads it from this run
           retention-days: 14
@@ -487,6 +511,7 @@ jobs:
           SETUP_EXE: ${{ needs.launcher.outputs.setup_exe }}
           LINUX_ARTIFACT: ${{ needs.linux.outputs.artifact }}
           LINUX_TAR: ${{ needs.linux.outputs.tarball }}
+          LINUX_APPIMAGE: ${{ needs.linux.outputs.appimage }}
         run: |
           set -euo pipefail
           [ "$GITHUB_REF_NAME" = "launcher-v$VERSION" ] \
@@ -502,12 +527,12 @@ jobs:
             echo "::error::a release for $GITHUB_REF_NAME already exists; refusing to touch it"; exit 1
           fi
           test -s release-body.md
-          sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" > SHA256SUMS
+          sha256sum "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" "$LINUX_APPIMAGE" > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
           # The launcher release is a full release marked latest at every version; game releases stay pre-releases
           gh release create "$GITHUB_REF_NAME" --draft --latest --verify-tag --title "Launcher v$VERSION" --notes-file release-body.md \
-            "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" SHA256SUMS
+            "$SETUP_EXE" "$ZIP" "$BUILD_ZIP" "$SYMBOLS_ZIP" "$LINUX_TAR" "$LINUX_APPIMAGE" SHA256SUMS
 
   # Game tags (<id>-vX.Y.Z): the notes only, written from the CHANGELOG on a read-only job; nothing is built.
   game-notes:

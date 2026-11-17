@@ -26,9 +26,9 @@
    "update": null,
    "exe": "tods.exe",
    "estimate": {
-    "minutes": 12,
-    "disk_gb": 1.2,
-    "note": "ASSUMPTION: same as ACiT, not measured separately"
+    "minutes": 5,
+    "disk_gb": 0.7,
+    "note": "measured 2026-11-17: 293 s with 16 jobs (llvm-mingw clang, the 0.4.0 Linux download on a 20-thread CPU); 524 MB build files + 142 MB tods.exe = 666 MB. Fewer cores take longer: the estimate does not scale with the CPU"
    },
    "player_files": [
     {
