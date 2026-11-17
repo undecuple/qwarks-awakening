@@ -8,6 +8,7 @@
 **Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): an unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.**
 
 [![Release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&filter=launcher-v*&style=flat-square&label=release&labelColor=0a1942&color=b24500)](https://github.com/undecuple/qwarks-awakening/releases)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8fMT78Q7k)
 [![Downloads](https://img.shields.io/github/downloads/undecuple/qwarks-awakening/total?style=flat-square&label=downloads&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/releases)
 [![Stars](https://img.shields.io/github/stars/undecuple/qwarks-awakening?style=flat-square&label=stars&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/stargazers)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-1e70b9?style=flat-square&labelColor=0a1942)](LICENSE)
@@ -248,7 +249,7 @@ supported yet.
 **Where releases come from.** Qwark's Awakening is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple),
 Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** on the undecuple
 server, an unofficial fan work community with a forum for this project:
-[discord.gg/W8fMT78Q7k](https://discord.gg/W8fMT78Q7k) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8fMT78Q7k). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
+[discord.gg/W8fMT78Q7k](https://discord.gg/W8fMT78Q7k). Releases come only from this repository's [GitHub Releases](https://github.com/undecuple/qwarks-awakening/releases).
 We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or
 donations in this project's name is not us.
 
