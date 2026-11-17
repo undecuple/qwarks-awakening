@@ -252,6 +252,13 @@ def run(tmp):
         check(rc == 0 and f"LOG path={logf}" in o and "STARTED game=tods pid=" in o and "EXITED game=tods code=3" in o
               and "proton: starting" in o and "proton: starting" in open(logf).read(),
               "play: LOG, STARTED, the output (also in the log), EXITED code=N", o)
+        glogs = os.path.join(games, "logs")
+        first = open(logf).read().split("\n")[:3]
+        check(f"GAMELOG path={glogs}" in o and first[0].startswith("# Proton output for tods")
+              and glogs in first[1] and "QwarksAwakening-" in first[1] and "machine-id" in first[2]
+              and "proton: starting" in open(logf).read(),
+              "play: the Proton log's header names the game's own log folder (GAMELOG path= too); Proton's lines kept",
+              o + "\n".join(first))
         check(rec[:4] == ["waitforexitandrun", exe, pr.wine_path(eboot), "--env"]
               and f"STEAM_COMPAT_DATA_PATH={data}/prefixes/tods" in rec and f"PS3_VFS_ROOT={pr.wine_path(disc)}" in rec,
               "play: proton got the plan's argv and environment", rec)

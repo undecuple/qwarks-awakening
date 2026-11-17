@@ -1,6 +1,6 @@
 # The launcher on Linux
 
-*What was run (2026-11-16): on NixOS (NVIDIA GeForce RTX 4060, GE-Proton11-7, no Steam and no umu-launcher), a launcher built from source started* Tools of Destruction *through Play up to its "Press the START button" screen, and Stop ended it with no process left. The Linux download, made the way the release workflow makes it, was installed, started and removed in a fresh Ubuntu 22.04 container under Xvfb. Not run yet: starting a game from the download, and building a game with the Linux build tools.*
+*What was run: on NixOS (NVIDIA GeForce RTX 4060, no Steam and no umu-launcher, under Xvfb), the Linux download made by the release workflow was installed into an empty home folder (2026-11-17). The launcher started with steam-run; the Linux build tools (with nix-ld) and GE-Proton11-7 were downloaded and checked;* Tools of Destruction *was built in about 5 minutes (16 parallel jobs) and started through GE-Proton to its "Press the START button" screen; Stop ended it with no process left, and the uninstall removed the launcher's files. Earlier (2026-11-16) a launcher built from source played the same way, and the download was installed, started and removed in a fresh Ubuntu 22.04 container. Not run yet: a real display or Wayland, the launcher's buttons by hand (the engine behind them was run), umu-launcher, and other distributions than NixOS for building and playing.*
 
 The games are Windows programs. On Linux the launcher itself runs natively and starts each game through Proton,
 the compatibility layer Steam uses, with one Wine prefix per game. Steam does not need to be installed.
@@ -35,6 +35,45 @@ built games, prefixes, Proton runtimes, build tools, saves and settings ([Folder
 yourself to remove them too. Without installing, `./qwarks-awakening` also runs from the unpacked folder.
 
 `SHA256SUMS` on the release page lists the tarball's checksum.
+
+### NixOS
+
+The launcher, Proton and the Linux build tools are made for the usual Linux folder layout, which NixOS does not
+have. Start the launcher with `steam-run` (from `programs.steam.enable`):
+
+```sh
+steam-run qwarks-awakening
+```
+
+Without it the launcher stops at once with "No available video device" (it cannot find the X11 or Wayland
+libraries). The downloaded build tools (llvm-mingw, CMake, Ninja) need `steam-run` around the launcher or nix-ld
+(`programs.nix-ld.enable = true`); when they cannot start, Build says so before it begins.
+
+## The AppImage
+
+The same release also has `qwarks-awakening-launcher-<version>-x86_64.AppImage`: the same launcher, engine, build
+files, fonts and licence texts as the tarball, in one file that runs where you keep it, without installing.
+
+```sh
+chmod +x qwarks-awakening-launcher-<version>-x86_64.AppImage
+./qwarks-awakening-launcher-<version>-x86_64.AppImage
+```
+
+- It keeps your library, built games, prefixes, Proton runtimes, build tools, saves and settings in the same folders
+  as the tarball install ([Folders](#folders)), so the two can be used in turn. Nothing is written inside the
+  AppImage.
+- It needs FUSE to mount itself (most desktops have it). Without FUSE (some containers and minimal systems), start it
+  with `--appimage-extract-and-run`: it unpacks itself to a temporary folder for that run.
+- On NixOS, start it with `appimage-run` (nixpkgs), which runs it in the usual Linux folder layout:
+  `appimage-run qwarks-awakening-launcher-<version>-x86_64.AppImage`. Building and playing from the AppImage on NixOS
+  have not been tried yet.
+- To update, use the newer AppImage; to remove it, delete the file. There is no menu entry unless you add one.
+- It needs Python 3.10 or newer as `python3`, like the tarball (the engine runs with the system's Python).
+
+*What was run (2026-11-17): the AppImage, made by the release scripts from the release workflow's launcher program,
+started with `--appimage-extract-and-run` in a fresh Ubuntu 22.04 container under Xvfb with an empty home folder;
+its first start listed the eight games and wrote its library to `~/.local/share/qwarks-awakening/`. Not run yet:
+building or playing a game from the AppImage, a start through FUSE, and `appimage-run` on NixOS.*
 
 ## Build the launcher from source
 
@@ -95,7 +134,18 @@ The Linux download carries the build files (the port's source of that release an
 needs no other download from this project; what a build makes goes to `$XDG_DATA_HOME/qwarks-awakening/build/`,
 outside the launcher folder, so an update keeps it. A launcher
 built from a clone builds the games from that clone (the port's source and, through `tools/ps3recomp-patched.sh`, the
-patched recompiler). No game has been built on Linux with the Linux build tools yet.
+patched recompiler). A game build with the Linux build tools takes about 5 minutes with 16 parallel jobs and needs
+about 0.7 GB (*Tools of Destruction*, measured once); fewer CPU cores take longer.
+
+## Logs and troubleshooting
+
+- Each start writes what Proton and Wine print to `logs/proton-<game>.log` in `~/.local/share/qwarks-awakening/`.
+  Its first lines name the game's own log folder: `logs/` in the game's build folder (by default
+  `games/<game>/logs/<game>/` there, files `QwarksAwakening-<game>-<time>.log`). Read the game's log for what the
+  game did; on the game's page, "Open game log folder" opens it.
+- Lines in the Proton log such as `Failed to open /etc/machine-id`, fontconfig warnings or ProtonFixes messages are
+  Proton's own and normal; they do not mean the game failed.
+- A build writes `firstrun.log` in its build folder (`~/.local/share/qwarks-awakening/build/<game>/`).
 
 ## Folders
 

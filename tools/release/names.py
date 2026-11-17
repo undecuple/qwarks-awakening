@@ -82,6 +82,11 @@ def linux_tar_name(version):
     return f"{LINUX_STEM}-launcher-{version}-linux-x86_64.tar.gz"
 
 
+def linux_appimage_name(version):
+    """The Linux launcher's AppImage (pack_appimage.py): the same contents as the tarball, run in place."""
+    return f"{LINUX_STEM}-launcher-{version}-x86_64.AppImage"
+
+
 def linux_tar_top(version):
     """The one folder every tarball entry sits under."""
     return f"{LINUX_STEM}-launcher-{version}"

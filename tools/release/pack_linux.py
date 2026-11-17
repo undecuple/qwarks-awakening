@@ -4,6 +4,7 @@ build files and install.sh. Standard library only, Python 3.8+.
 
     pack_linux.py --program build/launcher-linux/qwarks-awakening --sdl3-licenses build/launcher-linux/licenses \\
                   --toolkit work/ps3recomp-patched --version X.Y.Z --out DIR [--root R] [--replace] [--glibc-max 2.35]
+                  [--commit HASH]
     pack_linux.py --check-elf FILE [--glibc-max 2.35]     the program's imports only (prints NEEDED and the glibc level)
     pack_linux.py --list ...                               print the file list (the same arguments as a pack), write nothing
 
@@ -24,6 +25,9 @@ The tarball (names.linux_tar_name(version), every entry under names.linux_tar_to
                                       (HIDAPI, BSD-style; yuv2rgb, BSD-3-Clause), Dear ImGui (MIT), each font's OFL
                                       text, ps3recomp (MIT); NOTICE.md beside them
   README.txt                          what the download holds, requirements, install and removal
+  docs/LINUX.md                       the Linux guide (public/docs/LINUX.md: install, NixOS, Proton, logs, building)
+  cmake/release-ident.txt             the version and the public commit (--commit, else $GITHUB_SHA) a game built
+                                      from these files names in its log header (cmake/rc_build_ident.cmake)
 
 Refused (nothing written): a missing input; a program that is not an x86-64 ELF executable for the standard
 interpreter (/lib64/ld-linux-x86-64.so.2), that imports a library outside the C library's own (ALLOWED_NEEDED: a
@@ -177,8 +181,67 @@ def ico_png(path, size=ICON_SIZE):
 
 
 # ---------------------------------------------------------------------------------------------------------- files
-def readme(version):
+def readme(version, appimage=False):
+    """README.txt of the tarball, or (appimage) of the AppImage: the same text with its own start, NixOS and contents
+    parts (pack_appimage.py)."""
     p = names.LINUX_PROGRAM
+    a = names.linux_appimage_name(version)
+    nixos = (f"""  Run the AppImage with appimage-run (nixpkgs), which runs it in the usual Linux folder layout:
+    appimage-run {a}""" if appimage else f"""  The launcher, Proton and the downloaded build tools are made for the usual Linux folder layout, which NixOS does
+  not have. Start the launcher with steam-run (from programs.steam.enable):
+    steam-run {p}
+  Everything it starts (Proton, the build tools) then runs inside the same environment. Without steam-run the
+  launcher stops with "No available video device", and the build tools need nix-ld (programs.nix-ld.enable).""")
+    start = (f"""Start
+  chmod +x {a}
+  ./{a}
+The AppImage runs from where you keep it; nothing is installed and nothing is written inside it. It keeps the
+library, built games, prefixes, Proton runtimes, build tools and saves in ~/.local/share/qwarks-awakening/
+($XDG_DATA_HOME when set) and the settings in $XDG_CONFIG_HOME/qwarks-awakening/ (.config in your home folder), the same folders as the tar.gz download, so
+the two can be used in turn. Without FUSE (some containers): ./{a} --appimage-extract-and-run.
+To update, use the newer AppImage; to remove it, delete the file (your data stays in the folders above).
+
+What is in the AppImage
+  {p}            the launcher (SDL 3 is built into it); AppRun starts it
+  tools/release/              the launcher's engine (Python): library, Play through Proton, the downloads
+  port/, ps3recomp/, cmake/,
+  tools/spu/, data/titles/    the build files: what a game's build is made from
+  fonts/                      the launcher's fonts (SIL Open Font License)
+  docs/LINUX.md               the Linux guide: NixOS, Proton, where the logs are, building
+  licenses/, NOTICE.md        the licence texts and credits: the port (MIT), SDL 3 (zlib) with the HIDAPI and
+                              yuv2rgb code it includes (BSD), Dear ImGui (MIT), the fonts (OFL), ps3recomp (MIT),
+                              the AppImage runtime (MIT) and the libraries it links in: libfuse (LGPL 2.1), musl,
+                              squashfuse, zstd, zlib, mimalloc
+  (./{a} --appimage-extract unpacks it into squashfs-root/ to look inside.)
+
+The AppImage runtime and libfuse
+  The first part of the AppImage is the AppImage type 2 runtime, release 20251108, unmodified:
+  https://github.com/AppImage/type2-runtime/tree/20251108 (source, build scripts and the libfuse patch). It links
+  libfuse 3.15.0 (LGPL 2.1; source https://github.com/libfuse/libfuse/releases/tag/fuse-3.15.0) statically, as the
+  runtime's build applies it, with squashfuse 0.5.2, musl, zstd, zlib and mimalloc. To use a different runtime or
+  libfuse build, re-pack the AppImage with another runtime file: tools/release/pack_appimage.py is in this AppImage
+  (--runtime RUNTIME-FILE), or use appimagetool --runtime-file RUNTIME-FILE on the unpacked squashfs-root/.
+  The licence text of each library is in licenses/.""" if appimage else f"""Install (for your user only, no administrator rights)
+  tar xf {names.linux_tar_name(version)}
+  cd {names.linux_tar_top(version)}
+  ./install.sh
+Then start "Qwark's Awakening" from your applications menu, or run ~/.local/bin/{p}.
+install.sh copies this folder to ~/.local/share/qwarks-awakening/launcher/ ($XDG_DATA_HOME is used when set), links
+~/.local/bin/{p} to it and adds a menu entry and its icon. Running the install.sh of a newer download replaces it.
+To remove it: ~/.local/share/qwarks-awakening/launcher/install.sh --uninstall. That keeps your library, built games,
+prefixes, Proton runtimes, build tools, saves and settings; it prints where they are.
+Without installing: run ./{p} from this folder.
+
+What is in this folder
+  {p}            the launcher (SDL 3 is built into it)
+  install.sh                  install for your user, or --uninstall
+  tools/release/              the launcher's engine (Python): library, Play through Proton, the downloads
+  port/, ps3recomp/, cmake/,
+  tools/spu/, data/titles/    the build files: what a game's build is made from
+  fonts/                      the launcher's fonts (SIL Open Font License)
+  docs/LINUX.md               the Linux guide: NixOS, Proton, where the logs are, building
+  licenses/, NOTICE.md        the licence texts and credits: the port (MIT), SDL 3 (zlib) with the HIDAPI and
+                              yuv2rgb code it includes (BSD), Dear ImGui (MIT), the fonts (OFL), ps3recomp (MIT)""")
     return f"""{names.PRODUCT} {version} for Linux x86-64
 {names.TAG}
 {names.REPO_URL}
@@ -199,26 +262,16 @@ Requirements
   - To build a game: Settings > Building > "Linux build tools" downloads llvm-mingw, CMake, Ninja and SDL3's
     package after you confirm.
 
-Install (for your user only, no administrator rights)
-  tar xf {names.linux_tar_name(version)}
-  cd {names.linux_tar_top(version)}
-  ./install.sh
-Then start "Qwark's Awakening" from your applications menu, or run ~/.local/bin/{p}.
-install.sh copies this folder to ~/.local/share/qwarks-awakening/launcher/ ($XDG_DATA_HOME is used when set), links
-~/.local/bin/{p} to it and adds a menu entry and its icon. Running the install.sh of a newer download replaces it.
-To remove it: ~/.local/share/qwarks-awakening/launcher/install.sh --uninstall. That keeps your library, built games,
-prefixes, Proton runtimes, build tools, saves and settings; it prints where they are.
-Without installing: run ./{p} from this folder.
+NixOS
+{nixos}
+  More in docs/LINUX.md.
 
-What is in this folder
-  {p}            the launcher (SDL 3 is built into it)
-  install.sh                  install for your user, or --uninstall
-  tools/release/              the launcher's engine (Python): library, Play through Proton, the downloads
-  port/, ps3recomp/, cmake/,
-  tools/spu/, data/titles/    the build files: what a game's build is made from
-  fonts/                      the launcher's fonts (SIL Open Font License)
-  licenses/, NOTICE.md        the licence texts and credits: the port (MIT), SDL 3 (zlib) with the HIDAPI and
-                              yuv2rgb code it includes (BSD), Dear ImGui (MIT), the fonts (OFL), ps3recomp (MIT)
+Logs
+  logs/proton-<game>.log in ~/.local/share/qwarks-awakening/ holds what Proton and Wine print; its first lines name
+  the game's own log folder (by default games/<game>/logs/ there, files QwarksAwakening-<game>-<time>.log). Lines such as
+  "Failed to open /etc/machine-id", fontconfig warnings or ProtonFixes messages are normal Proton output.
+
+{start}
 
 What goes online
   Nothing, unless you choose it. The launcher asks before every download: GE-Proton from its own GitHub release, the
@@ -231,7 +284,7 @@ SHA-256 sums of the release files are in SHA256SUMS on the release page.
 """
 
 
-def gather(program, sdl3_licenses, toolkit, root, version):
+def gather(program, sdl3_licenses, toolkit, root, version, commit=""):
     """-> (problems, [(tar path, source path or bytes, executable)])."""
     problems, files = [], []
 
@@ -268,6 +321,10 @@ def gather(program, sdl3_licenses, toolkit, root, version):
     need("licenses/imgui-LICENSE.txt", os.path.join(root, "third_party", "imgui", "LICENSE.txt"))
     need("licenses/LICENSE.txt", pack_zip.repo_file(root, "LICENSE"))
     need("NOTICE.md", pack_zip.repo_file(root, "NOTICE.md"))
+    need("docs/LINUX.md", pack_zip.repo_file(root, "docs/LINUX.md"))
+    if os.path.exists(os.path.join(root, *pack_zip.IDENT.split("/"))):
+        problems.append(f"{pack_zip.IDENT}: present in the source tree (the pack writes it; remove it)")
+    files.append((pack_zip.IDENT, pack_zip.release_ident(version, commit), False))
     for n in ENGINE:
         need(f"tools/release/{n}", os.path.join(root, "tools", "release", n))
     # the build files: the Windows kit's source subset and toolkit, never its toolchain/
@@ -343,6 +400,7 @@ def main(argv=None, out=sys.stdout):
     ap.add_argument("--glibc-max", default=GLIBC_MAX)
     ap.add_argument("--check-elf", metavar="FILE")
     ap.add_argument("--list", action="store_true", help="print the file list and stop")
+    ap.add_argument("--commit", default="", help="the public commit (default $GITHUB_SHA): release-ident.txt")
     a = ap.parse_args(argv)
     if a.check_elf:
         try:
@@ -365,8 +423,12 @@ def main(argv=None, out=sys.stdout):
         print(f"--version {a.version!r} is not X.Y.Z", file=out)
         return 2
     root = os.path.abspath(a.root)
+    commit, bad = pack_zip.release_commit(a.commit)
+    if bad:
+        print(bad, file=out)
+        return 2
     problems, files = gather(os.path.abspath(a.program), os.path.abspath(a.sdl3_licenses), os.path.abspath(a.toolkit),
-                             root, a.version)
+                             root, a.version, commit)
     if os.path.isfile(a.program):
         problems += program_problems(a.program, a.glibc_max, root)
     if a.list:

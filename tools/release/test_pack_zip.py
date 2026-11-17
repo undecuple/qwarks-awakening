@@ -301,6 +301,24 @@ def test_kit(tmp, root):
     check(open(os.path.join(inst, names.LAUNCHER_EXE), "rb").read() == open(good, "rb").read(),
           "the launcher's own exe is left alone")
     check(kit.status(inst, sha)["state"] == "ready", "kit.py status: ready after the install", kit.status(inst, sha))
+    # the release stamp: the version and the public commit (--commit, else $GITHUB_SHA), never git of where it lands
+    want_ident = pack_zip.release_ident("1.2.3", pack_zip.release_commit("")[0])
+    check(pack_zip.IDENT in paths and open(os.path.join(inst, *pack_zip.IDENT.split("/")), "rb").read() == want_ident,
+          "the kit carries release-ident.txt (version and commit) and kit.py installs it")
+    check(pack_zip.release_commit("0522150BF0FB0123456789", {}) == ("0522150bf0fb", None)
+          and pack_zip.release_commit("", {"GITHUB_SHA": "0522150bf0fb99"}) == ("0522150bf0fb", None)
+          and pack_zip.release_commit("", {}) == ("", None) and pack_zip.release_commit("v0.4.0", {})[1],
+          "release commit: --commit, else $GITHUB_SHA, 12 hex digits; empty without either; a non-hash refused")
+    check(b"version=1.2.3\ncommit=0522150bf0fb\n" in pack_zip.release_ident("1.2.3", "0522150bf0fb"),
+          "release-ident.txt: version= and commit= lines (cmake/rc_build_ident.cmake reads them)")
+    rc, out = main_args("--make-kit-manifest", os.path.join(tmp, "kit", "y.json"), "--toolkit", tk, "--toolchain",
+                        trees, "--version", "1.2.3", "--root", root, "--no-estimate", "--commit", "not-a-hash")
+    check(rc == 2 and "not a git commit" in out, "refused: a --commit that is not a hash", out)
+    write(os.path.join(root, *pack_zip.IDENT.split("/")), "version=9.9.9\n")
+    rc, out = main_args("--make-kit-manifest", os.path.join(tmp, "kit", "y.json"), "--toolkit", tk, "--toolchain",
+                        trees, "--version", "1.2.3", "--root", root, "--no-estimate")
+    check(rc == 1 and "present in the source tree" in out, "refused: a release-ident.txt left in the source tree", out)
+    os.remove(os.path.join(root, *pack_zip.IDENT.split("/")))
     # refusals of the full zip
     bad_exe = os.path.join(tmp, "launcher-other.exe")
     write(bad_exe, pe(extra=b"\0" + b"0" * 64 + b"\0"))

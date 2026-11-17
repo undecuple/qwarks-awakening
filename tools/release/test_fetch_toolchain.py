@@ -93,15 +93,18 @@ def test_real_manifest():
     names = {c["name"] for c in m["components"]}
     lic = {"llvm-mingw-license", "llvm-license", "mingw-w64-license", "winpthreads-license", "lgpl-2.1-text", "ninja-license"}
     linux = {"cmake-linux", "ninja-linux", "ge-proton", "sdl3-source"}
-    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic | linux,
-          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python, the kit's licence texts and "
-          "the Linux launcher's build tools, GE-Proton and SDL3's source", names)
+    appimage = {"appimagetool", "appimage-runtime", "appimage-runtime-license"}   # the AppImage (pack_appimage.py)
+    check(names == {"llvm-mingw", "llvm-mingw-linux", "sdl3", "cmake", "ninja", "python"} | lic | linux | appimage,
+          "manifest pins llvm-mingw (Windows and Linux hosts), sdl3, cmake, ninja, python, the kit's licence texts, "
+          "the Linux launcher's build tools, GE-Proton, SDL3's source and the AppImage tool, runtime and its licence",
+          names)
     by = {c["name"]: c for c in m["components"]}
     check({n for n, c in by.items() if c.get("linux") == "build"} == {"llvm-mingw-linux", "cmake-linux", "ninja-linux"}
           and {n for n, c in by.items() if c.get("linux") == "runtime"} == {"ge-proton"}
-          and {n for n, c in by.items() if c.get("linux") == "release"} == {"sdl3-source"}
-          and not by["sdl3-source"].get("kit"),
-          "linux: build = llvm-mingw-linux, cmake-linux, ninja-linux; runtime = ge-proton; release = sdl3-source (not in the kit)")
+          and {n for n, c in by.items() if c.get("linux") == "release"} == {"sdl3-source"} | appimage
+          and not any(by[n].get("kit") for n in {"sdl3-source"} | appimage),
+          "linux: build = llvm-mingw-linux, cmake-linux, ninja-linux; runtime = ge-proton; release = sdl3-source and "
+          "the AppImage entries (none in the kit)")
     ge = ft.expand(by["ge-proton"])
     check(ge["url"] == "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/"
           "GE-Proton11-7-x86_64.tar.gz" and ge["archive"] == "tar" and ge.get("strip_top")
@@ -110,6 +113,11 @@ def test_real_manifest():
     check(by["ninja-linux"].get("exec") == ["ninja"], "ninja-linux: the zip's ninja is made executable")
     for c in m["components"]:
         e = ft.expand(c)
+        if c["name"] == "appimage-runtime-license":   # the runtime's own repository at the pinned tag
+            check(e["url"] == "https://raw.githubusercontent.com/AppImage/type2-runtime/20251108/LICENSE"
+                  and c["archive"] == "file" and not c.get("kit_license"), "appimage-runtime-license: its tag's LICENSE",
+                  e["url"])
+            continue
         if c["name"] in lic:   # licence texts: the project's own repository at the pinned tag (or the FSF's text)
             check(e["url"].startswith(("https://raw.githubusercontent.com/", "https://www.gnu.org/licenses/"))
                   and "{" not in e["url"] and c["archive"] == "file" and c.get("kit_license"),

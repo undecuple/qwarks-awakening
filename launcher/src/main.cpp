@@ -93,6 +93,7 @@ struct Task {
     std::atomic<bool> running{false}, finished{false};
     std::string kind, game, title;           // kind "build" | "play"; game = the id asked for (a Collection builds its games in turn)
     std::string step, curGame, logPath;      // PROGRESS name=, GAME id= (Collection), LOG path=
+    std::string gameLogPath;                 // play: GAMELOG path= (the game's own log folder beside its exe)
     std::vector<std::string> lines, reasons; // the output without PROGRESS lines (capped), and the REASON lines
     float pct = 0.f;
     int result = -1;                         // RESULT ok=0|1, -1 = none yet
@@ -1147,6 +1148,7 @@ static void TaskLine(const std::string& raw) {
     std::lock_guard<std::mutex> l(t.m);
     if (line.compare(0, 9, "PROGRESS ") == 0) { t.step = Field(line, "name"); t.pct = (float)atof(Field(line, "pct").c_str()); return; }
     if (line.compare(0, 9, "LOG path=") == 0) t.logPath = line.substr(9);
+    else if (line.compare(0, 13, "GAMELOG path=") == 0) t.gameLogPath = line.substr(13);
     else if (line.compare(0, 7, "REASON ") == 0) t.reasons.push_back(line.substr(7));
     else if (line.compare(0, 7, "RESULT ") == 0) { t.result = Field(line, "ok") == "1" ? 1 : 0; t.cancelled = Field(line, "step") == "cancelled"; }
     else if (line.compare(0, 5, "GAME ") == 0) { t.curGame = Field(line, "id"); t.step.clear(); t.pct = 0; }
@@ -1205,7 +1207,7 @@ static bool ClaimTask(const std::string& kind, const std::string& id, const std:
     {
         std::lock_guard<std::mutex> l(A.task.m);
         A.task.kind = kind; A.task.game = id; A.task.title = title; A.task.step.clear(); A.task.curGame.clear();
-        A.task.logPath.clear(); A.task.lines.clear(); A.task.reasons.clear(); A.task.pct = 0; A.task.result = -1;
+        A.task.logPath.clear(); A.task.gameLogPath.clear(); A.task.lines.clear(); A.task.reasons.clear(); A.task.pct = 0; A.task.result = -1;
         A.task.exited = false; A.task.exitCode = 0; A.task.secs = 0; A.task.procRc = 0; A.task.cancelled = false; A.task.stopAsked = false;
         A.task.replay = false;
     }
@@ -1705,8 +1707,8 @@ static void BuildAndPlay(Game& g, float x, float w) {
     if (g.state == State::NotAdded || g.state == State::NotPorted || g.state == State::WrongVersion) {
         if (!TaskOf(g)) return;
     }
-    std::string step, cur, logPath; std::vector<std::string> lines, reasons; float pct; int result, code, secs; bool exited, stopAsked, cancelled;
-    { std::lock_guard<std::mutex> l(A.task.m); step = A.task.step; cur = A.task.curGame; logPath = A.task.logPath; lines = A.task.lines; reasons = A.task.reasons;
+    std::string step, cur, logPath, gameLogPath; std::vector<std::string> lines, reasons; float pct; int result, code, secs; bool exited, stopAsked, cancelled;
+    { std::lock_guard<std::mutex> l(A.task.m); step = A.task.step; cur = A.task.curGame; logPath = A.task.logPath; gameLogPath = A.task.gameLogPath; lines = A.task.lines; reasons = A.task.reasons;
       pct = A.task.pct; result = A.task.result; code = A.task.exitCode; secs = A.task.secs; exited = A.task.exited; stopAsked = A.task.stopAsked; cancelled = A.task.cancelled; }
     bool mine = TaskOf(g), running = mine && TaskRunning(), building = running && A.task.kind == "build";
     std::string desc = g.children.empty() ? "The build runs on this PC from your own files; the game starts from here when it is built."
@@ -1806,6 +1808,10 @@ static void BuildAndPlay(Game& g, float x, float w) {
             ImGui::EndChild();
             ImGui::PopStyleColor();
             if (!logPath.empty()) { if (Btn("Open log folder##lf", ImVec2(BtnW("Open log folder"), A.S(36.f)), false)) OpenFolderOf(logPath); }
+            if (!gameLogPath.empty()) {   // play: the Proton log above holds Proton's output; the game's own log is here
+                ImGui::SameLine();
+                if (Btn("Open game log folder##glf", ImVec2(BtnW("Open game log folder"), A.S(36.f)), false)) OpenFolderOf(gameLogPath);
+            }
         });
         EndBoxedList();
     }
@@ -3141,7 +3147,18 @@ int main(int argc, char** argv) {
 #endif
         A.fontDir = SDL_GetPathInfo((d + "/AdwaitaSans-Regular.ttf").c_str(), &pi) ? d : LAUNCHER_FONT_DIR;
     }
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+#ifdef __linux__
+        // SDL loads libX11/libwayland-client at run time; NixOS has them only in the store, so a plain start finds none
+        // ("No available video device"). steam-run (or nix-ld with those libraries) supplies the usual folders.
+        SDL_PathInfo nx;
+        if (SDL_GetPathInfo("/etc/NIXOS", &nx))
+            fprintf(stderr, "On NixOS, start the launcher with steam-run qwarks-awakening (or enable nix-ld with the X11 "
+                            "and Wayland libraries); see docs/LINUX.md.\n");
+#endif
+        return 1;
+    }
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     A.win = SDL_CreateWindow("Qwark's Awakening", W, H, SDL_WINDOW_RESIZABLE | (A.shotMode ? 0 : SDL_WINDOW_HIGH_PIXEL_DENSITY));
     if (!A.win) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }

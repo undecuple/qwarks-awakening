@@ -44,7 +44,7 @@ import names  # noqa: E402
 
 AI_LINE = "AI tools were used in making this port; the README section \"How AI was used\" says how."
 PARA2 = (f"You need your own copy of the game (the US disc, {names.SERIAL}) and the decrypted EBOOT made from it; "
-         "neither is included or downloaded. SHA-256 sums of the five files: SHA256SUMS. See the README for "
+         "neither is included or downloaded. SHA-256 sums of the six files: SHA256SUMS. See the README for "
          "what it does and what goes online.")
 PARA2_GAME = ("You need your own copy of the game and the decrypted EBOOT made from it; neither is included or "
               "downloaded. This release has no download: the game is built on your PC from your copy by the launcher "
@@ -54,7 +54,7 @@ LAUNCHER_GROUPS = ("[All games]", "[Launcher]")
 
 def downloads(version, link=lambda path, label=None: label or path):
     """The launcher release's download list (0.3.1): the installer first, the zips as the portable option, then
-    the Linux tarball (0.4.0)."""
+    the Linux tarball and AppImage (0.4.0)."""
     return ["**Downloads**", "",
             f"- **Installer (recommended):** `{names.setup_exe_name(version)}`. It installs the launcher and the build "
             "kit for your Windows user (no administrator rights) and adds Start-menu and desktop shortcuts. The program "
@@ -66,6 +66,10 @@ def downloads(version, link=lambda path, label=None: label or path):
             "and run `./install.sh` (for your user, no administrator rights; `--uninstall` removes it again). It "
             "needs Python 3.10 or newer and glibc 2.34 or newer, and starts the games through Proton: see "
             f"{link('docs/LINUX.md')}.",
+            f"- **Linux AppImage:** `{names.linux_appimage_name(version)}` holds the same files in one program that runs "
+            "where you keep it, without installing: make it executable (`chmod +x`) and start it. It keeps your "
+            "library, games and settings in the same folders as the tarball install. On NixOS, start it with "
+            "`appimage-run`.",
             f"- `{names.symbols_zip_name(version)}`: the Windows launcher's debug information, only for bug reports.", ""]
 SETUP_GROUP = "Test setup"
 STATE = {"not_built": "not built", "boots": "boots", "menus": "menus", "in_game": "in game",
