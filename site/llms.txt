@@ -2,9 +2,11 @@
 
 > Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): an unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.
 
-Status: early work, not playable yet. Version 0.4.0. The launcher builds the
-games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; nothing was
-tested on Windows itself. An earlier build of the first target, Tools of Destruction, was played by hand from its first level, with known bugs. Nobody
+Status: early work, not playable yet. Version 0.4.0, a launcher release: a new
+look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that
+knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
+(CHANGELOG). The launcher builds the games on your PC from your own copy. Every test so far ran the
+Windows programs under Proton on Linux; nothing was tested on Windows itself. An earlier build of the first target, Tools of Destruction, was played by hand from its first level, with known bugs. Nobody
 has played it through. How far each other game gets in scripted runs is in the status table. No game is
 online yet (ONLINE.md).
 

@@ -19,6 +19,9 @@
     "disc": {
      "US": [
       "BCUS98127"
+     ],
+     "EU": [
+      "BCES00052"
      ]
     },
     "digital": {}
@@ -62,6 +65,21 @@
      "media": "disc",
      "file": "EBOOT.BIN",
      "disc_version": "02.00"
+    },
+    {
+     "title_id": "BCES00052",
+     "region": "EU",
+     "app_ver": "01.00",
+     "size": 10923400,
+     "sha256": "cd2c37351e840fb31810f1be5fe9d7d03860d2c1d9b621f8ee55cdf67a8889ba",
+     "status": "unsupported",
+     "self_sha256": "209adbf717391bd223941993526895f0e03bb5f98436cd67eef92f593c08f7dd",
+     "segment_sha256": "ae212263bd8d4b972e08c6ec0402fc2e208f3c1f2c70af15de5145eaf03edf5b",
+     "self_size": 10925832,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "01.00",
+     "note": "EU disc (14 languages): a different program from the US one (code shifted throughout); the port is built from the US program, so this one is not supported yet (checked 2026-11-17)"
     }
    ]
   },
@@ -229,6 +247,66 @@
      "file": "EBOOT.BIN",
      "disc_version": null,
      "note": "ASSUMPTION: app_ver from the update package name (A0120); its encrypted EBOOT.BIN is inside the package and was not hashed"
+    },
+    {
+     "title_id": "BCES00511",
+     "region": "EU",
+     "app_ver": "01.20",
+     "size": 14515616,
+     "sha256": "8111b11e1221561a649c77f541ab6c8fc037ded34080198289be6cfc1c2fb74f",
+     "status": "unsupported",
+     "self_sha256": "5dc242f776dc77865cead9338a183e73b7254d4bb4ff6177d50a66fd9cd3f118",
+     "segment_sha256": "43cec0c7ef9ea80febf04f93ea0fb6157344e836469ad105db98bf166ef1e560",
+     "self_size": 14518352,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.20: a different program from the US one (the EU and JP updates share it); the port is built from the US program, so this one is not supported yet (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCES00726",
+     "region": "EU",
+     "app_ver": "01.20",
+     "size": 14515616,
+     "sha256": "8111b11e1221561a649c77f541ab6c8fc037ded34080198289be6cfc1c2fb74f",
+     "status": "unsupported",
+     "self_sha256": "a309b93665a933f29aef030477fff7e7c75566c32a40c333193d1254e64a8ca6",
+     "segment_sha256": "43cec0c7ef9ea80febf04f93ea0fb6157344e836469ad105db98bf166ef1e560",
+     "self_size": 14518352,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.20: a different program from the US one (the EU and JP updates share it); the port is built from the US program, so this one is not supported yet (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCES00748",
+     "region": "EU",
+     "app_ver": "01.20",
+     "size": 14515616,
+     "sha256": "8111b11e1221561a649c77f541ab6c8fc037ded34080198289be6cfc1c2fb74f",
+     "status": "unsupported",
+     "self_sha256": "d163a278af7c30844f9b54745994a29404bf7c79023ff6f399e54965ef1f8f86",
+     "segment_sha256": "43cec0c7ef9ea80febf04f93ea0fb6157344e836469ad105db98bf166ef1e560",
+     "self_size": 14518352,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.20: a different program from the US one (the EU and JP updates share it); the port is built from the US program, so this one is not supported yet (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCJS30038",
+     "region": "JP",
+     "app_ver": "01.20",
+     "size": 14515616,
+     "sha256": "8111b11e1221561a649c77f541ab6c8fc037ded34080198289be6cfc1c2fb74f",
+     "status": "unsupported",
+     "self_sha256": "e896bc440444d033c42e68afc72b70ef9bee1bee4e085f52f9402d0ba52f8000",
+     "segment_sha256": "43cec0c7ef9ea80febf04f93ea0fb6157344e836469ad105db98bf166ef1e560",
+     "self_size": 14518352,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.20: a different program from the US one (the EU and JP updates share it); the port is built from the US program, so this one is not supported yet (checked 2026-11-17)"
     }
    ]
   },
@@ -329,6 +407,66 @@
      "file": "EBOOT.BIN",
      "disc_version": null,
      "note": "ASSUMPTION: app_ver from the update package name (A0103); its encrypted EBOOT.BIN is inside the package and was not hashed"
+    },
+    {
+     "title_id": "BCES01141",
+     "region": "EU",
+     "app_ver": "01.03",
+     "size": 15990904,
+     "sha256": "fe55e6985fab19d2eaf505280eb91df4900ae205b28a21fe0211f0ea45c5e635",
+     "status": "tested",
+     "self_sha256": "cf58270ccd068b802931b2c0cc5d7af080ecf1a5d3ebd28ce1213f1e09f74a3e",
+     "segment_sha256": "8a6b1ea7a34a3b241f1505799d40732334028ac6579a9f534a5cc93d548608d6",
+     "self_size": 15993648,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.03: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCES01142",
+     "region": "EU",
+     "app_ver": "01.03",
+     "size": 15990904,
+     "sha256": "fe55e6985fab19d2eaf505280eb91df4900ae205b28a21fe0211f0ea45c5e635",
+     "status": "tested",
+     "self_sha256": "783a08452c4df8791f4c236ceaad6b5a84fd1021455f242b769af4714a018fa8",
+     "segment_sha256": "8a6b1ea7a34a3b241f1505799d40732334028ac6579a9f534a5cc93d548608d6",
+     "self_size": 15993648,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.03: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCJS30081",
+     "region": "JP",
+     "app_ver": "01.03",
+     "size": 15990904,
+     "sha256": "fe55e6985fab19d2eaf505280eb91df4900ae205b28a21fe0211f0ea45c5e635",
+     "status": "tested",
+     "self_sha256": "231b910a34707832dc1e0e7132632535bde78681ce91f466a50caf28d4de1a7b",
+     "segment_sha256": "8a6b1ea7a34a3b241f1505799d40732334028ac6579a9f534a5cc93d548608d6",
+     "self_size": 15993648,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.03: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCAS20200",
+     "region": "AS",
+     "app_ver": "01.03",
+     "size": 15990904,
+     "sha256": "fe55e6985fab19d2eaf505280eb91df4900ae205b28a21fe0211f0ea45c5e635",
+     "status": "tested",
+     "self_sha256": "80ff6371fbe3f9bbf965f61014cb57b261313a0585e2ea4b33e0f430d17419ee",
+     "segment_sha256": "8a6b1ea7a34a3b241f1505799d40732334028ac6579a9f534a5cc93d548608d6",
+     "self_size": 15993648,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.03: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
     }
    ]
   },
@@ -432,13 +570,73 @@
      "size": 16451016,
      "sha256": "6e2d4f257219cc038210a990af16576d6bd77d686dda266f94cd52803e347f24",
      "status": "tested",
-     "self_sha256": "",
+     "self_sha256": "bd7673bd210b3e356691e2a44b54de4bbad0c75ea1883990238eaeb4775b79fa",
      "segment_sha256": "5ba8a1cb7242792ddfadfaa76f20d233867e920ee2c8de67e26876e6d52d206a",
-     "self_size": null,
+     "self_size": 16453760,
      "media": "update",
      "file": "EBOOT.BIN",
      "disc_version": null,
-     "note": "ASSUMPTION: app_ver from the update package name (A0105); its encrypted EBOOT.BIN is inside the package and was not hashed"
+     "note": "app_ver from the update package name (A0105); EBOOT.BIN hashed from the package 2026-11-17"
+    },
+    {
+     "title_id": "BCES01594",
+     "region": "EU",
+     "app_ver": "01.00",
+     "size": 16385480,
+     "sha256": "b323372d0ab1e0ddf1c55c83b25bdd8d55c53915af73e5505c59f36e01ef9cb3",
+     "status": "untested",
+     "self_sha256": "935c891fd51f3c9ed7ad670f685625a6e1f4f7956de3fa2f8f7e28b7a542649c",
+     "segment_sha256": "aadf5625988d487f6f450e2ee7b32bdb44d5407db7a6fbc893c94ffea84c707c",
+     "self_size": 16387912,
+     "media": "disc",
+     "file": "EBOOT.BIN",
+     "disc_version": "01.02",
+     "note": "disc EBOOT.BIN (PARAM.SFO APP_VER 01.00, VERSION 01.02); the port needs the 1.05 update program instead"
+    },
+    {
+     "title_id": "BCES01594",
+     "region": "EU",
+     "app_ver": "01.04",
+     "size": 16385480,
+     "sha256": "e5e6e7606e0c1d7931c1fbc80d303fac2e87962c0f998e9b7195437561e9fcdc",
+     "status": "untested",
+     "self_sha256": "91671068f062c4f005e9d643d09fe844a2445bb0978d6a8ad2857652a4ea1c1c",
+     "segment_sha256": "b4850efda3b75bbc58270a693d4d73a1c94d3bd1d39b47d4ae6c35342433b5a9",
+     "self_size": 16388224,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 1.04 (A0104) EBOOT.BIN; superseded by 1.05"
+    },
+    {
+     "title_id": "BCES01594",
+     "region": "EU",
+     "app_ver": "01.05",
+     "size": 16451016,
+     "sha256": "6e2d4f257219cc038210a990af16576d6bd77d686dda266f94cd52803e347f24",
+     "status": "tested",
+     "self_sha256": "6dd30d283c3b3382e67cb6fc686f157d3d726ec530659e3013d073d7a6ac5936",
+     "segment_sha256": "5ba8a1cb7242792ddfadfaa76f20d233867e920ee2c8de67e26876e6d52d206a",
+     "self_size": 16453760,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 1.05 (A0105): the decrypted program is byte-identical to the US 1.05 one (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCES01626",
+     "region": "EU",
+     "app_ver": "01.05",
+     "size": 16451016,
+     "sha256": "6e2d4f257219cc038210a990af16576d6bd77d686dda266f94cd52803e347f24",
+     "status": "tested",
+     "self_sha256": "6f5649b582ddbb09539aa72fa09f1b8a654b976b8de984a58c902ac925ccc005",
+     "segment_sha256": "5ba8a1cb7242792ddfadfaa76f20d233867e920ee2c8de67e26876e6d52d206a",
+     "self_size": 16453760,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 1.05 (A0105): the decrypted program is byte-identical to the US 1.05 one (checked 2026-11-17)"
     }
    ]
   },
@@ -548,6 +746,36 @@
      "file": "EBOOT.BIN",
      "disc_version": null,
      "note": "ASSUMPTION: app_ver from the update package name (A0101); its encrypted EBOOT.BIN is inside the package and was not hashed; same size as the disc build, only the hashes tell them apart"
+    },
+    {
+     "title_id": "BCES01908",
+     "region": "EU",
+     "app_ver": "01.01",
+     "size": 15536464,
+     "sha256": "b66c17e406a695f2dc538bd581709afcc4862077f46edb9f637f7d5640e3af47",
+     "status": "tested",
+     "self_sha256": "21d4bb6003286c9fd5385b3a2ea58e48660175632844fc11685c2d0f7d99f53d",
+     "segment_sha256": "aa519f8e1d3379e90d21fc8676484c674ee0f1cd1a96f3bcf7ac0b57a043f680",
+     "self_size": 15539200,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.01: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
+    },
+    {
+     "title_id": "BCES01949",
+     "region": "EU",
+     "app_ver": "01.01",
+     "size": 15536464,
+     "sha256": "b66c17e406a695f2dc538bd581709afcc4862077f46edb9f637f7d5640e3af47",
+     "status": "tested",
+     "self_sha256": "1a8166641398e6ec460e270143c5d488222508d953607af05a1a4621a16b3091",
+     "segment_sha256": "aa519f8e1d3379e90d21fc8676484c674ee0f1cd1a96f3bcf7ac0b57a043f680",
+     "self_size": 15539200,
+     "media": "update",
+     "file": "EBOOT.BIN",
+     "disc_version": null,
+     "note": "update 01.01: the decrypted program is byte-identical to the US one (checked 2026-11-17)"
     }
    ]
   },

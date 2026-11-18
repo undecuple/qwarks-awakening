@@ -1,0 +1,76 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Ratchet & Clank Collection",
+  "system": "PS3",
+  "type": "recomp",
+  "original": {
+    "region": "US",
+    "serial": "BCUS98282",
+    "revision": "disc, no update"
+  },
+  "project": "Qwark's Awakening",
+  "status": "in-progress",
+  "targets": [
+    "Windows"
+  ],
+  "toolchain": [
+    "ps3recomp"
+  ],
+  "approach": "Static recompilation of the PPU code to C with ps3recomp and of the SPU programs, HLE system libraries, Direct3D 12 RSX backend; a launcher builds each game on your PC from your own copy",
+  "maintainers": [
+    {
+      "name": "undecuple",
+      "link": "https://github.com/undecuple"
+    }
+  ],
+  "links": [
+    {
+      "label": "Repository",
+      "url": "https://github.com/undecuple/qwarks-awakening"
+    },
+    {
+      "label": "Discord",
+      "url": "https://discord.gg/W8fMT78Q7k"
+    },
+    {
+      "label": "Building",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md"
+    },
+    {
+      "label": "Linux and Proton",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/LINUX.md"
+    },
+    {
+      "label": "Requirements",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md"
+    },
+    {
+      "label": "Known issues",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/KNOWN_ISSUES.md"
+    },
+    {
+      "label": "Roadmap",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md"
+    },
+    {
+      "label": "Feature parity",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3"
+    },
+    {
+      "label": "Releases",
+      "url": "https://github.com/undecuple/qwarks-awakening/releases"
+    }
+  ],
+  "help": [
+    "Testing on Windows itself (the project's own runs are under Proton on Linux)",
+    "Testing on AMD and Intel GPUs",
+    "Testing the Linux launcher on more distributions"
+  ],
+  "tags": [
+    "cell",
+    "spurs",
+    "d3d12",
+    "proton"
+  ],
+  "notes": "Early work, not playable. One card for the collection's three games (Ratchet & Clank 1, 2 and 3, the PS2 remasters), since each builds into its own program from the same disc. A scripted new game of each reaches its first level with the player under scripted control (one build each: R&C 1 and R&C 3 on Veldin, R&C 2 on Aranos); none was played by hand. Needs your own copy of the game and the decrypted EBOOT made from it; the launcher builds the game on your PC. The project's own test runs use the Windows program under Proton on Linux (the Linux launcher starts it that way); players have reported results from Windows itself."
+}
