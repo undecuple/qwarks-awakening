@@ -11,7 +11,7 @@ been played through and is not playable yet. Every test run so far was the Windo
 | Way to build | Who it is for | State |
 |---|---|---|
 | The launcher (installer or zip from the releases) | Players | Builds a game from your own copy since v0.3.0; checked on Linux only, not tried on Windows. See the README's Install part. |
-| From source on native Windows, below | Developers | PowerShell entry point, pinned native tools; no WSL, Bash or Nix |
+| From source on native Windows, below | Developers | PowerShell entry point, pinned native tools; no WSL, Bash or Nix. A contributor reports that this path builds and boots the game natively on Windows (their own hardware); the project has not run it on Windows itself. |
 | From source with [Nix](https://nixos.org/), below | Developers | The way every game test build was made |
 
 The releases carry no game program.

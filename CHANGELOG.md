@@ -3,6 +3,19 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
+## [Unreleased]
+
+### [Launcher]
+- A native Windows source build: `tools\build-windows.ps1` fetches the pinned llvm-mingw, CMake, Ninja and SDL3
+  archives (checked against their SHA-256), prepares the patched ps3recomp copy, lifts and builds a game and stages
+  it, with PowerShell and Python only (no WSL, Bash or Nix); see [docs/BUILDING.md](docs/BUILDING.md). A contributor
+  reports that this path builds and boots the game natively on Windows (their own hardware); the project has not run
+  it on Windows itself. The patched ps3recomp copy is now made by `tools/ps3recomp_patched.py` on every platform
+  (`tools/ps3recomp-patched.sh` calls it); on Linux its tree is byte-identical to the old script's.
+- The build check accepts an ISO that was decrypted in place and still starts with the disc's table of clear
+  regions: when the game program inside it is readable, the image counts as decrypted. Before, such an image was
+  refused as encrypted. Checked with synthetic images only.
+
 ## [0.4.0] - 2026-11-18 (pre-release)
 
 Summary: A new look for the launcher and the site, and a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton.

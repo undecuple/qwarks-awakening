@@ -34,7 +34,8 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that
 knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
 ([CHANGELOG](CHANGELOG.md)). The launcher builds the games on your PC from your own copy. Every test so far ran the
-Windows programs under Proton on Linux; nothing was tested on Windows itself. An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
+Windows programs under Proton on Linux; the project has not tested on Windows itself (a contributor's report of a
+native Windows build is in the [status table](#status)). An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
 has played it through. How far each other game gets in scripted runs is in the [status table](#status). No game is
 online yet ([ONLINE.md](docs/ONLINE.md)).
 
@@ -159,15 +160,16 @@ follow [docs/BUILDING.md](docs/BUILDING.md) (native Windows or Linux with Nix).
 
 | Platform | How it runs | Renderer | State | Tested on |
 |---|---|---|---|---|
-| Windows 10/11 | native exe | Direct3D 12 | builds and boots natively | Windows build 26200, NVIDIA GeForce RTX 5070, AMD Ryzen 7 9800X3D |
+| Windows 10/11 | native exe | Direct3D 12 | builds; a contributor reports that the native source build builds and boots the game on Windows (their own hardware); the project has not run it on Windows itself | The contributor's machine: Windows build 26200, NVIDIA GeForce RTX 5070, AMD Ryzen 7 9800X3D |
 | Linux | the Windows exe under Proton | Direct3D 12 through vkd3d-proton | runs, scripted and by hand | NVIDIA GeForce RTX 4060, driver 595.112.07, GE-Proton11-7, Intel Core i7-12700KF |
 
-Runs of *Tools of Destruction*. Except for the native Windows smoke test, these ran under Proton on the hardware above.
+Runs of *Tools of Destruction*. Except for the native Windows smoke test, a contributor's report, these ran under
+Proton on the hardware above.
 A scripted run follows a pad script, or has no input at all; hand play is a person with a pad.
 
 | Date | Kind | What it showed |
 |---|---|---|
-| 2026-11-15 | native Windows smoke test, 60 s | The native setup path built the known BCUS98127 02.00 executable, initialized the D3D12 renderer, rendered the front end and closed cleanly. Setup/build validation, not play. |
+| 2026-11-15 | native Windows smoke test, 60 s, reported by a contributor | On the contributor's own hardware (the project has not run it on Windows itself), the native setup path built the known BCUS98127 02.00 executable, initialized the D3D12 renderer, rendered the front end and closed cleanly. Setup/build validation, not play. |
 | 2026-11-12 and 2026-11-13 | scripted, no input, 300 s per level | Started with the game's developer level option: 17 of its 19 levels loaded and drew frames to the end without a crash. About 12 to 59 frames per second over the last two minutes, 11 of the 17 under 30. Zordoom Prison and Meridian City drew their first frames, then stopped drawing (a known issue). Loading and drawing only, not play. |
 | 2026-11-10 | scripted, two runs of 16 minutes | From an empty drive the game installs its data. A new game plays its intro and reaches Metropolis. The player then moves, jumps, swings the wrench and fires for about 11 minutes. No crash; the only error lines are the game's own script messages. |
 | 2026-11-04 | scripted, five minutes each (ps3recomp v0.18.0) | A new game reaches Metropolis and goes on to Cobalia. A saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. No crash. |
