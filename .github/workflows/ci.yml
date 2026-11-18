@@ -22,7 +22,7 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
-      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
       - name: Patches apply to the pinned ps3recomp
         run: nix develop .#ci --command python3 tools/ps3recomp_patched.py
       - name: Host tests (no game data, no GPU; a SKIP counts as a failure)
@@ -90,7 +90,7 @@ jobs:
           persist-credentials: false
       - name: Dear ImGui submodule (not ps3recomp)
         run: git submodule update --init --depth 1 third_party/imgui
-      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
       - name: Toolchain (llvm-mingw for Linux, SDL3 MinGW devel; SHA-256 checked)
         run: python3 tools/release/fetch_toolchain.py --only llvm-mingw-linux,sdl3
       - name: Launcher (cross-compiled for Windows x64)
