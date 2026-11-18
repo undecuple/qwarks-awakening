@@ -54,8 +54,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      # Exercise the common Git for Windows setting explicitly. The patcher exports the pinned submodule commit and
-      # normalizes patch files, so the generated toolkit is independent of checkout line endings.
+      # Exercise the common Git for Windows setting explicitly. The patcher exports the pinned submodule commit and runs
+      # git with line-ending conversion off, and .gitattributes keeps the patches' bytes, so the generated toolkit is
+      # independent of checkout line endings.
       - name: CRLF checkout
         run: git config --global core.autocrlf true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

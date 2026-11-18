@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host tests for the cross-platform ps3recomp patched-tree builder."""
+import hashlib
 import importlib.util
 import os
 import pathlib
@@ -47,8 +48,13 @@ def fixture(top):
     write(source / "CMakeLists.txt", "project(ps3recomp)\n")
     write(source / "value.txt", "before\n")
     write(source / "unchanged.txt", "same\n")
+    # Upstream has files with mixed line endings (runtime/syscalls/sys_event.c); a patch's context then carries a CR.
+    (source / "mixed.txt").write_bytes(b"one\ntwo\r\nthree\n")
     git(source, "add", ".")
     git(source, "commit", "-qm", "fixture")
+    # A Git for Windows default and a working-tree edit: neither may change what is exported or how patches match.
+    git(root, "config", "core.autocrlf", "true")
+    git(source, "config", "core.autocrlf", "true")
     (source / "value.txt").write_bytes(b"before\r\n")
     write(
         patches / "0001-value.patch",
@@ -60,8 +66,10 @@ def fixture(top):
 +after
 """,
     )
-    patch = patches / "0001-value.patch"
-    patch.write_bytes(patch.read_bytes().replace(b"\n", b"\r\n"))
+    (patches / "0002-mixed.patch").write_bytes(
+        b"diff --git a/mixed.txt b/mixed.txt\n--- a/mixed.txt\n+++ b/mixed.txt\n"
+        b"@@ -1,3 +1,3 @@\n one\n two\r\n-three\n+THREE\n"
+    )
     return root, source
 
 
@@ -85,7 +93,12 @@ def test_prepare():
         messages = []
         stamp = PATCHED.prepare(root, "work/ps3recomp-patched", messages.append)
         out = root / "work" / "ps3recomp-patched"
-        check((out / "value.txt").read_text(encoding="utf-8") == "after\n", "patch is applied")
+        check((out / "value.txt").read_bytes() == b"after\n", "patch is applied")
+        check((out / "mixed.txt").read_bytes() == b"one\ntwo\r\nTHREE\n",
+              "a patch with a CR in its context applies byte for byte (no CRLF normalisation)")
+        raw = hashlib.sha256(b"".join(p.read_bytes() for p in sorted((root / "port" / "patches").glob("*.patch"))))
+        check(stamp.split("-")[0] == raw.hexdigest()[:16],
+              "stamp hashes the raw patch bytes, as tools/build-rc.sh and firstrun_check do")
         check((source / "value.txt").read_bytes() == b"before\r\n", "CRLF submodule checkout stays untouched")
         check((out / ".rc-patchset").read_text(encoding="utf-8").strip() == stamp, "patch-set stamp is written")
         check(stamp.endswith("-" + git(source, "rev-parse", "--short", "HEAD")), "stamp names the pinned commit")
@@ -99,6 +112,11 @@ def test_prepare():
         check(int(kept.stat().st_mtime) == fixed_time, "unchanged output keeps its timestamp")
         check(not (out / "stale.txt").exists(), "stale output file is removed")
         check(not pathlib.Path(str(out) + ".new").exists(), "scratch tree is removed")
+
+
+def test_patches_not_converted():
+    attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8").split("\n")
+    check("port/patches/*.patch -text" in attrs, ".gitattributes keeps patches out of line-ending conversion")
 
 
 def test_duplicate_refused():
@@ -124,6 +142,7 @@ diff --git a/b b/b
 
 
 test_prepare()
+test_patches_not_converted()
 test_duplicate_refused()
 print("test_ps3recomp_patched:", "FAIL" if FAILS else "PASS")
 raise SystemExit(1 if FAILS else 0)

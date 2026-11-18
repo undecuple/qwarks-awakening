@@ -42,14 +42,25 @@ def _git(cwd, *args):
     return result.stdout
 
 
+# Git with line-ending conversion off for this call only, whatever the user's or the runner's settings
+# (core.autocrlf=true is the Git for Windows default). Both the export and the apply must see the pinned bytes:
+# with autocrlf on, git apply renormalises the file it patches (CRLF -> LF) before matching, so a patch whose
+# context carries a CR (1023 against runtime/syscalls/sys_event.c, a file with mixed line endings upstream) would
+# match on one host and fail on another.
+_GIT_RAW = ("-c", "core.autocrlf=false", "-c", "core.eol=lf")
+
+
 def _patch_bytes(patch):
-    return patch.read_bytes().replace(b"\r\n", b"\n")
+    """The patch exactly as committed. No CRLF normalisation: seven patches carry CRs on purpose (context and added
+    lines of upstream files with CRLF or mixed endings), and stripping them breaks 1023. .gitattributes marks
+    port/patches/*.patch -text so a CRLF checkout does not convert them either."""
+    return patch.read_bytes()
 
 
 def _apply_patch(root, scratch_rel, patch):
     try:
         result = subprocess.run(
-            ["git", "apply", "--verbose", "--whitespace=nowarn", f"--directory={scratch_rel}", "-"],
+            ["git", *_GIT_RAW, "apply", "--verbose", "--whitespace=nowarn", f"--directory={scratch_rel}", "-"],
             cwd=root,
             input=_patch_bytes(patch),
             stdout=subprocess.PIPE,
@@ -93,7 +104,7 @@ def _remove_owned(path):
 def _export_commit(source, destination):
     try:
         result = subprocess.run(
-            ["git", "archive", "--format=tar", "HEAD"],
+            ["git", *_GIT_RAW, "archive", "--format=tar", "HEAD"],
             cwd=source,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -105,6 +116,8 @@ def _export_commit(source, destination):
         raise PatchError(detail or f"git archive exited with {result.returncode}")
 
     destination.mkdir(parents=True)
+    umask = os.umask(0)
+    os.umask(umask)
     with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
         for member in archive:
             rel = pathlib.PurePosixPath(member.name)
@@ -120,7 +133,9 @@ def _export_commit(source, destination):
                     raise PatchError(f"could not read {member.name} from the pinned toolkit archive")
                 with source_file, target.open("wb") as output:
                     shutil.copyfileobj(source_file, output)
-                target.chmod(member.mode)
+                # git archive writes modes with its tar.umask (002: 0664/0775); apply the process umask as tar -x
+                # does, so the tree matches the shell version's (0644/0755 under the usual 022).
+                target.chmod(member.mode & ~umask)
             else:
                 raise PatchError(f"the pinned toolkit archive has an unsupported entry: {member.name}")
 

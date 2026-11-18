@@ -1,0 +1,3 @@
+# The patches are applied byte for byte to the pinned ps3recomp; some carry CRs on purpose (upstream files with CRLF
+# or mixed line endings). Never convert their line endings on checkout (core.autocrlf=true on Windows would).
+port/patches/*.patch -text

@@ -142,7 +142,7 @@ def patchset_want(root):
     h = hashlib.sha256()
     for p in pats:
         with open(p, "rb") as f:
-            h.update(f.read().replace(b"\r\n", b"\n"))
+            h.update(f.read())   # raw bytes, as tools/build-rc.sh hashes them (cat | sha256sum)
     try:
         out = subprocess.run(["git", "-C", root, "ls-tree", "HEAD", "third_party/ps3recomp"], capture_output=True,
                              text=True, timeout=30).stdout.split()
