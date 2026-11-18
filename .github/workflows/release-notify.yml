@@ -21,6 +21,7 @@ jobs:
           URL: ${{ github.event.release.html_url }}
           PRERELEASE: ${{ github.event.release.prerelease }}
           BODY: ${{ github.event.release.body }}
+          ROLE: "1572342295796121642"   # the project's Discord role (a public number); the post pings it, nothing else
         run: |
           set -euo pipefail
           if [ -z "$WEBHOOK" ]; then
@@ -29,11 +30,12 @@ jobs:
           fi
           kind="release"
           [ "$PRERELEASE" = "true" ] && kind="pre-release"
-          # allowed_mentions empty: the message can never ping anyone, whatever the release title says.
-          jq -n --arg tag "$TAG" --arg url "$URL" --arg kind "$kind" --arg body "$BODY" '{
+          # allowed_mentions names the one project role: the message pings that role only, whatever the release title says.
+          jq -n --arg tag "$TAG" --arg url "$URL" --arg kind "$kind" --arg body "$BODY" --arg role "$ROLE" '{
             username: "Qwark\u0027s Awakening",
             thread_name: (("Qwark\u0027s Awakening " + $tag) | .[0:100]),
-            allowed_mentions: {parse: []},
+            content: ("<@&" + $role + ">"),
+            allowed_mentions: {parse: [], roles: [$role]},
             embeds: [{
               title: ("Qwark\u0027s Awakening " + $tag + " is out"),
               url: $url,
