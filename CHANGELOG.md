@@ -3,7 +3,7 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
-## [0.4.0] - 2026-11-17 (pre-release)
+## [0.4.0] - 2026-11-18 (pre-release)
 
 Summary: A new look for the launcher and the site, and a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton.
 
@@ -53,6 +53,16 @@ its 0.3.1 notes and the [status table](README.md#status). Known issues of this r
   each at a pinned version and SHA-256, after you confirm, so that Build works on Linux (see above for the build that
   was run). The build estimate for *Tools of Destruction* is now the measured one (about 5 minutes with 16 parallel
   jobs, about 0.7 GB).
+- The build check knows more regions (issue [#23](https://github.com/undecuple/qwarks-awakening/issues/23)).
+  *All 4 One* 1.03 EU (BCES01141, BCES01142), JP (BCJS30081) and Asia (BCAS20200), *Full Frontal Assault* 1.05 EU
+  (BCES01594, BCES01626) and *Into the Nexus* 1.01 EU (BCES01908, BCES01949) decrypt to the same program as the US
+  update and are accepted as known builds. When it refuses an `EBOOT.elf` it knows, it names the version it found:
+  *Full Frontal Assault*'s EU disc and EU 1.04 update get "Wrong version", and *A Crack in Time*'s EU (BCES00511,
+  BCES00726, BCES00748) and JP (BCJS30038) 1.20 updates, one program that differs from the US one, and *Tools of
+  Destruction*'s EU disc (BCES00052), also a different program, get "Not supported yet". Digital (PSN) versions were
+  not checked.
+- The project has a Discord server, linked from the top of the README, with a forum where each release gets its own
+  thread.
 - After the update, a game built with 0.3.1 shows "Update available: rebuild". Only the version number in the port's
   build file changed; the games' code and the patches are the same as in 0.3.1, and Play stays available, so the
   rebuild can wait.

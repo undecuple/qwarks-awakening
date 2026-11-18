@@ -11,12 +11,12 @@
   "project": "Qwark's Awakening",
   "status": "in-progress",
   "targets": [
-    "PC (Windows)"
+    "Windows"
   ],
   "toolchain": [
     "ps3recomp"
   ],
-  "approach": "Static recompilation of the PPU code to C with ps3recomp and of the SPU programs, HLE system libraries, Direct3D 12 RSX backend",
+  "approach": "Static recompilation of the PPU code to C with ps3recomp and of the SPU programs, HLE system libraries, Direct3D 12 RSX backend; a launcher builds each game on your PC from your own copy",
   "maintainers": [
     {
       "name": "undecuple",
@@ -29,12 +29,24 @@
       "url": "https://github.com/undecuple/qwarks-awakening"
     },
     {
+      "label": "Discord",
+      "url": "https://discord.gg/W8fMT78Q7k"
+    },
+    {
       "label": "Building",
       "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md"
     },
     {
+      "label": "Linux and Proton",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/LINUX.md"
+    },
+    {
       "label": "Requirements",
       "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md"
+    },
+    {
+      "label": "Known issues",
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/KNOWN_ISSUES.md"
     },
     {
       "label": "Roadmap",
@@ -42,7 +54,7 @@
     },
     {
       "label": "Feature parity",
-      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md"
+      "url": "https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md#ratchet--clank-future-quest-for-booty"
     },
     {
       "label": "Releases",
@@ -50,12 +62,15 @@
     }
   ],
   "help": [
-    "Testing on real Windows with NVIDIA GPUs"
+    "Testing on Windows itself (the project's own runs are under Proton on Linux)",
+    "Testing on AMD and Intel GPUs",
+    "Testing the Linux launcher on more distributions"
   ],
   "tags": [
     "cell",
     "spurs",
-    "d3d12"
+    "d3d12",
+    "proton"
   ],
-  "notes": "Early work, not playable: the game builds as its own Windows program on the shared runtime. In a scripted run it installs its game data, starts a new game, writes its save and plays the prologue's opening cutscene; play after it is not reached yet. Needs your own copy of the game and the decrypted EBOOT made from it; the build happens on your PC."
+  "notes": "Early work, not playable. The game builds as its own Windows program on the shared runtime; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run). Needs your own copy of the game and the decrypted EBOOT made from it; the launcher builds the game on your PC. The project's own test runs use the Windows program under Proton on Linux (the Linux launcher starts it that way); players have reported results from Windows itself."
 }

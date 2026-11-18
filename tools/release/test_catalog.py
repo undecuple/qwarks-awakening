@@ -882,17 +882,27 @@ def run_eboot(tmp):
           "eboots: every entry and child has a non-empty eboots list (old eboot_sha256 gone)")
     need = {"title_id", "region", "app_ver", "size", "sha256", "status", "self_sha256", "segment_sha256"}
     check(all(need <= set(r) and hexok(r["sha256"]) and hexok(r["self_sha256"]) and hexok(r["segment_sha256"])
-              and r["status"] in ("tested", "untested") and (r["size"] is None or isinstance(r["size"], int))
+              and r["status"] in ("tested", "untested", "unsupported") and (r["size"] is None or isinstance(r["size"], int))
               and (r["sha256"] == "") == (r["size"] is None) and (r["sha256"] == "") == (r["segment_sha256"] == "")
               and r["media"] in ("disc", "update", "digital") for _, r in recs),
           "eboots: shared fields (title_id, region, app_ver, size, sha256, status, self_sha256, segment_sha256), hex hashes")
     ids_of = {x["id"]: set(catalog._flat_ids(x)) for x in allg}
     check(all(r["title_id"] in ids_of[g] for g, r in recs), "eboots: every record's title ID belongs to its game")
-    hs = [h for _, r in recs for h in (r["sha256"], r["self_sha256"]) if h]
-    check(len(hs) == len(set(hs)), "eboots: no hash is listed twice")
+    # an encrypted file is per region; one decrypted program may be shared by regions of the same game and version
+    # (FFA's US and EU 1.05 updates decrypt to the same bytes, checked 2026-11-17)
+    hs = [r["self_sha256"] for _, r in recs if r["self_sha256"]]
+    check(len(hs) == len(set(hs)), "eboots: no encrypted hash is listed twice")
+    plain = {}
+    for g, r in recs:
+        if r["sha256"]:
+            plain.setdefault(r["sha256"], set()).add((g, r["app_ver"], r["media"]))
+    check(all(len(v) == 1 for v in plain.values()),
+          "eboots: a decrypted hash listed twice belongs to one game, version and medium (regions sharing a program)")
     upd = [(g, r) for g, r in recs if r["media"] == "update"]
-    check(all(r["app_ver"] == by_id(allg, g)["update"]["version"] for g, r in upd),
-          "eboots: update records carry the catalogue's required update version")
+    check(all(catalog._vkey(r["app_ver"]) <= catalog._vkey(by_id(allg, g)["update"]["version"]) for g, r in upd)
+          and all(any(r["app_ver"] == x["update"]["version"] for r in x["eboots"] if r["media"] == "update")
+                  for x in allg if x.get("update")),
+          "eboots: update records are the required update version or an older one the launcher refuses by name")
     check(all(any(r["media"] == "update" and r["sha256"] for r in x["eboots"]) for x in allg if x.get("update")),
           "eboots: every game that needs an update has the update's decrypted hash")
     check(by_id(allg, "tods")["eboots"][0]["status"] == "tested" and "eboots_format" in cat
@@ -912,7 +922,7 @@ def run_eboot(tmp):
     # --- check_eboot against a synthetic catalogue (no game data): game A needs update 01.20, game B has a disc only
     def mk(name, n):
         return elf64(os.path.join(root, "lib", name), [(0x10000, bytes([n]) * 512, 512)])
-    a_disc, a_upd, b_disc = mk("a_disc.elf", 1), mk("a_upd.elf", 2), mk("b_disc.elf", 3)
+    a_disc, a_upd, b_disc, a_eu = mk("a_disc.elf", 1), mk("a_upd.elf", 2), mk("b_disc.elf", 3), mk("a_eu.elf", 4)
     a_self = wr_ret(os.path.join(root, "lib", "a.self"), b"SCE\0" + b"\1" * 200)
     b_self = wr_ret(os.path.join(root, "lib", "b.self"), b"SCE\0" + b"\2" * 200)
 
@@ -928,7 +938,8 @@ def run_eboot(tmp):
                 "eboots": eboots}
     A = game("aaa", "Game A", {"US": ["BCUS00001"], "EU": ["BCES00001"]}, {"version": "01.20", "title_ids": ["BCUS00001"]},
              [rec("BCUS00001", "US", "01.00", "disc", a_disc, a_self, dv="01.01"),
-              rec("BCUS00001", "US", "01.20", "update", a_upd)])
+              rec("BCUS00001", "US", "01.20", "update", a_upd),
+              rec("BCES00001", "EU", "01.20", "update", a_eu, status="unsupported")])
     B = game("bbb", "Game B", {"US": ["BCUS00002"]}, None,
              [rec("BCUS00002", "US", "01.00", "disc", b_disc, b_self, status="untested")])
     cat2 = {"schema": 1, "port_version": "0.0.1", "games": [A, B]}
@@ -959,6 +970,9 @@ def run_eboot(tmp):
     r = ck(A, lay, "BCUS00001")
     check(r["level"] == "ok" and r["match"]["via"] == "segments" and "only the file layout differs" in r["message"],
           "check: another decrypter's layout of a known build is matched by its segments")
+    r = ck(A, a_eu, "BCES00001")
+    check(r["level"] == "fail" and r["tag"] == "Not supported yet" and "update 01.20 (BCES00001)" in r["message"]
+          and "(BCUS00001)" in r["message"], "check: a known but unsupported regional build is refused by name")
     r = ck(A, b_disc)
     check(r["level"] == "fail" and r["tag"] == "Other game" and "Game B" in r["message"], "check: another game's EBOOT.elf")
     unk = mk("unknown.elf", 9)

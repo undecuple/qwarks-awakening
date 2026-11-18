@@ -30,9 +30,11 @@
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
-**Status: early work, not playable yet.** Version <!-- version -->0.4.0<!-- /version -->. The launcher builds the
-games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; nothing was
-tested on Windows itself. An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
+**Status: early work, not playable yet.** Version <!-- version -->0.4.0<!-- /version -->, a launcher release: a new
+look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that
+knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
+([CHANGELOG](CHANGELOG.md)). The launcher builds the games on your PC from your own copy. Every test so far ran the
+Windows programs under Proton on Linux; nothing was tested on Windows itself. An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
 has played it through. How far each other game gets in scripted runs is in the [status table](#status). No game is
 online yet ([ONLINE.md](docs/ONLINE.md)).
 
@@ -72,18 +74,24 @@ compiler come with it; nothing else needs to be installed.
 | **CPU and memory** | x86-64; 16 GB of memory to build | Tested only on an Intel Core i7-12700KF |
 | **Disk** | The install, plus several GB for each game you build | The setup download is about 100 MB; the space a build needs is not measured yet |
 
-| Game | Title IDs the launcher knows (region) | Update |
+| Game | Title IDs whose program the launcher accepts (region) | Update |
 |---|---|---|
 | *Tools of Destruction* | BCUS98127 (US disc) | none (disc 02.00) |
-| *Quest for Booty* | BCES00301 (EU disc), NPUA80145 (US digital) | none |
-| *A Crack in Time* | BCUS98124 (US), BCES00511, BCES00726, BCES00748 (EU), BCJS30038 (JP) | 1.20 |
-| *All 4 One* | BCUS98175, NPUA80695 (US), BCES01141, BCES01142, NPEA00356 (EU), BCAS20200 (Asia), BCJS30081 (JP) | 1.03 |
-| *Full Frontal Assault* | BCUS98380, NPUA80642 (US), BCES01594, BCES01626, NPEA00378 (EU), NPJA00089 (JP) | 1.05 |
-| *Into the Nexus* | BCUS99245, NPUA80908 (US), BCES01908, BCES01949, NPEA00457 (EU), NPJA00101 (JP) | 1.01 |
-| *Ratchet & Clank Collection* (1, 2 and 3) | BCUS98282, NPUA80643 (US), NPEA00385, NPEA00386, NPEA00387 (EU) | none |
+| *Quest for Booty* | BCES00301 (EU disc) | none |
+| *A Crack in Time* | BCUS98124 (US) | 1.20 |
+| *All 4 One* | BCUS98175 (US), BCES01141, BCES01142 (EU), BCAS20200 (Asia), BCJS30081 (JP) | 1.03 |
+| *Full Frontal Assault* | BCUS98380 (US), BCES01594, BCES01626 (EU) | 1.05 |
+| *Into the Nexus* | BCUS99245 (US), BCES01908, BCES01949 (EU) | 1.01 |
+| *Ratchet & Clank Collection* (1, 2 and 3) | BCUS98282 (US disc) | none |
 | *Deadlocked HD* | NPUA80646 (US digital) | none |
 
-The port was tested with one copy of each game. The other IDs are in the catalogue but untested.
+The launcher checks your `EBOOT.elf` against the programs it knows. For a game with an update it needs the program
+from that update; a disc or older update program it knows is refused by name ("Wrong version"). The regions
+listed for one game share one program: their decrypted `EBOOT.elf` files are identical. *A Crack in Time*'s EU
+(BCES00511, BCES00726, BCES00748) and JP (BCJS30038) 1.20 updates and the EU disc of *Tools of Destruction*
+(BCES00052) are different programs from the US ones, so the launcher refuses them by name ("Not supported yet"). Digital (PSN) versions are untested, apart from *Deadlocked HD*,
+which is digital only; an `EBOOT.elf` the launcher does not know gets the warning "Unknown build, may still work". The
+port was tested with one copy of each game; the other regions listed share its program but were not run.
 
 ### Steps
 

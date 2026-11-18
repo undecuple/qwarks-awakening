@@ -508,6 +508,12 @@ def check_eboot(entry, path, known=(), title_id=None, sha=None):
     mine.sort(key=lambda gr: (gr[1].get("title_id") == title_id, _vkey(gr[1].get("app_ver") or "")), reverse=True)
     r = mine[0][1]
     kw["match"] = {"game": entry["id"], "via": how, **_brief(r)}
+    if r.get("status") == "unsupported":
+        sup = [x for x in entry.get("eboots", []) if x.get("status") == "tested" and x.get("media") == r.get("media")
+               and x.get("app_ver") == r.get("app_ver")]
+        ok = ", ".join(sorted({x["title_id"] for x in sup})) or "another version"
+        return res("fail", "Not supported yet", f"This EBOOT.elf is {title}, {_where(r)}: a different program from "
+                   f"the one the port is built from ({ok}), so the port cannot use it yet.", **kw)
     need = (entry.get("update") or {}).get("version")
     if need and (r.get("media") != "update" or _vkey(r.get("app_ver") or "") < _vkey(need)):
         frm = "the disc" if r.get("media") == "disc" else _where(r) if r.get("media") == "update" else "the PSN game"
