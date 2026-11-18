@@ -30,6 +30,10 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def git_bytes(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True).stdout
+
+
 def write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(data, encoding="utf-8", newline="\n")
@@ -50,8 +54,12 @@ def fixture(top):
     write(source / "unchanged.txt", "same\n")
     # Upstream has files with mixed line endings (runtime/syscalls/sys_event.c); a patch's context then carries a CR.
     (source / "mixed.txt").write_bytes(b"one\ntwo\r\nthree\n")
-    git(source, "add", ".")
+    # Committed as upstream committed it, CR kept in the blob: Git for Windows' system core.autocrlf=true would
+    # otherwise normalise the file on add and the fixture would no longer hold mixed endings.
+    git(source, "-c", "core.autocrlf=false", "add", ".")
     git(source, "commit", "-qm", "fixture")
+    check(git_bytes(source, "cat-file", "blob", "HEAD:mixed.txt") == b"one\ntwo\r\nthree\n",
+          "fixture blob keeps the mixed line endings")
     # A Git for Windows default and a working-tree edit: neither may change what is exported or how patches match.
     git(root, "config", "core.autocrlf", "true")
     git(source, "config", "core.autocrlf", "true")
