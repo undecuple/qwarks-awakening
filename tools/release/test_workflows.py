@@ -432,7 +432,10 @@ def test_release_notify(t):
     check("uses:" not in t, "release-notify.yml: no third-party action (curl and jq only)")
     check(set(re.findall(r"secrets\.(\w+)", t)) == {"DISCORD_RELEASE_WEBHOOK"}, "release-notify.yml: only DISCORD_RELEASE_WEBHOOK")
     check('if [ -z "$WEBHOOK" ]' in t, "release-notify.yml: a missing secret (forks) exits 0")
-    check("allowed_mentions: {parse: []}" in t, "release-notify.yml: the message can never mention anyone")
+    check("allowed_mentions: {parse: [], roles: [$role]}" in t, "release-notify.yml: the message pings the project role only")
+    check('content: ("<@&" + $role + ">")' in t, "release-notify.yml: the post pings the project role")
+    check(re.search(r'ROLE: "\d{17,20}"', t) is not None, "release-notify.yml: ROLE is one numeric role ID")
+    check("@everyone" not in t and "@here" not in t, "release-notify.yml: never @everyone or @here")
     check(r'thread_name: (("Qwark\u0027s Awakening " + $tag) | .[0:100])' in t, "release-notify.yml: the forum webhook gets a thread name (400 without one)")
     run = t.split("run: |", 1)[-1]
     check("${{" not in run, "release-notify.yml: event text reaches the script through env only")
