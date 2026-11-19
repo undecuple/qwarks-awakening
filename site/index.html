@@ -7,7 +7,7 @@
 <meta name="description" content="Ratchet &amp; Clank (PS3) // Unofficial PC Port (static recompilation): an unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.. Status: early work, not playable yet.">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:,">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-/4Nc2w88JhyE+y5w7nYTYJl0EZKsibfz3diCQUf611w='; style-src 'self' 'sha256-oGvMMUGNt7PtrOd9i4VkmLUMKS0rbkKy+1nYjjP+YlY='; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Attv3NIFvp9tmD6aF9m+R2gG8gbYRhwXfnNfRJmxml4='; style-src 'self' 'sha256-oGvMMUGNt7PtrOd9i4VkmLUMKS0rbkKy+1nYjjP+YlY='; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <link rel="stylesheet" href="style.css">
 <style>
 body:has(.viewer[open]) { overflow: hidden; }
@@ -37,44 +37,56 @@ body:has(.viewer[open]) { overflow: hidden; }
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
+<div id="app">
 <header class="headerbar">
 <div class="header-inner">
 <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">QA</span><span><strong>Qwark&#x27;s Awakening</strong><span class="brand-caption">Unofficial PC port</span></span></a>
-<nav class="header-links" aria-label="Project links"><a href="https://github.com/undecuple/qwarks-awakening">Repository</a><a class="button" href="#install">Get the launcher <span aria-hidden="true">↗</span></a></nav>
+<nav class="header-links" aria-label="Project links"><a href="plain.html">Plain page</a><a href="https://github.com/undecuple/qwarks-awakening">Repository</a><a class="button" href="#install">Get the launcher <span aria-hidden="true">↗</span></a></nav>
 </div>
 </header>
 <main id="main">
 <div class="wrap">
-<div class="project-intro" id="top">
-<div class="intro-copy">
+<div class="hero" id="top">
+<div class="hero-copy">
 <p class="eyebrow">Ratchet &amp; Clank · PlayStation 3</p>
 <h1>Qwark&#x27;s Awakening</h1>
 <p class="intro-description">An unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.</p>
-<p class="intro-status"><span class="chip">Early work</span><span>Early work, not playable yet.</span></p>
+<p class="intro-status"><span class="chip purple">Early work</span><span class="chip gold">Version 0.4.0</span><span>Early work, not playable yet.</span></p>
 <p class="cta"><a class="button suggested" href="https://github.com/undecuple/qwarks-awakening/releases">Launcher downloads <span aria-hidden="true">↗</span></a><a class="button" href="#status">Check game status</a></p>
 </div>
+<div class="hero-side">
+<div class="dial"><svg class="gauge" viewBox="0 0 120 120" role="img" aria-label="First target, roadmap: 2 of 6 steps done"><g class="g-ticks"><line x1="115.50" y1="60.00" x2="119.50" y2="60.00"/><line x1="115.06" y1="74.75" x2="117.47" y2="75.40"/><line x1="109.36" y1="88.50" x2="111.53" y2="89.75"/><line x1="100.31" y1="100.31" x2="102.07" y2="102.07"/><line x1="88.50" y1="109.36" x2="89.75" y2="111.53"/><line x1="74.75" y1="115.06" x2="75.40" y2="117.47"/><line x1="60.00" y1="115.50" x2="60.00" y2="119.50"/><line x1="45.25" y1="115.06" x2="44.60" y2="117.47"/><line x1="31.50" y1="109.36" x2="30.25" y2="111.53"/><line x1="19.69" y1="100.31" x2="17.93" y2="102.07"/><line x1="10.64" y1="88.50" x2="8.47" y2="89.75"/><line x1="4.94" y1="74.75" x2="2.53" y2="75.40"/><line x1="4.50" y1="60.00" x2="0.50" y2="60.00"/><line x1="4.94" y1="45.25" x2="2.53" y2="44.60"/><line x1="10.64" y1="31.50" x2="8.47" y2="30.25"/><line x1="19.69" y1="19.69" x2="17.93" y2="17.93"/><line x1="31.50" y1="10.64" x2="30.25" y2="8.47"/><line x1="45.25" y1="4.94" x2="44.60" y2="2.53"/><line x1="60.00" y1="4.50" x2="60.00" y2="0.50"/><line x1="74.75" y1="4.94" x2="75.40" y2="2.53"/><line x1="88.50" y1="10.64" x2="89.75" y2="8.47"/><line x1="100.31" y1="19.69" x2="102.07" y2="17.93"/><line x1="109.36" y1="31.50" x2="111.53" y2="30.25"/><line x1="115.06" y1="45.25" x2="117.47" y2="44.60"/></g><circle class="g-track" cx="60" cy="60" r="48"/><circle class="g-arc" cx="60" cy="60" r="48" stroke-dasharray="100.5 201.1" transform="rotate(-90 60 60)"/><text class="g-num" x="60" y="63" text-anchor="middle">2/6</text><text class="g-cap" x="60" y="79" text-anchor="middle">steps done</text></svg><p class="dial-cap">First target, roadmap: 2 of 6 steps done</p></div>
 <aside class="intro-note" aria-label="Your own copy"><p><strong>Bring your own game.</strong> This repository holds only the port: source code, patches to the recompiler, tools and documentation. It contains no game code, game data, assets, keys or firmware, and it never will. To build a game you need your own copy of it and the decrypted <code>EBOOT.elf</code> made from that copy (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#what-you-need">What you need</a>).</p></aside>
 </div>
-<div class="page-layout">
-<aside class="section-nav"><p class="eyebrow">Explore the project</p><nav aria-label="Page sections"><ul><li><a href="#status">Status</a></li><li><a href="#screens">Screens</a></li><li><a href="#about">About</a></li><li><a href="#changelog">Changelog</a></li><li><a href="#objectives">Objectives</a></li><li><a href="#install">Install</a></li><li><a href="#requirements">Requirements</a></li><li><a href="#channels">Official channels</a></li></ul></nav><a class="source-link" href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md">Read the README <span aria-hidden="true">↗</span></a></aside>
-<div class="page-content">
-<section class="panel" id="status" aria-labelledby="h-status">
+</div>
+<p class="rule"><img class="divider" src="../assets/divider-plate.png" alt="" width="900" height="32"></p>
+<div class="console">
+<nav id="menu" class="menu" aria-label="Page sections">
+<p class="eyebrow">Main menu</p>
+<ol><li><a href="#status" data-detail="How far each game gets, from the README&#x27;s own tables."><span class="idx" aria-hidden="true">01</span><span class="lbl">Status</span></a></li><li><a href="#screens" data-detail="Scripted runs of Tools of Destruction, whole frames."><span class="idx" aria-hidden="true">02</span><span class="lbl">Screens</span></a></li><li><a href="#about" data-detail="What this is, how it works, and how AI was used."><span class="idx" aria-hidden="true">03</span><span class="lbl">About</span></a></li><li><a href="#changelog" data-detail="The newest release notes."><span class="idx" aria-hidden="true">04</span><span class="lbl">Changelog</span></a></li><li><a href="#objectives" data-detail="What is planned, in rough order. No dates."><span class="idx" aria-hidden="true">05</span><span class="lbl">Objectives</span></a></li><li><a href="#install" data-detail="The launcher builds each game from your own copy."><span class="idx" aria-hidden="true">06</span><span class="lbl">Install</span></a></li><li><a href="#requirements" data-detail="What you need to build and run the port."><span class="idx" aria-hidden="true">07</span><span class="lbl">Requirements</span></a></li><li><a href="#channels" data-detail="Where releases and help come from."><span class="idx" aria-hidden="true">08</span><span class="lbl">Official channels</span></a></li></ol>
+<p id="detail" class="detail"></p>
+<p class="hint">Up and Down, then Enter, or a game pad; tap on a phone.</p>
+<a class="source-link" href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md">Read the README <span aria-hidden="true">↗</span></a>
+</nav>
+<div id="panel" class="panels" tabindex="-1">
+<section class="panel sec" id="status" aria-labelledby="h-status">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-status">Status</h2>
 <p class="lede">What the README says today, word for word.</p></header>
-<div class="statuscard"><p class="word"><span class="chip"><span aria-hidden="true">◐</span> Early work</span> </p><p><strong>Status: early work, not playable yet.</strong> Version 0.4.0, a launcher release: a new look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that knows more regions, and a Discord forum for the project. The games&#x27; code is the same as in 0.3.1 (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md">CHANGELOG</a>). The launcher builds the games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; nothing was tested on Windows itself. An earlier build of the first target, <em>Tools of Destruction</em>, was played by hand from its first level, with known bugs. Nobody has played it through. How far each other game gets in scripted runs is in the <a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#status">status table</a>. No game is online yet (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md">ONLINE.md</a>).</p></div>
+<div class="statuscard"><p class="word"><span class="chip"><span aria-hidden="true">◐</span> Early work</span> </p><p><strong>Status: early work, not playable yet.</strong> Version 0.4.0, a launcher release: a new look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that knows more regions, and a Discord forum for the project. The games&#x27; code is the same as in 0.3.1 (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md">CHANGELOG</a>). The launcher builds the games on your PC from your own copy. Every test so far ran the Windows programs under Proton on Linux; the project has not tested on Windows itself (a contributor&#x27;s report of a native Windows build is in the <a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#status">status table</a>). The current focus is <em>Ratchet &amp; Clank: All 4 One</em>: a scripted new game reaches its first level, luminopolis, and the picture stops about 468 seconds in (scripted run, 2026-11-18); it is not in the player&#x27;s control yet. <em>Tools of Destruction</em>, the earlier focus, was played by hand from its first level, with known bugs; its work continues in another port effort and its results stay recorded here. Nobody has played either through. How far each other game gets in scripted runs is in the <a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#status">status table</a>. No game is online yet (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md">ONLINE.md</a>).</p></div>
 <h3>What makes it different</h3>
 <div class="tablewrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Proof</th></tr></thead><tbody><tr><td data-label="Claim">Native code, not an emulator: the game&#x27;s main-CPU (PPU) code and its SPU programs are recompiled to C ahead of time</td><td data-label="Proof"><a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#how-it-works">How it works</a>, <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">BUILDING.md</a></td></tr><tr><td data-label="Claim">One runtime and one set of tools for the whole PS3 series, one program per game</td><td data-label="Proof"><a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#status">Status</a>, <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">FEATURE-PARITY.md</a></td></tr><tr><td data-label="Claim">Insomniac&#x27;s SPU job code runs recompiled: <em>A Crack in Time</em>&#x27;s loading screen went from about 3 to about 17 frames per second (scripted runs, 2026-11-04; a loading screen, not play)</td><td data-label="Proof"><a href="https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md">CHANGELOG 0.2.1</a></td></tr><tr><td data-label="Claim">Built from your own copy; no game code or data is shipped or downloaded (the launcher&#x27;s cover-art switch, opt-in and not wired yet, will fetch cover images from IGDB.com)</td><td data-label="Proof"><a href="https://github.com/undecuple/qwarks-awakening/blob/main/NOTICE.md">NOTICE.md</a>, <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md">requirements.md</a></td></tr><tr><td data-label="Claim">Run results in this README and in the feature-parity page give their date and how they were run; scripted and hand-play figures are kept apart</td><td data-label="Proof"><a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#status">Status</a>, <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">FEATURE-PARITY.md</a></td></tr><tr><td data-label="Claim">General fixes go back to ps3recomp</td><td data-label="Proof"><a href="https://github.com/sp00nznet/ps3recomp/pull/401">#401</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/405">#405</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/408">#408</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/415">#415</a>, <a href="https://github.com/sp00nznet/ps3recomp/pull/429">#429</a>, all merged</td></tr></tbody></table></div>
 <h3>Compatibility</h3>
-<div class="tablewrap"><table><thead><tr><th scope="col">Platform</th><th scope="col">How it runs</th><th scope="col">Renderer</th><th scope="col">State</th><th scope="col">Tested on</th></tr></thead><tbody><tr><td data-label="Platform">Windows 10/11</td><td data-label="How it runs">native exe</td><td data-label="Renderer">Direct3D 12</td><td data-label="State">builds; <strong>not tested on Windows itself</strong></td><td data-label="Tested on">-</td></tr><tr><td data-label="Platform">Linux</td><td data-label="How it runs">the Windows exe under Proton</td><td data-label="Renderer">Direct3D 12 through vkd3d-proton</td><td data-label="State">runs, scripted and by hand</td><td data-label="Tested on">NVIDIA GeForce RTX 4060, driver 595.112.07, GE-Proton11-7, Intel Core i7-12700KF</td></tr></tbody></table></div>
-<p>Runs of <em>Tools of Destruction</em> under Proton, on the hardware above. A scripted run follows a pad script, or has no input at all; hand play is a person with a pad.</p>
-<div class="tablewrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Kind</th><th scope="col">What it showed</th></tr></thead><tbody><tr><td data-label="Date">2026-11-12 and 2026-11-13</td><td data-label="Kind">scripted, no input, 300 s per level</td><td data-label="What it showed">Started with the game&#x27;s developer level option: 17 of its 19 levels loaded and drew frames to the end without a crash. About 12 to 59 frames per second over the last two minutes, 11 of the 17 under 30. Zordoom Prison and Meridian City drew their first frames, then stopped drawing (a known issue). Loading and drawing only, not play.</td></tr><tr><td data-label="Date">2026-11-10</td><td data-label="Kind">scripted, two runs of 16 minutes</td><td data-label="What it showed">From an empty drive the game installs its data. A new game plays its intro and reaches Metropolis. The player then moves, jumps, swings the wrench and fires for about 11 minutes. No crash; the only error lines are the game&#x27;s own script messages.</td></tr><tr><td data-label="Date">2026-11-04</td><td data-label="Kind">scripted, five minutes each (ps3recomp v0.18.0)</td><td data-label="What it showed">A new game reaches Metropolis and goes on to Cobalia. A saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. No crash.</td></tr><tr><td data-label="Date">2026-10-22</td><td data-label="Kind">by hand</td><td data-label="What it showed">An earlier build played at about 37 frames per second in Fastoon, with a DualShock 4. Alt+Enter fullscreen and in-game saving worked.</td></tr></tbody></table></div>
+<div class="tablewrap"><table><thead><tr><th scope="col">Platform</th><th scope="col">How it runs</th><th scope="col">Renderer</th><th scope="col">State</th><th scope="col">Tested on</th></tr></thead><tbody><tr><td data-label="Platform">Windows 10/11</td><td data-label="How it runs">native exe</td><td data-label="Renderer">Direct3D 12</td><td data-label="State">builds; a contributor reports that the native source build builds and boots the game on Windows (their own hardware); the project has not run it on Windows itself</td><td data-label="Tested on">The contributor&#x27;s machine: Windows build 26200, NVIDIA GeForce RTX 5070, AMD Ryzen 7 9800X3D</td></tr><tr><td data-label="Platform">Linux</td><td data-label="How it runs">the Windows exe under Proton</td><td data-label="Renderer">Direct3D 12 through vkd3d-proton</td><td data-label="State">runs, scripted and by hand</td><td data-label="Tested on">NVIDIA GeForce RTX 4060, driver 595.112.07, GE-Proton11-7, Intel Core i7-12700KF</td></tr></tbody></table></div>
+<p>Runs of <em>Tools of Destruction</em>. Except for the native Windows smoke test, a contributor&#x27;s report, these ran under Proton on the hardware above. A scripted run follows a pad script, or has no input at all; hand play is a person with a pad.</p>
+<div class="tablewrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Kind</th><th scope="col">What it showed</th></tr></thead><tbody><tr><td data-label="Date">2026-11-15</td><td data-label="Kind">native Windows smoke test, 60 s, reported by a contributor</td><td data-label="What it showed">On the contributor&#x27;s own hardware (the project has not run it on Windows itself), the native setup path built the known BCUS98127 02.00 executable, initialized the D3D12 renderer, rendered the front end and closed cleanly. Setup/build validation, not play.</td></tr><tr><td data-label="Date">2026-11-12 and 2026-11-13</td><td data-label="Kind">scripted, no input, 300 s per level</td><td data-label="What it showed">Started with the game&#x27;s developer level option: 17 of its 19 levels loaded and drew frames to the end without a crash. About 12 to 59 frames per second over the last two minutes, 11 of the 17 under 30. Zordoom Prison and Meridian City drew their first frames, then stopped drawing (a known issue). Loading and drawing only, not play.</td></tr><tr><td data-label="Date">2026-11-10</td><td data-label="Kind">scripted, two runs of 16 minutes</td><td data-label="What it showed">From an empty drive the game installs its data. A new game plays its intro and reaches Metropolis. The player then moves, jumps, swings the wrench and fires for about 11 minutes. No crash; the only error lines are the game&#x27;s own script messages.</td></tr><tr><td data-label="Date">2026-11-04</td><td data-label="Kind">scripted, five minutes each (ps3recomp v0.18.0)</td><td data-label="What it showed">A new game reaches Metropolis and goes on to Cobalia. A saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. No crash.</td></tr><tr><td data-label="Date">2026-10-22</td><td data-label="Kind">by hand</td><td data-label="What it showed">An earlier build played at about 37 frames per second in Fastoon, with a DualShock 4. Alt+Enter fullscreen and in-game saving worked.</td></tr></tbody></table></div>
 <p>Not reached yet: a chapter played to its end, and the port&#x27;s own save loaded again after a quit.</p>
-<div class="tablewrap"><table><thead><tr><th scope="col">Game</th><th scope="col">PS3 release</th><th scope="col">State</th></tr></thead><tbody><tr id="game-tods" data-game="tods" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: Tools of Destruction</td><td data-label="PS3 release">2007</td><td data-label="State"><span class="chip accent"><span aria-hidden="true">▶</span> In progress</span> first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet</td></tr><tr id="game-qfb" data-game="qfb" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: Quest for Booty</td><td data-label="PS3 release">2008</td><td data-label="State">builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable</td></tr><tr id="game-acit" data-game="acit" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: A Crack in Time</td><td data-label="PS3 release">2009</td><td data-label="State">builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable</td></tr><tr id="game-a4o" data-game="a4o" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: All 4 One</td><td data-label="PS3 release">2011</td><td data-label="State">builds (1.03 update); reaches its first fight in colour, then the characters fall through the floor; not playable</td></tr><tr id="game-ffa" data-game="ffa" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: Full Frontal Assault</td><td data-label="PS3 release">2012</td><td data-label="State">builds and installs its data (1.05 update); the screen stays black; not playable</td></tr><tr id="game-nexus" data-game="nexus" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: Into the Nexus</td><td data-label="PS3 release">2013</td><td data-label="State">builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable</td></tr><tr id="game-collection" data-game="collection" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Collection: Ratchet &amp; Clank 1, 2 and 3 (PS2 remasters)</td><td data-label="PS3 release">2012</td><td data-label="State">each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable</td></tr><tr id="game-dlhd" data-game="dlhd" tabindex="0"><td data-label="Game">Ratchet: Deadlocked HD (PS2 remaster)</td><td data-label="PS3 release">2013</td><td data-label="State">builds; a scripted new game plays its intro, then stops before the first level; not playable</td></tr></tbody></table></div>
+<div class="tablewrap games"><table><thead><tr><th scope="col">Game</th><th scope="col">PS3 release</th><th scope="col">State</th></tr></thead><tbody><tr id="game-tods" data-game="tods" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: Tools of Destruction</td><td data-label="PS3 release">2007</td><td data-label="State">earlier focus, work continues in another port effort; played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet</td></tr><tr id="game-qfb" data-game="qfb" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: Quest for Booty</td><td data-label="PS3 release">2008</td><td data-label="State">builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable</td></tr><tr id="game-acit" data-game="acit" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Future: A Crack in Time</td><td data-label="PS3 release">2009</td><td data-label="State">builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable</td></tr><tr id="game-a4o" data-game="a4o" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: All 4 One</td><td data-label="PS3 release">2011</td><td data-label="State"><span class="chip accent"><span aria-hidden="true">▶</span> In progress</span> first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable</td></tr><tr id="game-ffa" data-game="ffa" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: Full Frontal Assault</td><td data-label="PS3 release">2012</td><td data-label="State">builds and installs its data (1.05 update); the screen stays black; not playable</td></tr><tr id="game-nexus" data-game="nexus" tabindex="0"><td data-label="Game">Ratchet &amp; Clank: Into the Nexus</td><td data-label="PS3 release">2013</td><td data-label="State">builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable</td></tr><tr id="game-collection" data-game="collection" tabindex="0"><td data-label="Game">Ratchet &amp; Clank Collection: Ratchet &amp; Clank 1, 2 and 3 (PS2 remasters)</td><td data-label="PS3 release">2012</td><td data-label="State">each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable</td></tr><tr id="game-dlhd" data-game="dlhd" tabindex="0"><td data-label="Game">Ratchet: Deadlocked HD (PS2 remaster)</td><td data-label="PS3 release">2013</td><td data-label="State">builds; a scripted new game plays its intro, then stops before the first level; not playable</td></tr></tbody></table></div>
 <p>Scripted runs of the Collection, 2026-11-10, one build of each game, none played by hand:</p>
 <div class="tablewrap"><table><thead><tr><th scope="col">Game</th><th scope="col">Reached</th><th scope="col">Frame rate</th><th scope="col">Result</th></tr></thead><tbody><tr><td data-label="Game"><em>Ratchet &amp; Clank 1</em></td><td data-label="Reached">Veldin, about three minutes</td><td data-label="Frame rate">about 8 per second</td><td data-label="Result">no crash</td></tr><tr><td data-label="Game"><em>Ratchet &amp; Clank 2</em></td><td data-label="Reached">Aranos, about a minute under control</td><td data-label="Frame rate">41 to 65 per second</td><td data-label="Result">no crash</td></tr><tr><td data-label="Game"><em>Ratchet &amp; Clank 3</em></td><td data-label="Reached">Veldin, about three minutes of running, jumping and fighting</td><td data-label="Frame rate">about 23 per second</td><td data-label="Result">no crash</td></tr></tbody></table></div>
 <p>Each game&#x27;s console features and whether they work in the port: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">docs/FEATURE-PARITY.md</a>. What a release means: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/RELEASE-CRITERIA.md">docs/RELEASE-CRITERIA.md</a>.</p>
 <p>Coming soon, in this order, no dates (<a href="#objectives">ROADMAP</a>):</p>
-<ul><li>first, <em>Tools of Destruction</em> playable through;</li><li>an in-game settings menu;</li><li>the other games, one at a time;</li><li>a native Linux build with Vulkan;</li><li>online play through <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md">re-psn</a>;</li><li>if it proves possible, an optional co-op mode in the style of <em>All 4 One</em> for the single-player games.</li></ul>
+<ul><li>first, <em>All 4 One</em>: past the stall in its first level, then in control and playable through;</li><li>an in-game settings menu;</li><li>the other games, one at a time;</li><li>a native Linux build with Vulkan;</li><li>online play through <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md">re-psn</a>;</li><li>if it proves possible, an optional co-op mode in the style of <em>All 4 One</em> for the single-player games.</li></ul>
 <p>Gameplay changes stay optional.</p>
 <h3>Known issues</h3>
 <p>There is no in-game settings menu yet. Each game keeps its own <code>keybinds.ini</code>, <code>display.ini</code> and <code>settings.ini</code>. Display and control settings for all games go in <code>shared/display.ini</code> and <code>shared/keybinds.ini</code> in the data folder. A key in a game&#x27;s own file wins. Alt+Enter toggles fullscreen, and each game remembers its window&#x27;s place and size.</p>
@@ -83,24 +95,30 @@ body:has(.viewer[open]) { overflow: hidden; }
 <p>Known issues in <em>Tools of Destruction</em>:</p>
 <ul><li>The picture flickers inside one cave on Fastoon.</li><li>Level loads stall while graphics pipelines are built; the game&#x27;s own graphics-stall notice can show during them.</li><li>The quit entries of the pause menu (off unless <code>RC_PAUSE_QUIT=1</code>) are drawn below the menu&#x27;s box, and QUIT TO MAIN MENU loads the last save again.</li><li>The game has not been played through, so later levels are untested.</li></ul>
 <p>All known issues, with how and when each was measured: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a>.</p>
+</div>
 </section>
-<section class="panel" id="screens" aria-labelledby="h-screens">
+<section class="panel sec" id="screens" aria-labelledby="h-screens">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-screens">Screens</h2>
 <p class="lede">Tools of Destruction running in the port: the Windows program under Proton on Linux, in scripted runs of November 2026, none played by hand. The box at the top left of each shot is the frame rate (frames presented per second, a 10-second average); the bar at the bottom names the shot.</p></header>
 <div class="gallery"><figure><a href="../assets/screen-metropolis.jpg" data-viewer="images"><img src="../assets/screen-metropolis.jpg" loading="lazy" alt="Ratchet in a sunlit Metropolis plaza among trees and planters, a domed tower and airships behind"></a><figcaption>Metropolis, the first level, after the glow fix (a new game, scripted, no input, 2026-11-10)</figcaption></figure><figure><a href="../assets/screen-fight-festival.jpg" data-viewer="images"><img src="../assets/screen-fight-festival.jpg" loading="lazy" alt="Ratchet on the arena&#x27;s platforms in the rain, a giant wheel and purple and yellow towers behind"></a><figcaption>The Imperial Fight Festival, started directly with the game&#x27;s developer level option, scripted, no input, 2026-11-13</figcaption></figure><figure><a href="../assets/screen-apogee.jpg" data-viewer="images"><img src="../assets/screen-apogee.jpg" loading="lazy" alt="Ratchet on a dark asteroid below the space station, blue crystals and a round pod nearby"></a><figcaption>Apogee Space Station, started directly with the game&#x27;s developer level option, scripted, no input, 2026-11-13</figcaption></figure><figure><a href="../assets/screen-space-combat.jpg" data-viewer="images"><img src="../assets/screen-space-combat.jpg" loading="lazy" alt="Ratchet&#x27;s ship among asteroids and purple clouds, enemy fighters ahead and a tutorial message on the auto-lock"></a><figcaption>The first space combat, started directly with the game&#x27;s developer level option, scripted, no input, 2026-11-13</figcaption></figure><figure><a href="../assets/screen-sargasso.jpg" data-viewer="images"><img src="../assets/screen-sargasso.jpg" loading="lazy" alt="Ratchet in a swamp meadow under a large moon, the Smuggler beside him"></a><figcaption>Sargasso, started directly with the game&#x27;s developer level option, scripted, no input, 2026-11-13</figcaption></figure><figure><a href="../assets/screen-pirate-base.jpg" data-viewer="images"><img src="../assets/screen-pirate-base.jpg" loading="lazy" alt="Ratchet near his ship in a dark jungle cove, a domed building among the trees"></a><figcaption>The pirate base, started directly with the game&#x27;s developer level option, scripted, no input, 2026-11-13</figcaption></figure></div>
 <p class="credit">Game imagery © Sony Interactive Entertainment. <em>Ratchet &amp; Clank Future: Tools of Destruction</em> was developed by Insomniac Games.</p>
+</div>
 </section>
-<section class="panel" id="about" aria-labelledby="h-about">
+<section class="panel sec" id="about" aria-labelledby="h-about">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-about">About</h2>
 </header>
 <p><strong>Bring your own game.</strong> This repository holds only the port: source code, patches to the recompiler, tools and documentation. It contains no game code, game data, assets, keys or firmware, and it never will. To build a game you need your own copy of it and the decrypted <code>EBOOT.elf</code> made from that copy (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/README.md#what-you-need">What you need</a>).</p>
 <h3>How it works, briefly</h3>
 <ul><li>PPU (main CPU code): lifted to C ahead of time by <a href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a> and compiled into the Windows program. No CPU emulator runs for the main game code at play time.</li><li>SPU (Cell co-processor code): the build finds the game&#x27;s SPU programs in your <code>EBOOT.elf</code> and lifts them to C the same way. A program not lifted yet runs in an interpreter.</li><li>Graphics: the ps3recomp runtime translates the game&#x27;s RSX command stream to Direct3D 12 as it runs.</li><li>System software: the same runtime reimplements the PS3 libraries the game calls on PC APIs.</li></ul>
-<p>The toolchain is a Nix flake (<code>nix develop</code>, <code>nix develop .#win</code> for the MinGW-w64 cross compiler). The recompiler is the <code>third_party/ps3recomp</code> submodule, with this port&#x27;s changes in <code>port/patches/</code>. Steps: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>.</p>
+<p>Native Windows source builds fetch the pinned llvm-mingw, CMake and Ninja archives and run through PowerShell and Python; Linux builds use the Nix flake (<code>nix develop</code>, <code>nix develop .#win</code> for the MinGW-w64 cross compiler). The recompiler is the <code>third_party/ps3recomp</code> submodule, with this port&#x27;s changes in <code>port/patches/</code>. Steps: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>.</p>
 <h3>How AI was used</h3>
 <p>This port is developed by one maintainer with AI coding agents. The agents write code, tests and documentation under the maintainer&#x27;s direction. The maintainer decides what is done, reviews the changes and merges them. Run results in the docs give their date and how they were measured; guesses are marked <code>ASSUMPTION:</code>. The PS3 emulator RPCS3 is used as a reference to read, never as code to copy.</p>
+</div>
 </section>
-<section class="panel" id="changelog" aria-labelledby="h-changelog">
+<section class="panel sec" id="changelog" aria-labelledby="h-changelog">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-changelog">Changelog</h2>
 <p class="lede">Newest first. The full file is on GitHub.</p></header>
 <article class="entry"><h3>[0.4.0] - 2026-11-18 (pre-release)</h3>
@@ -109,17 +127,22 @@ body:has(.viewer[open]) { overflow: hidden; }
 <h4>[Launcher]</h4>
 <ul><li>New look for the launcher: navy, orange and steel colours, one accent colour per game, a top bar with Add game files and Menu, full-width library cards and a details panel with the game&#x27;s tile. A game without art of your own shows a drawn strip on its card (the game&#x27;s accent, a planet, stars, its series line and year), grey until the game is built. Checked in the Linux launcher with test libraries (light and dark, three window widths); the Windows launcher with the new look has not been started yet.</li><li>The launcher on Linux: it runs natively and starts each Windows game through Proton, with one Wine prefix per game and saves kept outside the prefix. Settings &gt; Proton chooses between the GE-Proton release the port is tested with (GE-Proton11-7, downloaded from its own release only after you confirm, about 564 MB, checked against a pinned SHA-256) and a Proton you already have. With umu-launcher installed, games start through it; without it, through Proton directly. Steam is not needed. Run once on NixOS with a launcher built from source (2026-11-16, GE-Proton11-7, without Steam or umu-launcher): the launcher&#x27;s Play path started <em>Tools of Destruction</em> up to its &quot;Press the START button&quot; screen.</li><li>A Linux download: <code>qwarks-awakening-launcher-0.4.0-linux-x86_64.tar.gz</code> holds the launcher (SDL 3 built in, so it needs only the C library: glibc 2.34 or newer), its Python engine (Python 3.10 or newer must be installed) and the build files, so Build needs no other download from this project. Unpack it and run <code>./install.sh</code>: it installs the launcher for your user under <code>~/.local/share/qwarks-awakening/launcher/</code>, with a menu entry and <code>~/.local/bin/qwarks-awakening</code>; <code>install.sh --uninstall</code> removes them and keeps your library, games and settings. Checked on 2026-11-16 with a tarball made the way the release workflow makes it, in a fresh Ubuntu 22.04 container under Xvfb: install, a first start whose scan listed the eight games, uninstall. On 2026-11-17, on NixOS under Xvfb, the release workflow&#x27;s tarball installed into an empty home folder built <em>Tools of Destruction</em> with the Linux build tools in about 5 minutes and started it through GE-Proton to its &quot;Press the START button&quot; screen. The tarball also holds <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/LINUX.md">docs/LINUX.md</a>. On NixOS the launcher starts with <code>steam-run qwarks-awakening</code>, and the build tools need it or nix-ld; Build says so when they cannot start. Building the launcher from source stays possible (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/LINUX.md">docs/LINUX.md</a>).</li><li>On Linux, the Proton log (<code>logs/proton-&lt;game&gt;.log</code>) starts with the folder of the game&#x27;s own log, and the game&#x27;s page has &quot;Open game log folder&quot;. A game built from a download names that release&#x27;s version and public commit in its log, never the commit of a folder it was unpacked into. The build check names the disc version (known build) and the app version (your game files&#x27; PARAM.SFO) as such, so the two numbers no longer read as a contradiction.</li><li>A Linux AppImage: <code>qwarks-awakening-launcher-0.4.0-x86_64.AppImage</code> holds the same launcher, engine and build files as the tarball in one file that runs where you keep it (<code>chmod +x</code>, then start it; without FUSE add <code>--appimage-extract-and-run</code>; on NixOS use <code>appimage-run</code>). It keeps the library, games and settings in the same folders as the tarball install and writes nothing inside itself. Checked on 2026-11-17 in a fresh Ubuntu 22.04 container under Xvfb (started without FUSE, first start listed the eight games); building and playing from it have not been tried yet.</li><li>Stop on a running game&#x27;s page ends the game, on both systems. On Linux it ends every Windows process in that game&#x27;s prefix (checked in the same run); on Windows it has not been tried yet.</li><li>Linux build tools: Settings &gt; Building &gt; &quot;Linux build tools&quot; downloads llvm-mingw, CMake, Ninja and SDL3&#x27;s package, each at a pinned version and SHA-256, after you confirm, so that Build works on Linux (see above for the build that was run). The build estimate for <em>Tools of Destruction</em> is now the measured one (about 5 minutes with 16 parallel jobs, about 0.7 GB).</li><li>The build check knows more regions (issue <a href="https://github.com/undecuple/qwarks-awakening/issues/23">#23</a>). <em>All 4 One</em> 1.03 EU (BCES01141, BCES01142), JP (BCJS30081) and Asia (BCAS20200), <em>Full Frontal Assault</em> 1.05 EU (BCES01594, BCES01626) and <em>Into the Nexus</em> 1.01 EU (BCES01908, BCES01949) decrypt to the same program as the US update and are accepted as known builds. When it refuses an <code>EBOOT.elf</code> it knows, it names the version it found: <em>Full Frontal Assault</em>&#x27;s EU disc and EU 1.04 update get &quot;Wrong version&quot;, and <em>A Crack in Time</em>&#x27;s EU (BCES00511, BCES00726, BCES00748) and JP (BCJS30038) 1.20 updates, one program that differs from the US one, and <em>Tools of Destruction</em>&#x27;s EU disc (BCES00052), also a different program, get &quot;Not supported yet&quot;. Digital (PSN) versions were not checked.</li><li>The project has a Discord server, linked from the top of the README, with a forum where each release gets its own thread.</li><li>After the update, a game built with 0.3.1 shows &quot;Update available: rebuild&quot;. Only the version number in the port&#x27;s build file changed; the games&#x27; code and the patches are the same as in 0.3.1, and Play stays available, so the rebuild can wait.</li><li>The project site has the same look: a brand bar, a section rail and grouped panels. The README links the new <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/LINUX.md">docs/LINUX.md</a> page and has a Linux row in its requirements table; its launcher screenshot shows the new look.</li></ul>
 <p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/CHANGELOG.md">Full changelog on GitHub</a></p></article>
+</div>
 </section>
-<section class="panel" id="objectives" aria-labelledby="h-objectives">
+<section class="panel sec" id="objectives" aria-labelledby="h-objectives">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-objectives">Objectives</h2>
 <p class="lede">What is planned, in rough order. No dates.</p></header>
 <p>What is planned, in rough order. Done, in progress, planned. No dates: the order is firm, the timing is not. Releases are pre-releases: v0.1.0 was source only, v0.2.0 added a launcher preview for Windows, v0.3.0 adds a launcher that builds the games from your own copy. The port is not playable yet.</p>
-<div class="roadmap-grid"><article class="roadmap-item roadmap-primary"><h3>Ratchet &amp; Clank Future: Tools of Destruction (first target)</h3>
-<div class="tablewrap"><table><tbody><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">✓</span> Done</span> </th><td>Starts as a Windows program (tested under Proton on Linux only); a new game reaches the first level, Metropolis, and can be played by hand with a DualShock 4 pad; saving in game works; a saved game flies on to later planets; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash</td></tr><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">▶</span> In progress</span> </th><td>The known bugs: picture flicker in one cave, stalls during level loads</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Playable start to finish: a full run through the game, saves loaded again after a quit, audio, input</td></tr><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">✓</span> Done</span> </th><td>A launcher that builds the program on your machine from your own copy of the game, nothing of the game shipped: <em>Tools of Destruction</em> and <em>Ratchet &amp; Clank 2</em> built from a decrypted EBOOT on Linux, 2026-11-10 (not tried on Windows)</td></tr><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">✓</span> Done</span> </th><td>One full download with everything the build needs, and a first-start download of the build files that asks first: in v0.3.0, built by the release workflow (not tried on Windows)</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Testing on real Windows (not run so far) and on macOS (not run so far)</td></tr></tbody></table></div></article>
+<div class="roadmap-grid"><article class="roadmap-item roadmap-primary"><h3>Ratchet &amp; Clank: All 4 One (first target)</h3>
+<div class="tablewrap"><table><tbody><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">✓</span> Done</span> </th><td>Builds from the 1.03 update and starts as a Windows program (tested under Proton on Linux only)</td></tr><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">✓</span> Done</span> </th><td>A scripted new game from the menus reaches the first level, luminopolis (scripted run, 2026-11-18)</td></tr><tr><th scope="row"><span class="chip accent"><span aria-hidden="true">▶</span> In progress</span> </th><td>The picture stops about 468 seconds into luminopolis; the same fault stops <em>Into the Nexus</em> in its first level (scripted runs, 2026-11-18)</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>The player in control in luminopolis, moving and fighting</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Playable start to finish: a full run through the game, saves loaded again after a quit, audio, input</td></tr><tr><th scope="row"><span class="chip"><span aria-hidden="true">○</span> Planned</span> </th><td>Testing on real Windows (not run so far) and on macOS (not run so far)</td></tr></tbody></table></div></article>
+<article class="roadmap-item"><h3>Ratchet &amp; Clank Future: Tools of Destruction (earlier work)</h3>
+<p>The work on <em>Tools of Destruction</em> continues in another port effort; this project&#x27;s focus moved to <em>All 4 One</em>. What was done here stays recorded, and the program still builds from the same code:</p>
+<ul><li>Starts as a Windows program (tested under Proton on Linux only); a new game reaches the first level, Metropolis, and can be played by hand with a DualShock 4 pad; saving in game works; a saved game flies on to later planets.</li><li>A scripted new game from an empty install plays about 11 minutes in Metropolis without a crash (scripted, 2026-11-10).</li><li>Known bugs left: picture flicker in one cave, stalls during level loads. Not played through.</li><li>A launcher that builds the program on your machine from your own copy of the game, nothing of the game shipped: <em>Tools of Destruction</em> and <em>Ratchet &amp; Clank 2</em> built from a decrypted EBOOT on Linux, 2026-11-10 (not tried on Windows). One full download with everything the build needs, and a first-start download of the build files that asks first: in v0.3.0, built by the release workflow (not tried on Windows).</li></ul></article>
 <article class="roadmap-item"><h3>PC options</h3>
-<p>Started (checked in <em>Tools of Destruction</em>): the game window remembers its place and size, and the game keeps running while the window is moved or resized; display and control settings can be set once for all games, with per-game exceptions; FSR 1 upscaling is a setting. Planned after the first game is playable: more display settings (resolution, widescreen), rebindable controls in a menu, gamepad prompts. Gameplay changes stay optional.</p></article>
+<p>Started (checked in <em>Tools of Destruction</em>, earlier): the game window remembers its place and size, and the game keeps running while the window is moved or resized; display and control settings can be set once for all games, with per-game exceptions; FSR 1 upscaling is a setting. Planned after the first game is playable: more display settings (resolution, widescreen), rebindable controls in a menu, gamepad prompts. Gameplay changes stay optional.</p></article>
 <article class="roadmap-item"><h3>The other games</h3>
-<p>One at a time, after the first game works. The working order, from a survey of each game&#x27;s program and files: A Crack in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as each one is tried. The main-CPU (PPU) code of all of them is lifted to C with the same tools, and every game builds into its own program, the Collection&#x27;s three games each into one (how far each gets: the table below and <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">FEATURE-PARITY.md</a>).</p>
+<p>One at a time, after the first game works. The working order, from a survey of each game&#x27;s program and files, written before the focus moved to <em>All 4 One</em>: A Crack in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as each one is tried. The main-CPU (PPU) code of all of them is lifted to C with the same tools, and every game builds into its own program, the Collection&#x27;s three games each into one (how far each gets: the table below and <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">FEATURE-PARITY.md</a>).</p>
 <p>What works in each game, feature by feature: <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/FEATURE-PARITY.md">FEATURE-PARITY.md</a>.</p>
 <p>The state of every game is in the <a href="#status">Status</a> table.</p></article>
 <article class="roadmap-item"><h3>Native Linux build with Vulkan</h3>
@@ -131,8 +154,10 @@ body:has(.viewer[open]) { overflow: hidden; }
 <article class="roadmap-item"><h3>Not planned</h3>
 <ul><li>Distributing the game or any part of it: you always bring your own copy.</li></ul></article></div>
 <p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md">Roadmap on GitHub</a></p>
+</div>
 </section>
-<section class="panel" id="install" aria-labelledby="h-install">
+<section class="panel sec" id="install" aria-labelledby="h-install">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-install">Install</h2>
 <p class="lede">No game program is released: the launcher builds it on your PC from your own copy of the game.</p></header>
 <p>The launcher lists the games, finds your files, builds a game from your own copy and starts it. Python and the compiler come with it; nothing else needs to be installed.</p>
@@ -149,13 +174,14 @@ body:has(.viewer[open]) { overflow: hidden; }
 <p>Uninstall from Windows Settings, Apps, or from the Start menu. The uninstaller removes the program files. It asks before it deletes your library, your built games with their saves, and the logs. Then it asks before it deletes the games&#x27; settings. Both answers default to No.</p>
 <h4>If something goes wrong</h4>
 <div class="tablewrap"><table><thead><tr><th scope="col">What you see</th><th scope="col">What to do</th></tr></thead><tbody><tr><td data-label="What you see">&quot;Windows protected your PC&quot;</td><td data-label="What to do">The program is not signed. Choose &quot;More info&quot;, then &quot;Run anyway&quot;.</td></tr><tr><td data-label="What you see">Your antivirus removes the setup, the launcher or a built game</td><td data-label="What to do">New programs without a signature are sometimes flagged. Compare the file with <code>SHA256SUMS</code> on the release page, then restore it.</td></tr><tr><td data-label="What you see">Setup: &quot;The install folder must be called ...&quot; or &quot;... already holds files that are not from Qwark&#x27;s Awakening&quot;</td><td data-label="What to do">Pick an empty folder, or keep the default.</td></tr><tr><td data-label="What you see">Setup: &quot;... is inside OneDrive&quot; or &quot;... contains the character ...&quot;</td><td data-label="What to do">Pick a folder outside OneDrive whose path has none of <code>[ ] ;</code>.</td></tr><tr><td data-label="What you see">Setup stops some other way</td><td data-label="What to do">Its log is <code>Setup Log &lt;date&gt; #&lt;n&gt;.txt</code> in <code>%TEMP%</code>.</td></tr><tr><td data-label="What you see">&quot;Last build did not finish&quot;</td><td data-label="What to do">The reason is shown under it. The build log is <code>build\firstrun\&lt;game id&gt;\firstrun.log</code> in the install folder.</td></tr><tr><td data-label="What you see">&quot;Another game is being built. Wait for it to finish, then try again.&quot;</td><td data-label="What to do">One build runs at a time.</td></tr><tr><td data-label="What you see">&quot;Could not start the game&quot;, or the game window closes at once</td><td data-label="What to do">The game&#x27;s log and any crash report are in <code>logs\</code> beside the game&#x27;s program, under <code>games\&lt;game id&gt;\</code> in the install folder.</td></tr><tr><td data-label="What you see">&quot;No controller found.&quot;</td><td data-label="What to do">Connect the pad and press any button; the list updates by itself.</td></tr></tbody></table></div>
-<p>Logs have your user name and home folder removed, so you can attach them to an <a href="https://github.com/undecuple/qwarks-awakening/issues/new/choose">issue</a> as they are. To build from source instead, follow <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a> (Linux with Nix).</p>
-
+<p>Logs have your user name and home folder removed, so you can attach them to an <a href="https://github.com/undecuple/qwarks-awakening/issues/new/choose">issue</a> as they are. To build from source instead, follow <a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">docs/BUILDING.md</a> (native Windows or Linux with Nix).</p>
 <p><strong>Where your data goes.</strong> The launcher keeps your library (<code>library.json</code>), built games, build files and logs in its install folder. Each game keeps its saves in <code>gamedata\</code> beside its program unless you choose a saves folder in Settings, Locations. The games&#x27; settings are in <code>%APPDATA%\Qwark&#x27;s Awakening</code>. Each game writes its log, and a crash report if it crashes, to <code>logs/&lt;game&gt;/</code> beside its program. Your user name and home folder are removed from them.</p>
 <p><strong>What goes online.</strong> The port has no crash upload and no telemetry; crash reports stay on your PC. The launcher connects to nothing on its own, only when you choose:</p>
 <p class="cta"><a class="button suggested" href="https://github.com/undecuple/qwarks-awakening/releases">Download the launcher preview</a> <a class="button" href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">Build from source</a> <a class="button" href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/ONLINE.md">Online play</a></p>
+</div>
 </section>
-<section class="panel" id="requirements" aria-labelledby="h-requirements">
+<section class="panel sec" id="requirements" aria-labelledby="h-requirements">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-requirements">Requirements</h2>
 <p class="lede">What you need to build and run the port.</p></header>
 <p>What you need to build and run the port of <em>Ratchet &amp; Clank Future: Tools of Destruction</em>. Kept current as the port changes. The game starts and can be played by hand from its first level, with known bugs; it has not been played through and is not playable yet. Every test run so far was the Windows program under Proton on Linux. Nothing below is a promise of a playable game.</p>
@@ -167,15 +193,19 @@ body:has(.viewer[open]) { overflow: hidden; }
 <h3>Distribution</h3>
 <p>Launcher releases are full releases and game releases are pre-releases on this repository&#x27;s <a href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a> page; since v0.2.0 they have a launcher preview for Windows (since 0.3.0 in its own release, <code>launcher-v0.3.0</code>, beside notes-only releases per game), and since 0.3.0 it builds a game from your own copy (checked on Linux only, not tried on Windows). You build the program on your machine from your own copy of the game (<a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md">BUILDING.md</a>); no game code is shipped or downloaded. There is no installer yet.</p>
 <p><a href="https://github.com/undecuple/qwarks-awakening/blob/main/docs/requirements.md">Requirements on GitHub</a></p>
+</div>
 </section>
-<section class="panel" id="channels" aria-labelledby="h-channels">
+<section class="panel sec" id="channels" aria-labelledby="h-channels">
+<div class="panel-in">
 <header class="section-heading"><h2 id="h-channels">Official channels</h2>
 </header>
 <p><strong>Where releases come from.</strong> Qwark&#x27;s Awakening is made by <strong>undecuple</strong>: GitHub <a href="https://github.com/undecuple">@undecuple</a>, Reddit <a href="https://www.reddit.com/user/RelationshipNo4440">u/RelationshipNo4440</a>, Discord <strong>itekso.</strong> on the undecuple server, an unofficial fan work community with a forum for this project: <a href="https://discord.gg/W8fMT78Q7k">discord.gg/W8fMT78Q7k</a>. Releases come only from this repository&#x27;s <a href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a>. We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, &quot;fixes&quot; or donations in this project&#x27;s name is not us.</p>
 <p class="cta"><a class="button" href="https://github.com/undecuple/qwarks-awakening">GitHub repository</a> <a class="button" href="https://github.com/undecuple/qwarks-awakening/releases">GitHub Releases</a> <a class="button" href="https://github.com/undecuple/qwarks-awakening/issues">Issues</a> <a class="button" href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a></p>
+</div>
 </section>
 </div>
 </div>
+<p class="rule"><img class="divider" src="../assets/divider-orbit.png" alt="" width="900" height="32"></p>
 </div>
 </main>
 <footer class="foot">
@@ -187,6 +217,7 @@ Source: <a href="https://github.com/undecuple/qwarks-awakening">github.com/undec
 <p>Fonts: Adwaita Sans and Adwaita Mono, under the <a href="fonts/OFL-adwaita.txt">SIL Open Font License</a>, served from this site: the page makes no request to any other site.</p>
 </div>
 </footer>
+</div>
 <dialog class="viewer" id="viewer" aria-labelledby="viewer-cap"><p class="viewer-count" aria-live="polite"></p><button type="button" class="viewer-btn viewer-close" aria-label="Close"><span aria-hidden="true">✕</span></button><button type="button" class="viewer-btn viewer-prev" aria-label="Previous image"><span aria-hidden="true">‹</span></button><div class="viewer-stage"><img class="viewer-img" alt="" decoding="sync"></div><button type="button" class="viewer-btn viewer-next" aria-label="Next image"><span aria-hidden="true">›</span></button><p class="viewer-cap" id="viewer-cap"></p></dialog>
 <script>
 (function () {
@@ -240,6 +271,154 @@ Source: <a href="https://github.com/undecuple/qwarks-awakening">github.com/undec
     if (Math.abs(dx) > 40 && set.length > 1) show(dx < 0 ? i + 1 : i - 1);
   }, { passive: true });
   d.addEventListener("close", function () { img.removeAttribute("src"); if (from) from.focus(); });
+})();
+/* Qwark's Awakening site: optional enhancement. The page is complete without it (and plain.html needs no script at all).
+   Same origin, no network calls, no storage, no analytics. website.py inlines this file into index.html after the image
+   viewer's script; the page's Content-Security-Policy allows the whole inline script by its sha256 only.
+   What it does: shows one section at a time like a front-end menu, reads the arrow keys, Enter, Esc and a game pad.
+   The image viewer (a modal dialog) is the other part of the inline script (website.py VIEWER_JS); the keys below
+   stand aside while it is open.
+   Carried from the Killzone 3 port's public/site/site.js (same author, MIT): the hash-driven section switching, the
+   menu key handling and the game pad polling. Its own screenshot viewer is not carried (this page has a dialog). */
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  root.classList.add("js");
+
+  function ready(fn) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
+    else fn();
+  }
+
+  ready(function () {
+    var menu = document.getElementById("menu");
+    var panel = document.getElementById("panel");
+    var detail = document.getElementById("detail");
+    if (!menu || !panel) return;
+    var links = Array.prototype.slice.call(menu.querySelectorAll("ol a"));
+    var secs = Array.prototype.slice.call(panel.querySelectorAll(":scope > .sec"));
+    var current = null;
+    var narrow = window.matchMedia("(max-width: 860px)");
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function idOf(link) { return link.getAttribute("href").slice(1); }
+
+    /* The section a hash points at: the section itself, or the one that holds the target (#game-tods, #h-status). */
+    function sectionFor(hash) {
+      var id = decodeURIComponent((hash || "").replace(/^#/, ""));
+      if (!id) return { sec: secs[0], target: null };
+      var el = document.getElementById(id);
+      if (!el) return { sec: secs[0], target: null };
+      var sec = el.closest(".sec");
+      return { sec: sec || secs[0], target: el === sec ? null : el };
+    }
+
+    function show(sec, target) {
+      secs.forEach(function (s) { s.classList.toggle("on", s === sec); });
+      links.forEach(function (a) {
+        var on = idOf(a) === sec.id;
+        a.classList.toggle("on", on);
+        if (on) {
+          a.setAttribute("aria-current", "true");
+          if (detail) detail.textContent = a.getAttribute("data-detail") || "";
+        } else {
+          a.removeAttribute("aria-current");
+        }
+      });
+      if (current !== sec) {
+        current = sec;
+        panel.scrollTop = 0;
+        if (narrow.matches && root.classList.contains("ready")) {
+          var top = panel.getBoundingClientRect().top + window.pageYOffset - 8;
+          window.scrollTo(0, Math.max(0, top));
+        }
+      }
+      if (target) target.scrollIntoView({ block: "start", behavior: reduce.matches ? "auto" : "smooth" });
+    }
+
+    function fromHash() {
+      var r = sectionFor(location.hash);
+      show(r.sec, r.target);
+    }
+
+    function selectIndex(i, focus) {
+      if (i < 0) i = links.length - 1;
+      if (i >= links.length) i = 0;
+      location.replace("#" + idOf(links[i]));   /* the section follows the hash; no history entry per step */
+      if (focus) links[i].focus();
+    }
+
+    function currentIndex() {
+      var i = links.indexOf(document.activeElement);
+      if (i >= 0) return i;
+      for (i = 0; i < links.length; i++) if (links[i].classList.contains("on")) return i;
+      return 0;
+    }
+
+    function inMenuOrBody() {
+      var a = document.activeElement;
+      return !a || a === document.body || menu.contains(a);
+    }
+
+    function viewerOpen() { return !!document.querySelector("dialog[open]"); }
+    function openPanel() { panel.focus({ preventScroll: true }); }
+    function backToMenu() { links[currentIndex()].focus(); }
+
+    window.addEventListener("hashchange", fromHash);
+
+    /* ---- keys: Up/Down walk the menu, Enter opens the section, Esc goes back to the menu ---- */
+    document.addEventListener("keydown", function (e) {
+      if (e.altKey || e.ctrlKey || e.metaKey || viewerOpen()) return;
+      var k = e.key;
+      if (narrow.matches && k !== "Escape") return;   /* on a phone the page scrolls; the keys keep their usual job */
+      if (k === "ArrowDown" && inMenuOrBody()) { e.preventDefault(); selectIndex(currentIndex() + 1, true); }
+      else if (k === "ArrowUp" && inMenuOrBody()) { e.preventDefault(); selectIndex(currentIndex() - 1, true); }
+      else if (k === "Enter" && menu.contains(document.activeElement)) {
+        /* the link opens the section (the hash); then the focus moves into it so the arrows scroll it */
+        window.setTimeout(openPanel, 0);
+      } else if (k === "Escape" && panel.contains(document.activeElement)) { e.preventDefault(); backToMenu(); }
+    });
+
+    /* ---- game pad (optional): d-pad up/down, A (0) = Enter, B (1) = Esc ---- */
+    var pads = 0, last = {}, lastTime = {};
+    function pressed(gp, i) { return gp.buttons[i] && gp.buttons[i].pressed; }
+    function fire(name, now, repeat) {
+      if (last[name] && !(repeat && now - lastTime[name] > 260)) return false;
+      last[name] = true; lastTime[name] = now;
+      return true;
+    }
+    function poll() {
+      var list = navigator.getGamepads ? navigator.getGamepads() : [];
+      var now = Date.now(), gp = null, i;
+      for (i = 0; i < list.length; i++) if (list[i]) { gp = list[i]; break; }
+      if (gp && !viewerOpen()) {
+        var st = {
+          up: pressed(gp, 12) || (gp.axes[1] || 0) < -0.6, down: pressed(gp, 13) || (gp.axes[1] || 0) > 0.6,
+          a: pressed(gp, 0), b: pressed(gp, 1)
+        };
+        Object.keys(st).forEach(function (n) {
+          if (!st[n]) { last[n] = false; return; }
+          if (!fire(n, now, n !== "a" && n !== "b")) return;
+          if (n === "down") selectIndex(currentIndex() + 1, true);
+          else if (n === "up") selectIndex(currentIndex() - 1, true);
+          else if (n === "a") {
+            var el = document.activeElement;
+            if (el && el !== document.body && el.click) el.click(); else openPanel();
+            if (menu.contains(el)) window.setTimeout(openPanel, 0);
+          } else if (n === "b") backToMenu();
+        });
+      }
+      if (pads > 0) window.requestAnimationFrame(poll);
+    }
+    window.addEventListener("gamepadconnected", function () {
+      pads += 1;
+      if (pads === 1) window.requestAnimationFrame(poll);
+    });
+    window.addEventListener("gamepaddisconnected", function () { pads = Math.max(0, pads - 1); });
+
+    fromHash();
+    root.classList.add("ready");
+  });
 })();
 </script>
 </body>

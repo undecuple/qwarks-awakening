@@ -10,7 +10,8 @@ Rules checked (both modes): the light and dark sets have the same keys; every co
 (text, background[, the colours a translucent background sits on, innermost last]) has a WCAG contrast of 4.5:1 or more after alpha
 compositing; every "derived" token equals libadwaita's rule applied to its fill (oklab lightness clamped to at most 0.5
 in light mode, at least 0.85 in dark, clipped to sRGB), within one step per channel.
-Colours in the header are 0xRRGGBBAA. Standard library only.
+The optional "site" block (the website's palette, read by website.py) must have the same keys in both modes and the same surface
+colours as "modes". Colours in the header are 0xRRGGBBAA. Standard library only.
 """
 import copy
 import json
@@ -24,6 +25,8 @@ JSON_PATH = os.path.join(ROOT, "data", "theme.json")
 HEADER_PATH = os.path.join(ROOT, "launcher", "src", "theme_tokens.h")
 MIN_RATIO = 4.5
 GAME_IDS = {"tods", "qfb", "acit", "a4o", "ffa", "nexus", "collection", "rc1", "rc2", "rc3", "dlhd"}
+SITE_SHARED = ("window_bg", "window_fg", "view_bg", "headerbar_bg", "sidebar_bg", "card_bg", "popover_bg", "dialog_bg",
+               "dim_fg", "border", "shade", "button_bg", "button_hover", "button_active", "toggle_bg")
 ACCENT_KEYS = {"fill", "hover", "active", "foreground", "light", "dark"}
 
 
@@ -118,6 +121,20 @@ def problems(theme, check_games=True):
         for row in contrast_rows(theme, mode):
             if row[-1] < MIN_RATIO:
                 out.append(f"contrast {mode}: {row[0]} on {row[1]} is {row[-1]:.2f} < {MIN_RATIO}")
+    site = theme.get("site")
+    if site is not None:   # the website's extra tokens: same keys in both modes, valid colours, same surfaces as the launcher
+        if set(site) != {"light", "dark"} or list(site.get("light", {})) != list(site.get("dark", {})):
+            out.append("site: light and dark sets differ in keys or order")
+        else:
+            for mode, toks in site.items():
+                for k, v in toks.items():
+                    try:
+                        parse(v)
+                    except ValueError as e:
+                        out.append(f"site.{mode}.{k}: {e}")
+                for k in SITE_SHARED:
+                    if toks.get(k) != modes[mode].get(k):
+                        out.append(f"site.{mode}.{k} {toks.get(k)} differs from modes.{mode}.{k} {modes[mode].get(k)}")
     if not check_games:
         return out
     accents = theme.get("game_accents")

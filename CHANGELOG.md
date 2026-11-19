@@ -5,6 +5,21 @@ project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.m
 
 ## [Unreleased]
 
+- The project's current focus is now *All 4 One*; the roadmap and the README follow it, and the *Tools of Destruction* results stay recorded as earlier work.
+
+### [Site and README]
+- A new look for the project page and the README, drawn for this project: dark navy space, purple, cyan and a little
+  gold, bevelled and bolted panels, a holo grid and a progress dial counted from the roadmap. The page now works like a
+  game's front-end menu: Up and Down (or a game pad, or a tap) pick a section on the left and it shows on the right;
+  every section is still readable without the menu, and `plain.html` carries the same sections as one plain page with no
+  script at all. The screenshots open in the page's own viewer, as before. The page still makes no request to any other
+  site, keeps its strict content security policy, and respects reduced motion.
+- The README's badges and divider strips follow the same colours; the three dividers (a bolt-and-plate strip, a holo-grid
+  rule and a ring-and-orbit rule) are original drawings made by `tools/release/draw_dividers.py`.
+- No game art, logo, font or screenshot is used as decoration, and no part of a game's own menu is copied.
+- Checked offline (the generated pages equal the generator's output, both pages agree, no outside request, contrast of
+  every text colour pair) and viewed in a Firefox-based browser in both colour schemes at desktop and phone width.
+
 ### [Launcher]
 - A native Windows source build: `tools\build-windows.ps1` fetches the pinned llvm-mingw, CMake, Ninja and SDL3
   archives (checked against their SHA-256), prepares the patched ps3recomp copy, lifts and builds a game and stages
@@ -15,6 +30,10 @@ project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.m
 - The build check accepts an ISO that was decrypted in place and still starts with the disc's table of clear
   regions: when the game program inside it is readable, the image counts as decrypted. Before, such an image was
   refused as encrypted. Checked with synthetic images only.
+- The launcher, the README banner, the GitHub preview image and the installer's pictures and icons now follow the same new look as the project page (dark navy, purple, cyan, a little gold; bolted panels, a holo grid and a progress dial), all drawn for this project.
+- The controller test in Settings is now a test you start and stop. While it runs, the controller no longer moves
+  through the launcher, so every button can be pressed safely. It ends with Stop test, Esc, holding B for two seconds,
+  or leaving the page, and the controller works the launcher again once all its buttons are released.
 
 ## [0.4.0] - 2026-11-18 (pre-release)
 

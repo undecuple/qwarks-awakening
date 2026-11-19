@@ -4,27 +4,44 @@ What is planned, in rough order. Done, in progress, planned. No dates: the order
 Releases are pre-releases: v0.1.0 was source only, v0.2.0 added a launcher preview for Windows, v0.3.0 adds a launcher that builds the games from your own
 copy. The port is not playable yet.
 
-## 1. Ratchet & Clank Future: Tools of Destruction (first target)
+## 1. Ratchet & Clank: All 4 One (first target)
 
 | | |
 |---|---|
-| Done | Starts as a Windows program (tested under Proton on Linux only); a new game reaches the first level, Metropolis, and can be played by hand with a DualShock 4 pad; saving in game works; a saved game flies on to later planets; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash |
-| In progress | The known bugs: picture flicker in one cave, stalls during level loads |
+| Done | Builds from the 1.03 update and starts as a Windows program (tested under Proton on Linux only) |
+| Done | A scripted new game from the menus reaches the first level, luminopolis (scripted run, 2026-11-18) |
+| In progress | The picture stops about 468 seconds into luminopolis; the same fault stops *Into the Nexus* in its first level (scripted runs, 2026-11-18) |
+| Planned | The player in control in luminopolis, moving and fighting |
 | Planned | Playable start to finish: a full run through the game, saves loaded again after a quit, audio, input |
-| Done | A launcher that builds the program on your machine from your own copy of the game, nothing of the game shipped: *Tools of Destruction* and *Ratchet & Clank 2* built from a decrypted EBOOT on Linux, 2026-11-10 (not tried on Windows) |
-| Done | One full download with everything the build needs, and a first-start download of the build files that asks first: in v0.3.0, built by the release workflow (not tried on Windows) |
 | Planned | Testing on real Windows (not run so far) and on macOS (not run so far) |
+
+Not yet in control in this game, and not played through, by hand or by script. Each step above counts only what was
+checked on this game, and the date and how are given.
+
+## 1b. Ratchet & Clank Future: Tools of Destruction (earlier work)
+
+The work on *Tools of Destruction* continues in another port effort; this project's focus moved to *All 4 One*. What
+was done here stays recorded, and the program still builds from the same code:
+
+- Starts as a Windows program (tested under Proton on Linux only); a new game reaches the first level, Metropolis, and
+  can be played by hand with a DualShock 4 pad; saving in game works; a saved game flies on to later planets.
+- A scripted new game from an empty install plays about 11 minutes in Metropolis without a crash (scripted, 2026-11-10).
+- Known bugs left: picture flicker in one cave, stalls during level loads. Not played through.
+- A launcher that builds the program on your machine from your own copy of the game, nothing of the game shipped:
+  *Tools of Destruction* and *Ratchet & Clank 2* built from a decrypted EBOOT on Linux, 2026-11-10 (not tried on
+  Windows). One full download with everything the build needs, and a first-start download of the build files that asks
+  first: in v0.3.0, built by the release workflow (not tried on Windows).
 
 ## 2. PC options
 
-Started (checked in *Tools of Destruction*): the game window remembers its place and size, and the game keeps running
+Started (checked in *Tools of Destruction*, earlier): the game window remembers its place and size, and the game keeps running
 while the window is moved or resized; display and control settings can be set once for all games, with per-game
 exceptions; FSR 1 upscaling is a setting. Planned after the first game is playable: more display settings (resolution, widescreen), rebindable controls in a
 menu, gamepad prompts. Gameplay changes stay optional.
 
 ## 3. The other games
 
-One at a time, after the first game works. The working order, from a survey of each game's program and files: A Crack
+One at a time, after the first game works. The working order, from a survey of each game's program and files, written before the focus moved to *All 4 One*: A Crack
 in Time, Quest for Booty, All 4 One, Into the Nexus, Full Frontal Assault, Deadlocked HD, the Collection; it may change as
 each one is tried. The main-CPU (PPU) code of all of them is lifted to C with the same tools, and every game builds
 into its own program, the Collection's three games each into one (how far each gets: the
@@ -34,7 +51,7 @@ table below and [FEATURE-PARITY.md](FEATURE-PARITY.md)).
 |---|---|---|
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
 | Ratchet & Clank Future: A Crack in Time | 2009 | next: builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable |
-| Ratchet & Clank: All 4 One | 2011 | builds (1.03 update); scripted menus reach the first level, then the game stops; not playable |
+| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches the first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable |
 | Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
 | Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
 | Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |

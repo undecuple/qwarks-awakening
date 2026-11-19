@@ -6,8 +6,9 @@ Status: early work, not playable yet. Version 0.4.0, a launcher release: a new
 look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that
 knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
 (CHANGELOG). The launcher builds the games on your PC from your own copy. Every test so far ran the
-Windows programs under Proton on Linux; nothing was tested on Windows itself. An earlier build of the first target, Tools of Destruction, was played by hand from its first level, with known bugs. Nobody
-has played it through. How far each other game gets in scripted runs is in the status table. No game is
+Windows programs under Proton on Linux; the project has not tested on Windows itself (a contributor's report of a
+native Windows build is in the status table). The current focus is Ratchet & Clank: All 4 One: a scripted new game reaches its first level, luminopolis, and the picture stops about 468 seconds in (scripted run, 2026-11-18); it is not in the player's control yet. Tools of Destruction, the earlier focus, was played by hand from its first level, with known bugs; its work continues in another port effort and its results stay recorded here. Nobody
+has played either through. How far each other game gets in scripted runs is in the status table. No game is
 online yet (ONLINE.md).
 
 Qwark's Awakening is a fan project's name, after a character from the series. It is not official and not
@@ -16,6 +17,7 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 ## Pages
 
 - [Project page](index.html): status, screens, about, changelog, objectives, install, requirements
+- [Plain page](plain.html): the same sections on one page, without script
 - [Repository](https://github.com/undecuple/qwarks-awakening)
 - [Building from source](https://github.com/undecuple/qwarks-awakening/blob/main/docs/BUILDING.md)
 - [Roadmap](https://github.com/undecuple/qwarks-awakening/blob/main/docs/ROADMAP.md)
@@ -26,10 +28,10 @@ affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games
 
 ## Games
 
-- Ratchet & Clank Future: Tools of Destruction (2007): first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet
+- Ratchet & Clank Future: Tools of Destruction (2007): earlier focus, work continues in another port effort; played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet
 - Ratchet & Clank Future: Quest for Booty (2008): builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable
 - Ratchet & Clank Future: A Crack in Time (2009): builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable
-- Ratchet & Clank: All 4 One (2011): builds (1.03 update); reaches its first fight in colour, then the characters fall through the floor; not playable
+- Ratchet & Clank: All 4 One (2011): first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable
 - Ratchet & Clank: Full Frontal Assault (2012): builds and installs its data (1.05 update); the screen stays black; not playable
 - Ratchet & Clank: Into the Nexus (2013): builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable
 - Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) (2012): each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable

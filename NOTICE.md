@@ -40,7 +40,10 @@ author's sister ports. Each patch header names its source.
   and its keybinds file and mouse settings, which R&C patch 6011 and `port/rc/rc_settings.*` extend to one settings
   folder and one key table per game; and its first-run build pipeline (`tools/release/firstrun.py`,
   `firstrun_check.py`, their tests, `cmake/llvm-mingw.cmake`), adapted to this port's per-game build profiles
-  (header blocks name the source). Most of the entries below reach this port through that series.
+  (header blocks name the source); and its project-page work: the menu script (`tools/release/site.js`), the two-page checker
+  (`tools/release/check_site.py`, `test_site.py`) and the divider drawer's renderer and PNG writer
+  (`tools/release/draw_dividers.py`, `test_draw_dividers.py`), adapted here to an inline script, the self-hosted fonts and
+  this port's own look and drawings (header blocks name the source). Most of the entries below reach this port through that series.
 - **Project Pyrrhus** ([undecuple/project-pyrrhus](https://github.com/undecuple/project-pyrrhus), the author's
   Killzone 2 port, MIT), through the Killzone 3 series: patches 1059 (design of the per-waiter `sys_lwcond` FIFO),
   1139 (console `sys_fs_open` flag values), 1143 (kernel wake events under Wine), 2088 and 2089 (`WPOS` and the clear

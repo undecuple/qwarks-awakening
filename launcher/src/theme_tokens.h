@@ -43,26 +43,26 @@ struct Tokens {
 };
 
 static const Tokens kLight = {
-    0xf2f5f9ff,   // window_bg #f2f5f9
-    0x142338ff,   // window_fg #142338
+    0xf2f0faff,   // window_bg #f2f0fa
+    0x171a2cff,   // window_fg #171a2c
     0xffffffff,   // view_bg #ffffff
-    0xe9eef5ff,   // headerbar_bg #e9eef5
-    0xe2e9f2ff,   // sidebar_bg #e2e9f2
+    0xe9e6f6ff,   // headerbar_bg #e9e6f6
+    0xe4e0f3ff,   // sidebar_bg #e4e0f3
     0xffffffff,   // card_bg #ffffff
     0xffffffff,   // popover_bg #ffffff
-    0xf2f5f9ff,   // dialog_bg #f2f5f9
-    0x4a5e75ff,   // dim_fg #4a5e75
-    0xb6c4d5ff,   // border #b6c4d5
-    0x08142540,   // shade #08142540
-    0xdce5f0ff,   // button_bg #dce5f0
-    0xcedbeaff,   // button_hover #cedbea
-    0xbecfe3ff,   // button_active #becfe3
+    0xf2f0faff,   // dialog_bg #f2f0fa
+    0x4a5170ff,   // dim_fg #4a5170
+    0xb9b3d6ff,   // border #b9b3d6
+    0x1a103066,   // shade #1a103066
+    0xe1ddf2ff,   // button_bg #e1ddf2
+    0xd3cdeaff,   // button_hover #d3cdea
+    0xc4bce2ff,   // button_active #c4bce2
     0xffffffff,   // toggle_bg #ffffff
-    0xa84b12ff,   // accent_bg #a84b12
-    0x903d0dff,   // accent_bg_hover #903d0d
-    0x78310aff,   // accent_bg_active #78310a
+    0x5b3fb5ff,   // accent_bg #5b3fb5
+    0x4f36a0ff,   // accent_bg_hover #4f36a0
+    0x432c8aff,   // accent_bg_active #432c8a
     0xffffffff,   // accent_fg #ffffff
-    0xa04304ff,   // accent #a04304
+    0x5b3fb5ff,   // accent #5b3fb5
     0xb42838ff,   // destructive_bg #b42838
     0x9e2534ff,   // destructive_bg_hover #9e2534
     0x85202dff,   // destructive_bg_active #85202d
@@ -70,35 +70,35 @@ static const Tokens kLight = {
     0xb12536ff,   // destructive #b12536
     0x268452ff,   // success_bg #268452
     0x107645ff,   // success #107645
-    0xefc566ff,   // warning_bg #efc566
-    0x30230cff,   // warning_fg #30230c
-    0x825c00ff,   // warning #825c00
-    0x15263dff,   // toast_bg #15263d
+    0xeab75cff,   // warning_bg #eab75c
+    0x231800ff,   // warning_fg #231800
+    0x875900ff,   // warning #875900
+    0x171d2dff,   // toast_bg #171d2d
     0xffffffff,   // toast_fg #ffffff
-    0xd8752520,   // icon_bg #d8752520
+    0xa78bfa24,   // icon_bg #a78bfa24
 };
 
 static const Tokens kDark = {
-    0x0b1422ff,   // window_bg #0b1422
-    0xf0f5fcff,   // window_fg #f0f5fc
-    0x080f1bff,   // view_bg #080f1b
-    0x111f32ff,   // headerbar_bg #111f32
-    0x101c2dff,   // sidebar_bg #101c2d
-    0x16263bff,   // card_bg #16263b
-    0x1c2e46ff,   // popover_bg #1c2e46
-    0x15243aff,   // dialog_bg #15243a
-    0xb0bfd1ff,   // dim_fg #b0bfd1
-    0x435a76ff,   // border #435a76
-    0x02071099,   // shade #02071099
-    0x253b55ff,   // button_bg #253b55
-    0x304965ff,   // button_hover #304965
-    0x3a5573ff,   // button_active #3a5573
-    0x38516eff,   // toggle_bg #38516e
-    0xa84b12ff,   // accent_bg #a84b12
-    0x903d0dff,   // accent_bg_hover #903d0d
-    0x78310aff,   // accent_bg_active #78310a
+    0x0c101aff,   // window_bg #0c101a
+    0xedf0f7ff,   // window_fg #edf0f7
+    0x080b13ff,   // view_bg #080b13
+    0x0f1424ff,   // headerbar_bg #0f1424
+    0x121828ff,   // sidebar_bg #121828
+    0x171d2dff,   // card_bg #171d2d
+    0x1d2438ff,   // popover_bg #1d2438
+    0x141a2aff,   // dialog_bg #141a2a
+    0xaab7cbff,   // dim_fg #aab7cb
+    0x3b4668ff,   // border #3b4668
+    0x04060ccc,   // shade #04060ccc
+    0x232b42ff,   // button_bg #232b42
+    0x2e3855ff,   // button_hover #2e3855
+    0x3a4668ff,   // button_active #3a4668
+    0x2b3552ff,   // toggle_bg #2b3552
+    0x5b3fb5ff,   // accent_bg #5b3fb5
+    0x4f36a0ff,   // accent_bg_hover #4f36a0
+    0x432c8aff,   // accent_bg_active #432c8a
     0xffffffff,   // accent_fg #ffffff
-    0xffb07eff,   // accent #ffb07e
+    0xcab8ffff,   // accent #cab8ff
     0xb73e4cff,   // destructive_bg #b73e4c
     0xa13140ff,   // destructive_bg_hover #a13140
     0x8b2936ff,   // destructive_bg_active #8b2936
@@ -106,16 +106,16 @@ static const Tokens kDark = {
     0xffa1a8ff,   // destructive #ffa1a8
     0x268452ff,   // success_bg #268452
     0x8ce5adff,   // success #8ce5ad
-    0xd5ac55ff,   // warning_bg #d5ac55
-    0x261d0cff,   // warning_fg #261d0c
-    0xf1c871ff,   // warning #f1c871
-    0x1c2e46ff,   // toast_bg #1c2e46
+    0xeab75cff,   // warning_bg #eab75c
+    0x1d1606ff,   // warning_fg #1d1606
+    0xf8c56aff,   // warning #f8c56a
+    0x1d2438ff,   // toast_bg #1d2438
     0xffffffff,   // toast_fg #ffffff
-    0xd8752520,   // icon_bg #d8752520
+    0xa78bfa24,   // icon_bg #a78bfa24
 };
 
-static const float kRadiusCard = 12.0f;
-static const float kRadiusButton = 8.0f;
+static const float kRadiusCard = 6.0f;
+static const float kRadiusButton = 6.0f;
 static const float kRadiusPill = 9999.0f;
 static const float kFocusRing = 2.0f;
 

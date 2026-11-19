@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="81" height="20" viewBox="0 0 81 20" role="img" aria-label="A4O: boots">
 <title>A4O: boots</title>
 <clipPath id="r"><rect width="81" height="20" rx="3"/></clipPath>
-<g clip-path="url(#r)"><rect width="37" height="20" fill="#15263d"/><rect x="37" width="44" height="20" fill="#efc566"/></g>
-<g font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11" text-anchor="middle"><text x="18.5" y="14" fill="#ffffff">A4O</text><text x="59" y="14" fill="#30230c">boots</text></g>
+<g clip-path="url(#r)"><rect width="37" height="20" fill="#171d2d"/><rect x="37" width="44" height="20" fill="#eab75c"/></g>
+<g font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11" text-anchor="middle"><text x="18.5" y="14" fill="#ffffff">A4O</text><text x="59" y="14" fill="#231800">boots</text></g>
 </svg>

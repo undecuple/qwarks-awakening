@@ -7,17 +7,18 @@
 
 **Ratchet & Clank (PS3) // Unofficial PC Port (static recompilation): an unofficial fan port that turns the PS3 games into native Windows programs, built from your own copy.**
 
-[![Release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&filter=launcher-v*&style=flat-square&label=release&labelColor=0a1942&color=b24500)](https://github.com/undecuple/qwarks-awakening/releases)
-[![Discord](https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white&labelColor=0a1942)](https://discord.gg/W8fMT78Q7k)
-[![Downloads](https://img.shields.io/github/downloads/undecuple/qwarks-awakening/total?style=flat-square&label=downloads&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/releases)
-[![Stars](https://img.shields.io/github/stars/undecuple/qwarks-awakening?style=flat-square&label=stars&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/stargazers)
-[![Licence: MIT](https://img.shields.io/badge/licence-MIT-1e70b9?style=flat-square&labelColor=0a1942)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/undecuple/qwarks-awakening?style=flat-square&label=last%20commit&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/commits/main)
-[![Issues](https://img.shields.io/github/issues/undecuple/qwarks-awakening?style=flat-square&label=issues&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/issues)
+[![Release](https://img.shields.io/github/v/release/undecuple/qwarks-awakening?include_prereleases&filter=launcher-v*&style=flat-square&label=release&labelColor=0C101A&color=EAB75C)](https://github.com/undecuple/qwarks-awakening/releases)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white&labelColor=0C101A)](https://discord.gg/W8fMT78Q7k)
+[![Downloads](https://img.shields.io/github/downloads/undecuple/qwarks-awakening/total?style=flat-square&label=downloads&labelColor=0C101A&color=A78BFA)](https://github.com/undecuple/qwarks-awakening/releases)
+[![Stars](https://img.shields.io/github/stars/undecuple/qwarks-awakening?style=flat-square&label=stars&labelColor=0C101A&color=A78BFA)](https://github.com/undecuple/qwarks-awakening/stargazers)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-64DCE8?style=flat-square&labelColor=0C101A)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/undecuple/qwarks-awakening?style=flat-square&label=last%20commit&labelColor=0C101A&color=A78BFA)](https://github.com/undecuple/qwarks-awakening/commits/main)
+[![Issues](https://img.shields.io/github/issues/undecuple/qwarks-awakening?style=flat-square&label=issues&labelColor=0C101A&color=A78BFA)](https://github.com/undecuple/qwarks-awakening/issues)
 <br>
-[![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-1e70b9?style=flat-square&labelColor=0a1942)](#what-you-need)
-[![Renderer: Direct3D 12](https://img.shields.io/badge/renderer-Direct3D%2012-1e70b9?style=flat-square&labelColor=0a1942)](#how-it-works)
-[![CI](https://img.shields.io/github/actions/workflow/status/undecuple/qwarks-awakening/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a1942&color=1e70b9)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
+[![Status: early work](https://img.shields.io/badge/status-early%20work-EAB75C?style=flat-square&labelColor=0C101A)](#status)
+[![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-64DCE8?style=flat-square&labelColor=0C101A)](#what-you-need)
+[![Renderer: Direct3D 12](https://img.shields.io/badge/renderer-Direct3D%2012-64DCE8?style=flat-square&labelColor=0C101A)](#how-it-works)
+[![CI](https://img.shields.io/github/actions/workflow/status/undecuple/qwarks-awakening/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0C101A&color=64DCE8)](https://github.com/undecuple/qwarks-awakening/actions/workflows/ci.yml)
 
 **[Download](https://github.com/undecuple/qwarks-awakening/releases/latest)** · **[Installing](#install)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Report an issue](https://github.com/undecuple/qwarks-awakening/issues/new/choose)** · **[Building](docs/BUILDING.md)** · **[Linux](docs/LINUX.md)**
 
@@ -35,8 +36,8 @@ look, a Linux launcher (tar.gz and AppImage) that builds the games and starts th
 knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
 ([CHANGELOG](CHANGELOG.md)). The launcher builds the games on your PC from your own copy. Every test so far ran the
 Windows programs under Proton on Linux; the project has not tested on Windows itself (a contributor's report of a
-native Windows build is in the [status table](#status)). An earlier build of the first target, *Tools of Destruction*, was played by hand from its first level, with known bugs. Nobody
-has played it through. How far each other game gets in scripted runs is in the [status table](#status). No game is
+native Windows build is in the [status table](#status)). The current focus is *Ratchet & Clank: All 4 One*: a scripted new game reaches its first level, luminopolis, and the picture stops about 468 seconds in (scripted run, 2026-11-18); it is not in the player's control yet. *Tools of Destruction*, the earlier focus, was played by hand from its first level, with known bugs; its work continues in another port effort and its results stay recorded here. Nobody
+has played either through. How far each other game gets in scripted runs is in the [status table](#status). No game is
 online yet ([ONLINE.md](docs/ONLINE.md)).
 
 <div align="center">
@@ -51,7 +52,7 @@ online yet ([ONLINE.md](docs/ONLINE.md)).
 
 Contents: [Install](#install) · [Status](#status) · [Settings, controllers and known issues](#settings-and-known-issues) · [How it works](#how-it-works) · [Credits](#credits-licence-related-projects)
 
----
+<p align="center"><img src="assets/divider-plate.png" width="900" alt=""></p>
 
 ## Install
 
@@ -141,7 +142,7 @@ Logs have your user name and home folder removed, so you can attach them to an
 [issue](https://github.com/undecuple/qwarks-awakening/issues/new/choose) as they are. To build from source instead,
 follow [docs/BUILDING.md](docs/BUILDING.md) (native Windows or Linux with Nix).
 
----
+<p align="center"><img src="assets/divider-grid.png" width="900" alt=""></p>
 
 ## What makes it different
 
@@ -154,7 +155,7 @@ follow [docs/BUILDING.md](docs/BUILDING.md) (native Windows or Linux with Nix).
 | Run results in this README and in the feature-parity page give their date and how they were run; scripted and hand-play figures are kept apart | [Status](#status), [FEATURE-PARITY.md](docs/FEATURE-PARITY.md) |
 | General fixes go back to ps3recomp | [#401](https://github.com/sp00nznet/ps3recomp/pull/401), [#405](https://github.com/sp00nznet/ps3recomp/pull/405), [#408](https://github.com/sp00nznet/ps3recomp/pull/408), [#415](https://github.com/sp00nznet/ps3recomp/pull/415), [#429](https://github.com/sp00nznet/ps3recomp/pull/429), all merged |
 
----
+<p align="center"><img src="assets/divider-orbit.png" width="900" alt=""></p>
 
 ## Status
 
@@ -179,10 +180,10 @@ Not reached yet: a chapter played to its end, and the port's own save loaded aga
 
 | Game | PS3 release | State |
 |---|---|---|
-| Ratchet & Clank Future: Tools of Destruction | 2007 | first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet |
+| Ratchet & Clank Future: Tools of Destruction | 2007 | earlier focus, work continues in another port effort; played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet |
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
 | Ratchet & Clank Future: A Crack in Time | 2009 | builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable |
-| Ratchet & Clank: All 4 One | 2011 | builds (1.03 update); reaches its first fight in colour, then the characters fall through the floor; not playable |
+| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable |
 | Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
 | Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
 | Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |
@@ -201,7 +202,7 @@ What a release means: [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
 Coming soon, in this order, no dates ([ROADMAP](docs/ROADMAP.md)):
 
-- first, *Tools of Destruction* playable through;
+- first, *All 4 One*: past the stall in its first level, then in control and playable through;
 - an in-game settings menu;
 - the other games, one at a time;
 - a native Linux build with Vulkan;
@@ -210,7 +211,7 @@ Coming soon, in this order, no dates ([ROADMAP](docs/ROADMAP.md)):
 
 Gameplay changes stay optional.
 
----
+<p align="center"><img src="assets/divider-grid.png" width="900" alt=""></p>
 
 ## Settings and known issues
 
@@ -264,7 +265,7 @@ server, an unofficial fan work community with a forum for this project:
 We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or
 donations in this project's name is not us.
 
----
+<p align="center"><img src="assets/divider-orbit.png" width="900" alt=""></p>
 
 ## How it works
 
@@ -280,7 +281,7 @@ Python; Linux builds use the Nix flake (`nix develop`, `nix develop .#win` for t
 recompiler is the `third_party/ps3recomp` submodule, with this port's changes in `port/patches/`. Steps:
 [docs/BUILDING.md](docs/BUILDING.md).
 
----
+<p align="center"><img src="assets/divider-plate.png" width="900" alt=""></p>
 
 ## Credits, licence, related projects
 

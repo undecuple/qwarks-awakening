@@ -178,6 +178,9 @@ struct App {
     bool shotMode = false; bool firstFrame = true;
     bool liveShot = false; int liveWait = 0;  // --live SECONDS: a shot whose --keys may start a real build / game; the shot waits for it (end-to-end checks)
     std::map<SDL_JoystickID, SDL_Gamepad*> pads;
+    // Controller test (Settings): while it runs the controller does not drive the launcher (no gamepad input reaches
+    // ImGui); it ends on Stop, Esc, B held 2 s, or leaving the page, and gives the controller back once every button is up.
+    bool padTest = false, padTestDrawn = false, padRelease = false, padEscEaten = false; Uint64 padHoldSince = 0;
     float S(float v) const { return v * scale; }
 };
 static App A;
@@ -2345,7 +2348,46 @@ static void LocList(const char* key, const std::vector<std::string>& items, cons
     if (!rm.empty()) EngineLocation(key, rm, "--remove");
 }
 
+static bool AnyPadButtonDown() {
+    for (auto& kv : A.pads) for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++) if (SDL_GetGamepadButton(kv.second, (SDL_GamepadButton)b)) return true;
+    return false;
+}
+static void PadTestStart() {
+    A.padTest = true; A.padRelease = false; A.padHoldSince = 0;
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);   // no gamepad feeds ImGui
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+    for (int k = ImGuiKey_GamepadStart; k <= ImGuiKey_GamepadRStickDown; k++) io.AddKeyAnalogEvent((ImGuiKey)k, false, 0.f);  // the button that started it is up
+}
+static void PadTestStop() { A.padTest = false; A.padRelease = true; A.padHoldSince = 0; }   // control returns in PadTestFrame
+// Once per frame before ImGui::NewFrame: give the controller back only when no button is held (else the B that ended
+// the test would also press Back), and end a test whose page is no longer drawn.
+static void PadTestFrame() {
+    if (A.padTest && !A.padTestDrawn && !A.firstFrame) PadTestStop();
+    A.padTestDrawn = false; A.padEscEaten = false;
+    if (A.padRelease && !AnyPadButtonDown()) {
+        A.padRelease = false;
+        ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoFirst);
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    }
+}
 static void PadTest() {
+    A.padTestDrawn = true;
+    if (!A.padTest) {
+        Wrapped("While the test runs, the controller does not control the launcher.", T->dimFg, 15.f);
+        if (Btn("Start test##padtest", ImVec2(BtnW("Start test") + A.S(12.f), A.S(36.f)), true)) PadTestStart();
+        return;
+    }
+    Uint64 now = SDL_GetTicks();
+    bool holdB = false;
+    for (auto& kv : A.pads) holdB |= SDL_GetGamepadButton(kv.second, SDL_GAMEPAD_BUTTON_EAST);
+    if (!holdB) A.padHoldSince = 0; else if (!A.padHoldSince) A.padHoldSince = now;
+    char hint[128];
+    if (A.padHoldSince) snprintf(hint, sizeof hint, "Keep holding B to stop the test (%.1f s)", std::max(0.f, 2.f - (now - A.padHoldSince) / 1000.f));
+    else snprintf(hint, sizeof hint, "Testing. To stop: hold B for 2 seconds, press Esc or click Stop test.");
+    Wrapped(hint, T->dimFg, 15.f);
+    if (Btn("Stop test##padtest", ImVec2(BtnW("Stop test") + A.S(12.f), A.S(36.f)), false) || ImGui::IsKeyPressed(ImGuiKey_Escape)
+        || (A.padHoldSince && now - A.padHoldSince >= 2000)) { A.padEscEaten = ImGui::IsKeyPressed(ImGuiKey_Escape); PadTestStop(); return; }
     int n = 0; SDL_JoystickID* ids = SDL_GetGamepads(&n);
     for (int i = 0; i < n; i++) if (!A.pads.count(ids[i])) { SDL_Gamepad* g = SDL_OpenGamepad(ids[i]); if (g) A.pads[ids[i]] = g; }
     for (auto it = A.pads.begin(); it != A.pads.end();) { if (!SDL_GamepadConnected(it->second)) { SDL_CloseGamepad(it->second); it = A.pads.erase(it); } else ++it; }
@@ -3066,7 +3108,7 @@ static void Frame(float dt) {
     // Esc / controller B: back (see GoBack) when nothing else wants the key; in the sidebar it does nothing (the top)
     bool inSidebar = std::find(A.sidebarIds.begin(), A.sidebarIds.end(), ImGui::GetFocusID()) != A.sidebarIds.end();
     bool free = !popupWasOpen && !A.addOpen && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive();
-    if (free && !inSidebar && !sidebarPage && (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight))) GoBack();
+    if (free && !inSidebar && !sidebarPage && !A.padEscEaten && (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight))) GoBack();
     // Arrow/D-pad navigation stays within the full-width page; there is no hidden sidebar focus target.
     ImGui::End();
     if (A.addOpen) AddDrawer(W, H);
@@ -3270,6 +3312,7 @@ int main(int argc, char** argv) {
             if (e.type == SDL_EVENT_QUIT) run = false;
             else if (e.type == SDL_EVENT_SYSTEM_THEME_CHANGED && A.themePref == "system") ApplyTheme();
         }
+        PadTestFrame();
         ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
         if (A.shotMode && frames >= 8 && (frames - 8) / 6 < (int)keys.size() && (frames - 8) % 6 < 2)
             ImGui::GetIO().AddKeyEvent(keys[(frames - 8) / 6], (frames - 8) % 6 == 0);

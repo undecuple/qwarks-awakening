@@ -1,6 +1,6 @@
 {
  "format": 1,
- "generator_sha256": "306278a4359fd2db98165e1b10c539c63a7e4b0a9bf955e9558a67ad6479ed42",
+ "generator_sha256": "81f245aacf0fb2f87cf31a5e7d0a72eb409fb73bf2c59ea5423b44c28a004f1f",
  "fonts_sha256": {
   "Rajdhani-Bold.ttf": "691470dd3286a14e9677940d0bf75796179841ba5215cbda1a2c8910a3226afd",
   "Rajdhani-Medium.ttf": "12ff7dcfe4c206e3875ac53b1762eab57de6a2fa7f5a86c26b97b88d6591eac2",
@@ -17,7 +17,7 @@
     55
    ],
    "bytes": 9294,
-   "sha256": "4617015bc49f077ac0a39b9adf5d10ca8af7dc22a03643f09095ab2a9dc31a78"
+   "sha256": "b25efcce59474f3ceecd29247cabcaab9e583ffe90f44eda620f3fd5e3353f06"
   },
   "header-125.bmp": {
    "size": [
@@ -25,7 +25,7 @@
     68
    ],
    "bytes": 13110,
-   "sha256": "197ef742caa7a2e9134e910c25ab6a7c25f7d51fafae56a2b9c044cc6ec3f06c"
+   "sha256": "5c6ff7bd43daa3d3b2ccad611727642aca8e34447eee244dded759924912affd"
   },
   "header-150.bmp": {
    "size": [
@@ -33,7 +33,7 @@
     80
    ],
    "bytes": 20214,
-   "sha256": "88b91ee2bd7f2f76df7422dba29ae0318b259114b96960b0a14f7a2cbf24b2f5"
+   "sha256": "1740a417f156e7cee081f8eb6587852e23019dc614168c5872501218835734b7"
   },
   "header-200.bmp": {
    "size": [
@@ -41,31 +41,31 @@
     106
    ],
    "bytes": 35246,
-   "sha256": "c6196edc70b21ee54ac5c959253f2cbb986566fc1e599c24b43cbff4c7f7c766"
+   "sha256": "d22a7bed2d275372e0ab9948110322d711bb114f57d4f1467a8e103cd0b7e9de"
   },
   "rc-launcher.ico": {
    "size": [
     256,
     256
    ],
-   "bytes": 52689,
-   "sha256": "b4ec83386f7804803613b636e8f1ab920cf16707c547af0a8a2c56838bb2bb2d"
+   "bytes": 103681,
+   "sha256": "1c383595d1de43208fcbe81029f1774c9f745b71caf8cb157f78753e01b69d42"
   },
   "rc-setup.ico": {
    "size": [
     256,
     256
    ],
-   "bytes": 54223,
-   "sha256": "808a6a8bc36fd49187fa348929601daf7d4dbc826e6430c556cbc9ac21e38868"
+   "bytes": 94730,
+   "sha256": "06fbf030242beef0df44715ad314964c98bb98bcc097bb8e7866e0201f7a36a1"
   },
   "rc-uninstall.ico": {
    "size": [
     256,
     256
    ],
-   "bytes": 52820,
-   "sha256": "9b5702d75769f69f5dbea4ca17d3dcbc6ff75146527e46699fd191ff0f9a4a47"
+   "bytes": 92977,
+   "sha256": "010d81acd7f7284e78e4f8b83afc72391f3e561673cd70c974b07ed68f82d84b"
   },
   "wizard-100.bmp": {
    "size": [
@@ -73,7 +73,7 @@
     314
    ],
    "bytes": 154542,
-   "sha256": "859893f3b8e2c292667be3731a7824fddae5b854b2be53ae75d119d4d430b1c2"
+   "sha256": "fca00010790acf7fb0af6fe7dbe3d99b182a570d5829909317a164ad1a061a58"
   },
   "wizard-125.bmp": {
    "size": [
@@ -81,7 +81,7 @@
     386
    ],
    "bytes": 222390,
-   "sha256": "b650f6dccfba29b45bdd4f3ec3fb124853ece869b4079735c65a442f8f87b388"
+   "sha256": "3f4cc8f2ce87c8521103b8a49325665af9b3ff7201b2d36fd7357aa293b7c4b4"
   },
   "wizard-150.bmp": {
    "size": [
@@ -89,7 +89,7 @@
     459
    ],
    "bytes": 339714,
-   "sha256": "718db7de1af75326d3561ed4e98ea9cad32a3bc401e7b99b1fbaf47e2d9a23b3"
+   "sha256": "cb11b21d9a2a10a98d7480bf8de90698b143aa9308782af78be06ad3b59f537f"
   },
   "wizard-200.bmp": {
    "size": [
@@ -97,7 +97,7 @@
     604
    ],
    "bytes": 594390,
-   "sha256": "dbc4bfd9a333888c2bdf3f408149cd4bd4b5fcadcf909bae4f1b6eb9a483c161"
+   "sha256": "cbc2d55a8c610086d5c243c4df1a78a4b1ce07e211ecc140dae87fbdcb00be89"
   }
  },
  "public_files": {
@@ -106,24 +106,24 @@
     1280,
     320
    ],
-   "bytes": 142174,
-   "sha256": "3874c2d31495ac3633dbb949006d96eab870203b8f26420e20eded3d437b4d2d"
+   "bytes": 89857,
+   "sha256": "748eda11ad430b40528cfc511ed5566f0ae975a72d36f473b200dd1045dbf5f4"
   },
   "banner@2x.png": {
    "size": [
     2560,
     640
    ],
-   "bytes": 478661,
-   "sha256": "8054e5549492952e92cf8c6604127880fb6bf30b9be760cf7910cd0a8d8a9097"
+   "bytes": 284084,
+   "sha256": "06d186b6a9c66cfb002eb6f3e58c1507e5f6cc04cb110629bbd4d736d48d4f5d"
   },
   "social-preview.png": {
    "size": [
     1280,
     640
    ],
-   "bytes": 237646,
-   "sha256": "ba63a95653adaf728e4b824e987d2091d52a6c0873c27a965e6cadf12d5f626b"
+   "bytes": 141440,
+   "sha256": "5b26edc97a5fa1913f737147aaefd09dd287f109c051576f19fc844f4deda0e8"
   }
  }
 }
