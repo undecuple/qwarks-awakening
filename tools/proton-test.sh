@@ -11,8 +11,12 @@
 #    of the game window only, never the whole screen. Audio stays disabled either way.
 #  - Muted: Wine audio drivers disabled through WINEDLLOVERRIDES (never via the mixer).
 #  - After N seconds (default 10) takes a screenshot (default work/shots/<name>.png), then kills the run.
-# Exit status: 0 if the program was still running at screenshot time or exited 0; the log is printed. 2: refused
-# before the run (runenv_check.py: a path switch the sandbox cannot see or write). 4: the run logged "cannot write".
+# Exit status: 0 if the program was still running at screenshot time or exited 0 (and the screenshot was written);
+# otherwise the program's own exit status; the log is printed. 2: refused before the run (runenv_check.py: a path
+# switch the sandbox cannot see or write). 4: the run logged "cannot write". 86: the program never started (no
+# app_stdout.txt: Proton or its prefix failed first). 87: the program ran but no screenshot was written
+# (tools/proton-inner.sh; until 2026-11-25 both exited 0). A program exiting 86/87 itself reads the same:
+# its "[exit code N]" line in app_stdout.txt tells them apart.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SECONDS_RUN=10 SHOT="" NAME="" PROTON_DIR="$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest"

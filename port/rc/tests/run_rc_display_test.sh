@@ -2,7 +2,8 @@
 # Builds and runs test_rc_display.c (window resize stage 1a: display.ini read-modify-write, size =, R&C display defaults,
 # RC_WINDOW_SIZE alias, off-screen placement check) against libs/video of the patched tree (RC_P3R_TREE, default
 # work/ps3recomp-patched of the main checkout); then an ASan/UBSan pass, and, when x86_64-w64-mingw32-gcc is on PATH
-# (.#win shell), a Windows compile of the header with <windows.h> (rsx_window_size.h's Win32 part).
+# (.#win shell), a Windows compile of the header with <windows.h> (rsx_window_size.h's Win32 part). A part that cannot
+# run here prints a SKIP line (tools/run-host-tests.sh strict mode fails on it unless the list allows it).
 #   nix develop .#re --command port/rc/tests/run_rc_display_test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,11 +22,13 @@ if command -v "$cc" >/dev/null; then
 if echo "int main(void){return 0;}" | "$cc" -fsanitize=address,undefined -x c - -o "$tmp/probe" 2>/dev/null && "$tmp/probe"; then
   "$cc" $W -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all "${I[@]}" "$here/test_rc_display.c" -o "$tmp/test_asan"
   "$tmp/test_asan" >/dev/null && echo "[PASS] ASan/UBSan pass" || { echo "[FAIL] ASan/UBSan pass"; exit 1; }
+else echo "SKIP ASan/UBSan pass: $cc cannot build and run a -fsanitize=address,undefined program here"
 fi
 else echo "SKIP host parts: no $cc (run in the .#re shell)"; fi
 if command -v x86_64-w64-mingw32-g++ >/dev/null; then
   printf '#include <windows.h>\n#include "rc_display_ini.h"\nint main(){return 0;}\n' > "$tmp/w.cpp"
   x86_64-w64-mingw32-g++ -std=gnu++20 -Wall -Werror -Wno-unused-function -Wno-unused-variable -fsyntax-only "${I[@]}" "$tmp/w.cpp" \
     && echo "[PASS] rc_display_ini.h compiles for Windows (C++)" || { echo "[FAIL] rc_display_ini.h Windows compile"; exit 1; }
+else echo "SKIP Windows compile: no x86_64-w64-mingw32-g++ (the .#win shell has it); rc_display_ini.h's Win32 part is not compiled"
 fi
 echo "[run_rc_display_test] PASS"
