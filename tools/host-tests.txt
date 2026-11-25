@@ -2,6 +2,8 @@
 # after tools/ps3recomp-patched.sh). One path per line; .sh runs with bash, .py with python3.
 #:allow-skip port/rc/tests/run_log_test.sh the MinGW half SKIPs when x86_64-w64-mingw32-gcc is not on PATH (only .#win has it); the host half runs
 #:allow-skip port/rc/tests/run_hdd0_overlay_test.sh the cellFs part SKIPs without the lift of the player's EBOOT (never in CI); the overlay part runs
+#:allow-skip port/rc/tests/run_rc_display_test.sh the Windows compile of rc_display_ini.h SKIPs without x86_64-w64-mingw32-g++ (only .#win has it; .#ci has no MinGW); the host, ASan/UBSan parts run
+#:allow-skip port/rc/tests/run_rc_settings_test.sh the Windows compiles of cellPad.c (6011), rc_settings.cpp and rc_keybinds_shared.c SKIP without MinGW (only .#win); the host, ASan/UBSan and host-compile parts run
 port/rc/tests/fios_index_check.py
 port/rc/tests/run_cube_face_test.sh
 port/rc/tests/run_dxt_alias_test.sh
@@ -47,3 +49,22 @@ tools/release/test_draw_dividers.py
 tools/release/test_kit_inputs.py
 tools/release/test_rsp_quoting.py
 port/rc/tests/run_spu_isa_diff_test.sh
+port/rc/tests/run_ffa_lua_errmsg_test.sh
+port/rc/tests/run_igjob_callback_brsl_test.sh
+port/rc/tests/run_rsx_translator_id_test.sh
+tools/test_run_host_tests.py
+port/rc/tests/run_gcm_r137_test.sh
+# Not run by this list (they need a recompiled game, game data or tools that are not in this repository):
+#   run_acit_lua_ljmp_test.sh
+#   run_bink_tests.sh
+#   run_fs_stat_test.sh
+#   run_imports_test.sh
+#   run_lfqueue_test.sh
+#   run_lua_ljmp_test.sh
+#   run_lv2_sync_test.sh
+#   run_net_test.sh
+#   run_oq_readback_test.sh
+#   run_pause_quit_test.sh
+#   run_ppu_resv_registry_test.sh
+#   run_qfb_lua_errmsg_test.sh
+#   run_qfb_lua_ljmp_test.sh

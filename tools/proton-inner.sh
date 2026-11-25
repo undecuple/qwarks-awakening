@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Inside the sandbox (called by tools/proton-test.sh): Xvfb + Proton run + screenshot + cleanup.
+# Exit: the program's own exit status when it exited (a value over 255 or not a number: 1); 0 when it was still running
+# at screenshot time (a render loop) and the screenshot was taken; 86 when the program never started (no app_stdout.txt
+# by the end: Proton or the prefix failed before cmd ran run.bat; it used to look like a healthy render loop, exit 0,
+# found 2026-11-25); 87 when the program ran but no screenshot was written (no Xvfb, or no game window on the real
+# display); a program failure keeps its own status over 87.
 set -uo pipefail
 PROTON_DIR="$1" RUN="$2" SECS="$3" SHOT="$4" EXE="$5"; shift 5
 
@@ -59,10 +64,14 @@ APP=$!
 # RC_START_MAX s (default 900); past that the run goes on with the plain SECONDS so a broken launch still ends.
 T_LAUNCH=$SECONDS; START_MAX="${RC_START_MAX:-900}"
 while [[ ! -e app_stdout.txt ]] && (( SECONDS - T_LAUNCH < START_MAX )) && kill -0 "$APP" 2>/dev/null; do sleep 0.5; done
+NOSTART=0
 if [[ -e app_stdout.txt ]]; then
   echo "program started $(( SECONDS - T_LAUNCH )) s after the Proton launch (prefix setup); running ${SECS} s from here"
 else
-  echo "program did not start within $(( SECONDS - T_LAUNCH )) s of the Proton launch (RC_START_MAX ${START_MAX}); running ${SECS} s anyway"
+  # Not started yet. The launcher PID ending is NOT a "never started" signal: on a new prefix ("Upgrading prefix from
+  # None") the proton launcher returns after ~5 s and the game starts after it (peach 2026-11-25 07:36, a false exit 86).
+  # So wait the plain SECONDS as before; no app_stdout.txt by the end = never started (exit 86 below).
+  echo "program not started $(( SECONDS - T_LAUNCH )) s after the Proton launch (launcher $(kill -0 "$APP" 2>/dev/null && echo running || echo ended)); running ${SECS} s anyway"
 fi
 # RC_XDO=SCRIPT (2026-11-09, window stage 1c): a bash script run alongside the program on the same display (Xvfb or
 # the real one), for X input the Win32 side cannot fake from inside, e.g. an xdotool script (a mouse drag on the title bar
@@ -89,7 +98,9 @@ if [[ -n "${RC_VIDEO:-}" && -n "$XVFB" ]]; then
 fi
 # RC_EXIT_EARLY=1 (opt-in, for runs that end by themselves such as a toolchain trial): stop waiting once the
 # program has exited, so a long --seconds cap does not hold the GPU lock after the work is done.
-if [[ "${RC_EXIT_EARLY:-0}" == 1 ]]; then
+if (( NOSTART )); then
+  :
+elif [[ "${RC_EXIT_EARLY:-0}" == 1 ]]; then
   for (( _t = 0; _t < SECS; _t += 5 )); do
     grep -aq '\[exit code' "$RUN/app/app_stdout.txt" 2>/dev/null && break
     sleep 5
@@ -102,21 +113,27 @@ fi
 # Alive = the cmd wrapper has not written its "[exit code N]" line yet. The steam-run/proton launcher PID is not
 # a reliable signal: it can return while the game keeps running, which used to report a live run as "status 255".
 ALIVE=1; grep -aq '\[exit code' "$RUN/app/app_stdout.txt" 2>/dev/null && ALIVE=0
+# A program that started late (after RC_START_MAX) still counts as started; no app_stdout.txt by now = never started.
+[[ -e "$RUN/app/app_stdout.txt" ]] || NOSTART=1
+SHOT_OK=0
 if [[ -z "$XVFB" ]]; then
   # Real display: capture the game's own window only, never the user's screen.
   WID=""
   for q in "--class ${EXE}" "--class ${EXE%.exe}" "--name ${EXE%.exe}" "--name Ratchet"; do
     WID="$(xdotool search --onlyvisible $q 2>/dev/null | tail -1)"; [[ -n "$WID" ]] && break
   done
-  [[ -n "$WID" ]] && import -window "$WID" "$SHOT" 2>/dev/null && echo "screenshot: $SHOT (game window)"
+  [[ -n "$WID" ]] && import -window "$WID" "$SHOT" 2>/dev/null && SHOT_OK=1 && echo "screenshot: $SHOT (game window)"
 else
-  import -window root "$SHOT" 2>/dev/null && echo "screenshot: $SHOT"
+  import -window root "$SHOT" 2>/dev/null && SHOT_OK=1 && echo "screenshot: $SHOT"
 fi
+(( SHOT_OK )) || echo "screenshot: FAILED (${WID:-no window}): $SHOT not written"
 if [[ -n "$VID" && -s "$RUN/clip/times.txt" ]]; then
   python3 "$(dirname "$0")/make_clip.py" "$RUN/clip" "$RUN/app/app_stdout.txt" "${SHOT%.png}.mp4" || echo "clip: failed"
 fi
 STATUS=0
-if [[ $ALIVE -eq 1 ]]; then
+if (( NOSTART )); then
+  echo "program never started (no app_stdout.txt): exit 86"
+elif [[ $ALIVE -eq 1 ]]; then
   echo "program still running after ${SECS}s (expected for a render loop); stopping it"
 else
   wait "$APP" 2>/dev/null
@@ -127,5 +144,7 @@ fi
 STEAM_COMPAT_DATA_PATH="$RUN/compat" "${SR[@]}" "$PROTON_DIR/files/bin/wineserver" -k >/dev/null 2>&1 || true
 kill "$APP" "$XVFB" 2>/dev/null || true
 echo "--- program output (tail) ---"; tail -n 30 "$RUN/app/app_stdout.txt" 2>/dev/null || echo "(no output file)"
+(( NOSTART )) && exit 86
 [[ "$STATUS" =~ ^[0-9]+$ ]] || STATUS=1
+(( STATUS == 0 && ! SHOT_OK )) && { echo "proton-inner: no screenshot: exit 87"; exit 87; }
 exit $(( STATUS > 255 ? 1 : STATUS ))

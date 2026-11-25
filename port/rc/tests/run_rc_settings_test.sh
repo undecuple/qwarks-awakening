@@ -3,7 +3,8 @@
 # libs/input of the patched tree (RC_P3R_TREE, default work/ps3recomp-patched of the main checkout), with patch 6011
 # applied to a scratch copy when the tree lacks it; then an ASan/UBSan pass, a C++ compile of rc_settings.cpp, a C compile
 # of rc_keybinds_shared.c (shared key bindings) on its own, and,
-# when x86_64-w64-mingw32-gcc is on PATH (.#win shell), Windows compiles of cellPad.c, rc_settings.cpp and rc_keybinds_shared.c.
+# when x86_64-w64-mingw32-gcc is on PATH (.#win shell), Windows compiles of cellPad.c, rc_settings.cpp and rc_keybinds_shared.c. A part that cannot run here prints a SKIP
+# line (tools/run-host-tests.sh strict mode fails on it unless the list allows it).
 #   nix develop .#re --command port/rc/tests/run_rc_settings_test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,13 +24,14 @@ if command -v "$cc" >/dev/null; then
 if echo "int main(void){return 0;}" | "$cc" -fsanitize=address,undefined -x c - -o "$tmp/probe" 2>/dev/null && "$tmp/probe"; then
   "$cc" $W -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all "${I[@]}" "$here/test_rc_settings.c" -o "$tmp/test_asan"
   "$tmp/test_asan" >/dev/null && echo "[PASS] ASan/UBSan pass" || { echo "[FAIL] ASan/UBSan pass"; exit 1; }
+else echo "SKIP ASan/UBSan pass: $cc cannot build and run a -fsanitize=address,undefined program here"
 fi
 "${HOST_CXX:-g++}" -std=gnu++20 -Wall -Wextra -Werror -Wno-unused-function -fsyntax-only "${I[@]}" "$repo/port/rc/rc_settings.cpp" \
   && echo "[PASS] rc_settings.cpp compiles (host)" || { echo "[FAIL] rc_settings.cpp host compile"; exit 1; }
 "$cc" $W -fsyntax-only "${I[@]}" "$repo/port/rc/rc_keybinds_shared.c" \
   && echo "[PASS] rc_keybinds_shared.c compiles on its own (host)" || { echo "[FAIL] rc_keybinds_shared.c host compile"; exit 1; }
 else echo "SKIP host parts: no $cc (run in the .#re shell)"; fi
-if command -v x86_64-w64-mingw32-gcc >/dev/null; then
+if command -v x86_64-w64-mingw32-gcc >/dev/null && command -v x86_64-w64-mingw32-g++ >/dev/null; then
   x86_64-w64-mingw32-gcc -std=c11 -Wall -Werror -Wno-unused-function -Wno-unknown-pragmas -fsyntax-only \
     -I"$tree/include" -I"$tree" -I"$tree/runtime/ppu" -I"$tree/runtime/memory" -I"$tree/runtime/platform" "${I[@]}" "$tmp/t/libs/input/cellPad.c" \
     && echo "[PASS] cellPad.c (6011) compiles for Windows" || { echo "[FAIL] cellPad.c Windows compile"; exit 1; }
@@ -37,5 +39,6 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null; then
     && echo "[PASS] rc_settings.cpp compiles for Windows" || { echo "[FAIL] rc_settings.cpp Windows compile"; exit 1; }
   x86_64-w64-mingw32-gcc -std=c11 -Wall -Werror -Wno-unused-function -fsyntax-only "${I[@]}" "$repo/port/rc/rc_keybinds_shared.c" \
     && echo "[PASS] rc_keybinds_shared.c compiles for Windows" || { echo "[FAIL] rc_keybinds_shared.c Windows compile"; exit 1; }
+else echo "SKIP Windows compile: no x86_64-w64-mingw32-gcc/g++ (the .#win shell has them); cellPad.c, rc_settings.cpp, rc_keybinds_shared.c not compiled for Windows"
 fi
 echo "[run_rc_settings_test] PASS"

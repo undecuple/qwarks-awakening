@@ -26,7 +26,9 @@ ports' tools/release/test_workflows.py (same author, MIT).
   - release.yml linux job (0.4.0): launcher tags and the dry run, read-only, ubuntu-22.04, the version checked, the
     pinned SDL3 source / CMake / Ninja and the apt list from the repository, then test, build, import check (glibc
     2.35 at most), pack, smoke test, upload; publish takes the tarball from this run;
-  - ci.yml: runs the release tools' host tests (every tools/release/test_*.py) and fetch_toolchain.py --check --strict,
+  - ci.yml: runs the release tools' host tests (every tools/release/test_*.py through run-host-tests.sh in strict mode,
+    so a SKIP or a silent exit 0 fails; the step is run on a fixture tree here; the launcher navigation test runs with
+    --launcher on the native launcher that the launcher-linux job builds) and fetch_toolchain.py --check --strict,
     prepares the patched toolkit on native Windows, and cross-compiles the launcher (launcher-build) with the pinned
     Linux llvm-mingw and checks its imports;
   - dependabot.yml: github-actions updates, weekly, grouped.
@@ -176,11 +178,12 @@ def test_linux_job(lx, pub):
           "toolchain.json: sdl3-source pinned, the same SDL version as the Windows package, release-build only", s)
     order = ["test_pack_linux.py", "build_launcher_linux.sh build/launcher-linux",
              "pack_linux.py --check-elf build/launcher-linux/qwarks-awakening --glibc-max 2.35",
+             "test_launcher_navigation.py --launcher build/launcher-linux/qwarks-awakening",
              "pack_linux.py --program build/launcher-linux/qwarks-awakening", "smoke_linux.sh",
              "pack_appimage.py --program build/launcher-linux/qwarks-awakening", "smoke_appimage.sh"]
     check(all(o in lx for o in order) and [lx.index(o) for o in order] == sorted(lx.index(o) for o in order),
-          "release.yml: linux tests, builds, checks the imports, packs, installs/starts/removes the tarball, then packs "
-          "and starts the AppImage", order)
+          "release.yml: linux tests, builds, checks the imports, runs the launcher navigation test, packs, "
+          "installs/starts/removes the tarball, then packs and starts the AppImage", order)
     check("test_pack_appimage.py" in lx and lx.index("test_pack_appimage.py") < lx.index("build_launcher_linux.sh"),
           "release.yml: linux runs the AppImage packaging test before the build")
     check("--glibc-max 2.35" in lx[lx.index("pack_linux.py --program"):] and "names.linux_tar_name(sys.argv[1])" in lx,
@@ -409,6 +412,11 @@ def test_version_step(lj):
     check(rc != 0 and "catalog.json" in out, "release.yml version step: stale catalog mirror refused", out)
 
 
+def check_step(m, what):
+    check(m is not None, what)
+    return m is not None
+
+
 def test_ci():
     t = read(os.path.join(WF, "ci.yml"))
     check("tools/release/test_*.py" in t, "ci.yml: runs every release-tool host test")
@@ -420,6 +428,51 @@ def test_ci():
           and "python tools/release/test_ps3recomp_patched.py" in nw
           and "ParseFile" in nw,
           "ci.yml: native Windows setup prepares the real toolkit and checks its PowerShell entry point")
+    # release-tools (audit 2026-11-25 M8): the loop took "SKIP" + exit 0 as a pass, so the launcher navigation test
+    # never tested anything in CI. Now run-host-tests.sh in strict mode; the navigation test runs where a launcher is.
+    rt = jobs(t).get("release-tools", "")
+    check("RC_HOST_TESTS_STRICT=1 nix develop .#ci --command bash tools/run-host-tests.sh" in rt
+          and "ls tools/release/test_*.py" in rt and "git submodule update --init --depth 1 third_party/imgui" in rt,
+          "ci.yml: release-tools runs every release test through run-host-tests.sh in strict mode (SKIP fails)")
+    excl = re.findall(r"grep -vxF ((?:-e )?tools/release/test_\w+\.py(?: \\\n\s*-e tools/release/test_\w+\.py)*)", rt)
+    check(excl and re.findall(r"tools/release/test_\w+\.py", excl[0]) == ["tools/release/test_launcher_navigation.py"],
+          "ci.yml: release-tools leaves out only the launcher navigation test", excl)
+    allow = re.findall(r"#:allow-skip (\S+) (.+?)\"", rt)
+    check([a for a, _ in allow] == ["tools/release/test_pe_imports.py"] and all(len(r) > 20 for _, r in allow),
+          "ci.yml: release-tools allow-lists only test_pe_imports.py's partial SKIP, with a reason", allow)
+    ll = jobs(t).get("launcher-linux", "")
+    order = ["git submodule update --init --depth 1 third_party/imgui", "tools/release/linux-build-packages.txt",
+             "fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux",
+             "tools/release/build_launcher_linux.sh build/launcher-linux",
+             "test_launcher_navigation.py --launcher build/launcher-linux/qwarks-awakening"]
+    check("runs-on: ubuntu-22.04" in ll and all(o in ll for o in order)
+          and [ll.index(o) for o in order] == sorted(ll.index(o) for o in order),
+          "ci.yml: launcher-linux builds the native launcher and runs the navigation test with --launcher", order)
+    # behaviour: the release-tools step, run on a fixture tree, fails on a test that only prints SKIP
+    m = re.search(r"- name: Host tests of the release tools[^\n]*\n(?:\s+#[^\n]*\n)*\s+run: \|\n((?:\s{10}[^\n]*\n)+)", rt)
+    if check_step(m, "ci.yml: the release-tools step script is found"):
+        script = textwrap.dedent(m.group(1)).replace("nix develop .#ci --command ", "")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tools", "release"))
+            shutil.copy(os.path.join(ROOT, "tools", "run-host-tests.sh"), os.path.join(d, "tools"))
+            fx = {"test_good.py": 'print("test_good: PASS")', "test_pe_imports.py": 'print("ok   self-test")\n'
+                  'print("SKIP launcher.exe: not built")\nprint("test_pe_imports: PASS")',
+                  "test_launcher_navigation.py": 'print("SKIP: pass --launcher")'}
+
+            def run_step(extra):
+                for n, body in {**fx, **extra}.items():
+                    with open(os.path.join(d, "tools", "release", n), "w") as f:
+                        f.write(body + "\n")
+                r = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=d, capture_output=True, text=True,
+                                   env=dict(os.environ, RUNNER_TEMP=d))
+                return r.returncode, r.stdout + r.stderr
+            rc, out = run_step({})
+            check(rc == 0, "ci.yml release-tools step: passes a fixture tree (allowed partial SKIP, nav test left out)", out)
+            rc, out = run_step({"test_skips.py": 'print("SKIP test_skips (no input)")'})
+            check(rc != 0 and "test_skips.py" in out, "ci.yml release-tools step: a test that only SKIPs fails it", out)
+            os.remove(os.path.join(d, "tools", "release", "test_skips.py"))
+            rc, out = run_step({"test_silent.py": "pass"})
+            check(rc != 0, "ci.yml release-tools step: a test that exits 0 with no pass line fails it", out)
     lb = jobs(t).get("launcher-build", "")
     check("fetch_toolchain.py --only llvm-mingw-linux,sdl3" in lb and "tools/release/build_launcher.sh" in lb
           and "pe_imports.py --allow SDL3.dll build/launcher-release/launcher.exe" in lb

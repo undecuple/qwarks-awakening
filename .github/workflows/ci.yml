@@ -1,4 +1,4 @@
-# CI without the game: the program cannot be built here (the lifted code comes from the player's own EBOOT and is never
+# CI without the game: the game cannot be built here (the lifted code comes from the player's own EBOOT and is never
 # committed), so this checks what can be checked without game data: that every patch applies to the pinned ps3recomp,
 # that the release tools pass their host tests and every toolchain download is pinned, and that no secret is in the
 # history, that the native Windows setup can prepare the patched toolkit, and that the launcher still cross-compiles
@@ -34,21 +34,54 @@ jobs:
 
   release-tools:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Host tests of the release tools
-        # every test runs; the step fails at the end and names the failed ones
+      - name: Dear ImGui submodule (test_pack_appimage.py builds the AppDir from this checkout)
+        run: git submodule update --init --depth 1 third_party/imgui
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
+      - name: Host tests of the release tools (a SKIP counts as a failure)
+        # Every tools/release/test_*.py through tools/run-host-tests.sh in strict mode: a test that prints a SKIP line or
+        # exits 0 without a pass line fails the step (a plain loop took "SKIP" + exit 0 as a pass). The .#ci shell has
+        # cmake, git and Pillow, so no test lacks a tool. test_launcher_navigation.py needs the built native launcher
+        # and runs with --launcher in launcher-linux. test_pe_imports.py runs its self-test here; its real-file half
+        # SKIPs (no exe is built in this job: launcher-build checks the real launcher.exe with pe_imports.py), so it is
+        # allow-listed with that reason. Every test runs; the step fails at the end and names the failed ones.
         run: |
-          failed=""
-          for t in tools/release/test_*.py; do
-            python3 "$t" || failed="$failed $t"
-          done
-          if [ -n "$failed" ]; then echo "::error::failed host tests:$failed"; exit 1; fi
+          list="$RUNNER_TEMP/release-tests.txt"
+          { echo "#:allow-skip tools/release/test_pe_imports.py no exe is built in this job; launcher-build checks launcher.exe"
+            ls tools/release/test_*.py | grep -vxF tools/release/test_launcher_navigation.py; } > "$list"
+          RC_HOST_TESTS_STRICT=1 nix develop .#ci --command bash tools/run-host-tests.sh -v "$list"
       - name: Toolchain manifest (every download pinned)
         run: python3 tools/release/fetch_toolchain.py --check --strict
+
+  # The launcher's keyboard paths, screens and fixtures (tools/release/test_launcher_navigation.py) on the native Linux
+  # program, built as release.yml's linux job builds it: ubuntu-22.04, the apt list from the repository, SDL3 from its
+  # pinned source (SHA-256 checked) linked in. The test drives the program with SDL's dummy video driver and software
+  # renderer on synthetic libraries; no game file, game process or network is involved. Without --launcher the test
+  # only prints SKIP, so it runs here and not in the release-tools loop.
+  launcher-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dear ImGui submodule (not ps3recomp)
+        run: git submodule update --init --depth 1 third_party/imgui
+      - name: Build packages (Ubuntu archive)
+        run: |
+          sudo apt-get update -q
+          # shellcheck disable=SC2046  # one package name per line
+          sudo apt-get install -y -q --no-install-recommends $(grep -v '^#' tools/release/linux-build-packages.txt)
+      - name: SDL3 source, CMake and Ninja for Linux (SHA-256 checked)
+        run: python3 tools/release/fetch_toolchain.py --only sdl3-source,cmake-linux,ninja-linux
+      - name: Launcher (native; SDL3, libstdc++ and libgcc linked in)
+        run: tools/release/build_launcher_linux.sh build/launcher-linux
+      - name: Launcher navigation (synthetic libraries, dummy video driver)
+        run: python3 tools/release/test_launcher_navigation.py --launcher build/launcher-linux/qwarks-awakening
 
   windows-native-setup:
     runs-on: windows-latest

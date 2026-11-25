@@ -3,6 +3,15 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
+## [Unreleased]
+
+### [All games]
+- The SPURS threads that run recompiled SPU code (kernel, policy-module worker and job-chain threads) reserve the same
+  host stack as ordinary SPU threads, 16 MiB instead of 1 MiB (patch 6510, contributed by Tzeentchnet in
+  [PR #28](https://github.com/undecuple/qwarks-awakening/pull/28)). The contributor reports that this stops a stack
+  overflow in *Tools of Destruction*'s Metropolis physics jobs on native Windows. Checked here with a host test only;
+  not yet confirmed in a game run.
+
 ## [0.4.1] - 2026-11-23 (pre-release)
 
 Summary: The builds that stopped with a missing file in 0.4.0 have their files again, and the games' code moves on: *All 4 One* runs on in its first level past the point where it froze and draws its busiest scenes faster, *Into the Nexus* reaches its first level and Ratchet stands in it, *Full Frontal Assault* reaches its first level and keeps drawing there, and two levels of *Tools of Destruction* that stopped drawing now run on.

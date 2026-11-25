@@ -332,6 +332,9 @@ jobs:
           python3 tools/release/pack_linux.py --check-elf build/launcher-linux/qwarks-awakening --glibc-max 2.35
           ldd build/launcher-linux/qwarks-awakening
 
+      - name: Launcher navigation (synthetic libraries, dummy video driver; as ci.yml launcher-linux)
+        run: python3 tools/release/test_launcher_navigation.py --launcher build/launcher-linux/qwarks-awakening
+
       - name: Linux tarball
         env:
           VERSION: ${{ steps.ver.outputs.version }}
