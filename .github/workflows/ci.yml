@@ -22,7 +22,7 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9  # v32.0.0
       - name: Patches apply to the pinned ps3recomp
         run: nix develop .#ci --command python3 tools/ps3recomp_patched.py
       - name: Host tests (no game data, no GPU; a SKIP counts as a failure)
@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
       - name: Dear ImGui submodule (test_pack_appimage.py builds the AppDir from this checkout)
         run: git submodule update --init --depth 1 third_party/imgui
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9  # v32.0.0
       - name: Host tests of the release tools (a SKIP counts as a failure)
         # Every tools/release/test_*.py through tools/run-host-tests.sh in strict mode: a test that prints a SKIP line or
         # exits 0 without a pass line fails the step (a plain loop took "SKIP" + exit 0 as a pass). The .#ci shell has
@@ -123,7 +123,7 @@ jobs:
           persist-credentials: false
       - name: Dear ImGui submodule (not ps3recomp)
         run: git submodule update --init --depth 1 third_party/imgui
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086  # v31.11.5
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9  # v32.0.0
       - name: Toolchain (llvm-mingw for Linux, SDL3 MinGW devel; SHA-256 checked)
         run: python3 tools/release/fetch_toolchain.py --only llvm-mingw-linux,sdl3
       - name: Launcher (cross-compiled for Windows x64)
