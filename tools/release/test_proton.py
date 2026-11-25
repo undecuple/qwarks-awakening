@@ -234,6 +234,29 @@ def run(tmp):
         check(L["mode"] == "umu" and L["argv"] == [umu, exe, pr.wine_path(eboot)] and L["env"]["PROTONPATH"] == pin
               and L["env"]["WINEPREFIX"] == os.path.join(data, "prefixes", "tods") and L["env"]["GAMEID"] == "0"
               and "STEAM_COMPAT_DATA_PATH" not in L["env"], "plan (umu): umu-run exe Z:eboot, PROTONPATH, WINEPREFIX", L)
+        # ENHANCEMENT: an unofficial game (another project's exe): the exe alone, its own folder, no eboot, no settings
+        # bridge and nothing written into its folder; its own prefix
+        theirs = wr(os.path.join(tmp, "theirs", "tod.exe"), "MZ")
+        lib2 = os.path.join(tmp, "lib2.json")
+        wr(lib2, json.dumps({"schema": 1, "prefs": {"unofficial": "on"}, "games": [],
+                             "unofficial": [{"id": "unofficial-tods", "title": "ToD", "exe": theirs, "state": "ready"}]}))
+        pr.set_umu(lib2, "auto")
+        L = pr.launch(lib2, "unofficial-tods")
+        check(L["unofficial"] and L["argv"] == [umu, theirs] and L["cwd"] == os.path.dirname(theirs)
+              and L["env"]["WINEPREFIX"] == os.path.join(data, "prefixes", "unofficial-tods")
+              and "PS3_HDD0_ROOT" not in L["env"] and "PS3_VFS_ROOT" not in L["env"],
+              "plan (unofficial, umu): umu-run exe only, its folder, its own prefix, no PS3_* variables", L)
+        pr.set_umu(lib2, "off")
+        with patch.object(pr, "is_nixos", lambda: False):
+            L = pr.launch(lib2, "unofficial-tods")
+        check(L["argv"] == [os.path.join(pin, "proton"), "waitforexitandrun", theirs],
+              "plan (unofficial, direct): proton waitforexitandrun exe, no eboot argument", L["argv"])
+        before = sorted(os.listdir(os.path.dirname(theirs)))
+        pr.set_umu(lib2, "auto")
+        out = io.StringIO()
+        rc = pr.play(lib2, "unofficial-tods", out=out)
+        check(rc == 0 and "EXITED game=unofficial-tods" in out.getvalue() and sorted(os.listdir(os.path.dirname(theirs))) == before,
+              "play (unofficial): runs and leaves the other project's folder untouched (no marker, no links)", out.getvalue())
         out = io.StringIO()
         rc = pr.play(lib, "tods", out=out)
         rec = open(env["FAKE_RECORD"]).read()

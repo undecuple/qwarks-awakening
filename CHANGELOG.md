@@ -3,24 +3,121 @@
 All notable user-facing changes, newest first, in the style of [Keep a Changelog](https://keepachangelog.com/). The
 project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 
-## [Unreleased]
+## [0.4.1] - 2026-11-23 (pre-release)
 
-- The project's current focus is now *All 4 One*; the roadmap and the README follow it, and the *Tools of Destruction* results stay recorded as earlier work.
+Summary: The builds that stopped with a missing file in 0.4.0 have their files again, and the games' code moves on: *All 4 One* runs on in its first level past the point where it froze and draws its busiest scenes faster, *Into the Nexus* reaches its first level and Ratchet stands in it, *Full Frontal Assault* reaches its first level and keeps drawing there, and two levels of *Tools of Destruction* that stopped drawing now run on.
 
-### [Site and README]
-- A new look for the project page and the README, drawn for this project: dark navy space, purple, cyan and a little
-  gold, bevelled and bolted panels, a holo grid and a progress dial counted from the roadmap. The page now works like a
-  game's front-end menu: Up and Down (or a game pad, or a tap) pick a section on the left and it shows on the right;
-  every section is still readable without the menu, and `plain.html` carries the same sections as one plain page with no
-  script at all. The screenshots open in the page's own viewer, as before. The page still makes no request to any other
-  site, keeps its strict content security policy, and respects reduced motion.
-- The README's badges and divider strips follow the same colours; the three dividers (a bolt-and-plate strip, a holo-grid
-  rule and a ring-and-orbit rule) are original drawings made by `tools/release/draw_dividers.py`.
-- No game art, logo, font or screenshot is used as decoration, and no part of a game's own menu is copied.
-- Checked offline (the generated pages equal the generator's output, both pages agree, no outside request, contrast of
-  every text colour pair) and viewed in a Firefox-based browser in both colour schemes at desktop and phone width.
+A fix release on top of 0.4.0. The 0.4.0 downloads lacked files that the builds of *A Crack in Time*, *All 4 One*,
+*Full Frontal Assault*, *Into the Nexus* and *Deadlocked HD* need, so their Build stopped with a file-not-found error.
+This release carries them, and its game code is new since 0.3.1 (0.4.0 shipped 0.3.1's game code). Each game's line
+gives its playability state in this release (the states are defined in [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md));
+no game was played through by hand. Known issues of this release: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+Patch numbers name this repository's own fixes on top of ps3recomp, the files in [`port/patches/`](port/patches/).
+
+### [All games]
+- The build files are complete again (issues [#45](https://github.com/undecuple/qwarks-awakening/issues/45) and
+  [#23](https://github.com/undecuple/qwarks-awakening/issues/23)): 0.4.0's downloads lacked the SPU tables
+  `tools/spu/<game>_raw_spu.json` of *A Crack in Time* 1.20, *All 4 One*, *Full Frontal Assault* and *Into the Nexus*
+  and every table *Deadlocked HD* reads, so Build stopped at the step that recompiles the game's SPU code. The list of
+  build files is now taken from each released game's own build description instead of a hand-kept list, and the
+  release is refused when one of them is missing. Checked with a test that compares the downloads' build files with
+  what each game's build reads (against 0.4.0's file list it names exactly the missing files). A build from the new
+  downloads on a player's machine has not been confirmed yet.
+- In an install folder whose name holds an apostrophe, such as the installer's default folder *Qwark's Awakening*,
+  Build stopped at the link step with "no such file or directory" for pairs of object files (issue
+  [#44](https://github.com/undecuple/qwarks-awakening/issues/44)). The link step's file list was read with the wrong
+  quoting rules, so the apostrophe was taken as the start of a quoted name. It is now read with the Windows rules it
+  is written with. Checked with a host test and confirmed on a Windows 11 PC: *Quest for Booty* builds in the default
+  folder.
+- On a Windows PC where Control Flow Guard is enforced for every program, the games closed at start-up with the error
+  0xc0000409 (issue [#22](https://github.com/undecuple/qwarks-awakening/issues/22); turning Control Flow Guard off for
+  the game's program was the way round it). The games now use their own form of the jump they make while starting
+  (patch 7066), which that check does not stop. Checked with a test under Wine and in scripted runs under Proton; not
+  yet confirmed on a Windows PC with Control Flow Guard on.
+- A game that cannot open its window or start Direct3D 12, or that fails while it boots, now shows an error box that
+  names its log file and ends with an error code. Before, it could keep running with no window. Not yet seen in a
+  failing start.
+- Fixes found by comparing with another port of *Tools of Destruction* (credited in [NOTICE.md](NOTICE.md)), each with
+  a test outside the game; none is checked for a visible change in a game yet: shaders that read the pixel position's
+  w get 1/w as on the PS3 (patch 7108) and normalising a zero vector gives zero instead of an invalid value (patch
+  7112); a game's save list comes in the order the game asks for, such as newest first (patch 7109); the system cache
+  is kept for the same game after a clean exit and emptied otherwise (patch 7110); a second wait on the same SPU event
+  flag is refused as on the PS3 instead of sleeping for good (patch 7111).
+- With the pipeline look-ahead switched on (`LD_PSO_AHEAD=1`; off by default since 0.3.1), a draw whose graphics
+  pipeline was not built yet waited for another pipeline, and the graphics device could be lost. It now waits for its
+  own (patch 7082). Checked with a test outside the game; the look-ahead stays off by default.
+- The shader translator handles six more fragment-program instructions (STR, SFL, DST, LIT, DP2A, RFL; patch 7067), and
+  inline vertex arrays larger than the old buffer are drawn whole (patch 7068). Checked with tests outside the game and
+  scripted runs of *Tools of Destruction*.
+
+### [ToD] *Tools of Destruction*: in game
+- Zordoom Prison and Meridian City, the two levels that stopped drawing when started directly with the game's developer
+  level option (a known issue of earlier releases), now run on. A collision job on the SPUs calls code that the port runs in its
+  SPU interpreter instead of as recompiled code; on the way back the port did not stop at the return address, so each
+  pass of the job's loop went one call deeper until the SPU halted (patch 7120). With the fix, both levels drew frames
+  to the end of 300-second scripted runs with no input, and so did Kerchu City and a scripted new game in Metropolis
+  (420 seconds), where the same kind of stop had shown in one earlier run each (2026-11-24). With the fix switched
+  off, Zordoom Prison stopped again after 113 seconds. On the build with all of this release's patches, a scripted new
+  game and the levels from Metropolis to Kerchu City, each started directly, reached their levels and drew to the end
+  of their runs (2026-11-24). Loading and drawing only, not play.
+
+### [A4O] *All 4 One*: boots
+- Luminopolis runs on past the freeze about 468 seconds in. The game's sound job list on the SPUs checks the interrupt state
+  and stops when interrupts are on; the port reported them on while the jobs ran, which the PS3 never does (patch
+  7105). A scripted new game now runs in Luminopolis to the end of a 600-second run (2026-11-19 and 2026-11-20), and
+  scripted runs that load saves from later points reached their levels (creature_collector and Luminopolis,
+  2026-11-20). The scripted runs do not move the
+  characters, so whether they still fall through the floor (see [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)) is not
+  checked yet.
+- The busiest scenes draw faster. The game keeps an occlusion query (a count of the pixels that pass the depth test,
+  made by the GPU for the game) open over thousands of draws, and while one was open the port could not hand the
+  frame's draws to the GPU in parts: the GPU got most of a frame in one piece and the game waited for it. The port now
+  ends such a query where it hands a part over, begins it again in the next part and adds the parts' counts, so the
+  game gets the same results as before (patch 2173; checked with a host test, not yet against the GPU's own counts in
+  the game). In two scripted runs from the same Luminopolis save with the same input, one with the change switched
+  off (2026-11-24), frames with 6,000 draws or more went from 6.6 to 8.6 frames per second over seconds 400 to 720,
+  and frames with under 4,000 draws from 10.3 to 11.6; both runs had the port's frame profiler on. Both figures are
+  still low.
+
+### [FFA] *Full Frontal Assault*: boots
+- The title screen (PRESS START) is drawn: the game asks for the current user's details at start-up, and the port now
+  answers with the signed-in user (patch 7083), so the game's save-data check runs and the front end continues
+  (scripted run, 2026-11-18). A scripted new game then reaches the level phoenix_ph1, where the picture almost stops
+  about four minutes after start (4 of 4 scripted runs, 2026-11-19 and 2026-11-20).
+- The picture no longer almost stops in phoenix_ph1. Once a frame the game writes a jump into its graphics command
+  buffer at the point the GPU is reading, moves the buffer's write position and soon puts the old command back. The
+  port's command reader looks at the write position only every few milliseconds, so it could find the old command
+  already back and read on into data that holds no commands. The game's stores to the write position now reach the
+  port's graphics library, which keeps the word the reader is about to read until it has read it (patch 7116). In 4
+  of 4 scripted runs (two new games and two from a campaign save, 420 seconds each, 2026-11-24) the game stays in
+  phoenix_ph1 and keeps drawing to the end of the run, at no less than 7 frames per second in any minute after the
+  level opened. The change is in code every game uses; scripted runs of *All 4 One*, *Into the Nexus* and *Tools of
+  Destruction* on the same build reached their levels as before.
+
+### [Nexus] *Into the Nexus*: boots
+- A scripted new game now gets past the lobby, which stayed black in 0.3.1, to its first level, prison_transport. There
+  a job on the SPUs stopped after about six minutes, because one call form in its code was recompiled
+  as a call that never returns (patch 7106); a scripted run then stayed in the level for its full 960 seconds
+  (2026-11-19).
+- Ratchet stands in the prison transport instead of falling through its floor. The game's collision job reads data from another
+  SPU's memory through the address window the PS3 gives each SPU thread; the port served that window from main memory,
+  so every ground check missed (patch 7115). In a scripted run (2026-11-20) Ratchet stands and walks in the prison
+  transport to the end of the 600-second run. The script does not leave the first room yet.
 
 ### [Launcher]
+- The Windows downloads and the Linux tar.gz now carry `recomplauncher.json` beside the launcher, so RecompLauncher can install the port from this release page, ask for your own copy of a game (the `PS3_GAME` folder or a disc image) and start the launcher (on Linux the program or the AppImage). It also offers the display settings the games already read (window mode, window size, picture shape, FSR 1 upscaler, VSync), written to the same shared `display.ini` the launcher uses. It ships no game files.
+- The launcher recognises more regional and digital releases of *Tools of Destruction*, *Quest for Booty*, *A Crack in Time*, the Collection and *Deadlocked HD*, marked as not tested: it names them as known releases and offers no build for them.
+- Digital copies (PSN) of a game are found and named as such: the game's card says "Digital copy: not yet supported"
+  and names the disc (with its update) to use for now; digital copies are added one game at a time, once each has been
+  checked. A game update given as a PKG file is no longer offered as an update: the launcher asks for the installed
+  update folder instead. A disc copy with its update and a digital copy of the same game can sit side by side.
+  Checked with tests outside the launcher.
+- The build check gives a reason instead of starting a build that ends in a black screen: an incomplete update, a PKG
+  file, a partial disc folder, a missing disc, a damaged ISO, or build files that could not be installed. Checked with
+  tests outside the launcher.
+- Add game files: the paths picked in the drawer now reach the build check (before, the drawer did not pass them on), a
+  path the check refuses keeps Build off, and a game that needs attention cannot be built until it is fixed. When the
+  launcher's engine cannot start, a box says so. Checked with tests outside the launcher.
 - A native Windows source build: `tools\build-windows.ps1` fetches the pinned llvm-mingw, CMake, Ninja and SDL3
   archives (checked against their SHA-256), prepares the patched ps3recomp copy, lifts and builds a game and stages
   it, with PowerShell and Python only (no WSL, Bash or Nix); see [docs/BUILDING.md](docs/BUILDING.md). A contributor
@@ -34,6 +131,25 @@ project is a pre-release (early work, not playable yet): see [RELEASE-CRITERIA.m
 - The controller test in Settings is now a test you start and stop. While it runs, the controller no longer moves
   through the launcher, so every button can be pressed safely. It ends with Stop test, Esc, holding B for two seconds,
   or leaving the page, and the controller works the launcher again once all its buttons are released.
+
+### [Site and README]
+- The project's current focus is now *All 4 One*; the roadmap and the README follow it, and the *Tools of Destruction* results stay recorded as earlier work.
+- A new look for the project page and the README, drawn for this project: dark navy space, purple, cyan and a little
+  gold, bevelled and bolted panels, a holo grid and a progress dial counted from the roadmap. The page works like a
+  game's front-end menu: Up and Down (or a game pad, or a tap) pick a section on the left and it shows on the right;
+  every section is still readable without the menu, and `plain.html` carries the same sections as one plain page with no
+  script at all. The screenshots open in the page's own viewer, as before. The page still makes no request to any other
+  site, keeps its strict content security policy, and respects reduced motion.
+- The README's badges and divider strips follow the same colours; the three dividers (a bolt-and-plate strip, a holo-grid
+  rule and a ring-and-orbit rule) are original drawings made by `tools/release/draw_dividers.py`.
+- No game art, logo, font or screenshot is used as decoration, and no part of a game's own menu is copied.
+- Checked offline (the generated pages equal the generator's output, both pages agree, no outside request, contrast of
+  every text colour pair) and viewed in a Firefox-based browser in both colour schemes at desktop and phone width.
+
+### Test setup
+- The game runs named above (2026-11-18 to 2026-11-24) used the Windows programs under Proton on Linux, built from
+  development versions of this release's source with the patches each line names. None of them was made on Windows
+  itself; only the install-folder build fix (issue #44) was checked on a Windows 11 PC.
 
 ## [0.4.0] - 2026-11-18 (pre-release)
 

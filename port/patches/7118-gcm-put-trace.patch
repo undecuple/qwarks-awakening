@@ -1,0 +1,110 @@
+R&C patch 7118 (DIAGNOSTIC, default off): GCM_PUT_TRACE, a line per guest put store. Applies after 7116 (uses its
+put-store hook). Built from the preplan draft-h3-block-built-wrong.patch with the review fixes (review.md s.3). Not
+run in a game yet: host test only.
+
+Purpose: hypothesis H3 for the FFA phoenix_ph1 stall (the JUMP-back is never stored at the slot put stops at). The
+lifted code says it is [read in code: game-side.md, ppu_recomp_035.cpp l.11382-11394], so H3 is refuted unless a run
+shows otherwise; this trace shows it directly, in store order, against the walker's [gcm-putsnap] / FIFO lines. No H3
+fix can be written before a run names a wrong store.
+
+What it does: GCM_PUT_TRACE=<n> logs the first n guest put stores (GCM_PUT_TRACE=on or any non-number: 20000; 0: off)
+whose old or new put lies in [GCM_PUT_TRACE_LO, GCM_PUT_TRACE_HI) (IO offsets, hex; default all):
+`[put-trace] #i put OLD -> NEW get=G w@old=.. w@new-8=.. w@new-4=.. w@new=.. lr=.. tid=..`, words read before the
+store lands. Review fixes:
+- armed when GCM_PUT_TRACE is set even with GCM_PUT_SNAP=0 (cellGcmInit arms the hook for either; trace only then);
+- the default cap is 20000 (the draft's 400 could be spent before the break: 2 in-range stores per injecting frame);
+- lr is the guest context's link register = the return of the last lifted call before the store: in FFA 0x006F6138
+  0x006F6660 for the forward store (put = slot) and 0x006F6438 for the restore (put = GET) [read in code, review.md
+  s.3], not the ~0x6F6AB0 / ~0x6F6440 pcs game-side.md gives.
+- with 7116's lifter change the trace works in default runs (no PPU_WWATCH needed).
+For FFA: GCM_PUT_TRACE=20000 GCM_PUT_TRACE_LO=00600000 GCM_PUT_TRACE_HI=00700000. H3 test: at the forward store,
+w@new must be the JUMP-back 0x2x294944.
+
+Test: port/rc/tests/run_gcm_put_snap_test.sh, mode `trace` (GCM_PUT_SNAP=0 GCM_PUT_TRACE=on: the hook is armed,
+nothing is kept, the walker behaves as before, both FFA-shaped stores print with the JUMP-back at w@new).
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -233,6 +233,7 @@ static int  gcm_put_snap_mode(void);
+ static void gcm_put_snap_forget(void);
+ static void gcm_put_snap_summary(const char* when);
+ static void gcm_put_snap_at_exit(void);
++static long gcm_put_trace_cap(void);   /* R&C patch 7118 */
+ 
+ static u16 s_io_address_table[65536];
+ static u16 s_ea_address_table[65536];
+@@ -623,15 +624,17 @@ s32 cellGcmInit(u32 cmdSize, u32 ioSize,
+       gcm_forget_spu_blocks();
+       g_spu_put_hook = gcm_note_spu_put; }
+ 
+-    /* R&C patch 7116: hook the guest's put store (gcm_note_ppu_put). */
++    /* R&C patch 7116: hook the guest's put store (gcm_note_ppu_put). Patch 7118: GCM_PUT_TRACE arms it too, also
++     * with GCM_PUT_SNAP=0 (trace only, nothing kept). */
+     gcm_put_snap_forget();
+-    if (gcm_put_snap_mode()) {
++    if (gcm_put_snap_mode() || gcm_put_trace_cap()) {
+         g_gcm_put_ea = GCM_CONTROL_GUEST_ADDR + 0;
+         g_gcm_put_hook = gcm_note_ppu_put;
+         static int once = 0;
+         if (!once) { once = 1; atexit(gcm_put_snap_at_exit);
+             fprintf(stderr, "[gcm-putsnap] armed: put EA 0x%08X, mode %s\n", g_gcm_put_ea,
+-                    gcm_put_snap_mode() == 1 ? "on" : "log (keep and compare, walk memory)"); }
++                    gcm_put_snap_mode() == 1 ? "on" : gcm_put_snap_mode() == 2 ? "log (keep and compare, walk memory)"
++                                                    : "off (GCM_PUT_TRACE only)"); }
+     }
+ 
+     s_gcm_initialized = 1;
+@@ -1088,10 +1091,53 @@ static void gcm_put_snap_summary(const c
+             gcm_put_snap_mode() == 1 ? "on" : gcm_put_snap_mode() == 2 ? "log" : "off");
+ }
+ static void gcm_put_snap_at_exit(void) { gcm_put_snap_summary("exit"); fflush(stderr); }
++/* R&C patch 7118 (diagnostic, default off): GCM_PUT_TRACE=<n> logs the first n guest put stores (GCM_PUT_TRACE=on or
++ * any other non-number: 20000; 0: off) whose old or new put lies in [GCM_PUT_TRACE_LO, GCM_PUT_TRACE_HI) (IO offsets,
++ * hex; default: all): old put, new put, the published get, the word at the old put, the two words before the new put
++ * and the word at it, read BEFORE the store lands, and the storing guest thread's lr and id. lr is the guest
++ * context's link register, i.e. the return address of the last lifted call before the store, not the store's pc: for
++ * Full Frontal Assault 0x006F6138 that is 0x006F6660 for the forward store (put = the JUMP-back slot, lifted
++ * ppu_recomp_035.cpp l.11384) and 0x006F6438 for the restore (put = GET, after the 0x0079C2F0 wait). For an
++ * inject-at-GET title this shows, in store order, the injected block's last command and the slot put stops at, against
++ * the walker's [gcm-putsnap] / FIFO lines in the same stream: "is the block built as the code says" (H3: at the
++ * forward store w@new must be the JUMP-back 0x2x294944 in FFA). Works in default runs: the lifted put store reaches the
++ * hook through patch 7116's lifter change. Each injecting frame gives 2 stores in FFA's 0x00600000-0x00700000 range,
++ * so 20000 covers ~10000 frames. */
++static long gcm_put_trace_cap(void)
++{
++    static long cap = -1;
++    if (cap < 0) { const char* e = getenv("GCM_PUT_TRACE"); char* end = 0;
++                   if (!e || !*e) cap = 0;
++                   else { cap = strtol(e, &end, 10); if (end == e || *end || cap < 0) cap = 20000; } }
++    return cap;
++}
++static void gcm_put_trace(u32 old_put, u32 new_put)
++{
++    const long cap = gcm_put_trace_cap();
++    if (!cap) return;
++    static int rng = -1; static u32 lo, hi;
++    if (rng < 0) { const char* l = getenv("GCM_PUT_TRACE_LO"); const char* h = getenv("GCM_PUT_TRACE_HI");
++                   lo = l ? (u32)strtoul(l, 0, 16) : 0; hi = h ? (u32)strtoul(h, 0, 16) : 0xFFFFFFFFu; rng = 1; }
++    const u32 np = new_put & ~3u;
++    if (!((np >= lo && np < hi) || (old_put >= lo && old_put < hi))) return;   /* either end in the range */
++    static volatile long n = 0;
++    const long i = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
++    if (i > cap) return;
++    const u32 oea = gcm_io2ea(old_put), nea = gcm_io2ea(np);
++    const u32 nm8 = (np >= 8) ? gcm_io2ea(np - 8) : 0, nm4 = (np >= 4) ? gcm_io2ea(np - 4) : 0;
++    extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
++    fprintf(stderr, "[put-trace] #%ld put 0x%08X -> 0x%08X get=0x%08X w@old=0x%08X w@new-8=0x%08X w@new-4=0x%08X "
++            "w@new=0x%08X lr=0x%08X tid=%u%s\n", i, old_put, new_put, vm_read32(GCM_CONTROL_GUEST_ADDR + 4),
++            oea ? vm_read32(oea) : 0xDEADDEADu, nm8 ? vm_read32(nm8) : 0xDEADDEADu,
++            nm4 ? vm_read32(nm4) : 0xDEADDEADu, nea ? vm_read32(nea) : 0xDEADDEADu,
++            g_active_ctx ? (u32)g_active_ctx->lr : 0u, g_active_ctx ? (unsigned)g_active_ctx->thread_id : 0u,
++            i == cap ? " (cap reached; raise GCM_PUT_TRACE)" : "");
++}
+ void gcm_note_ppu_put(u32 new_put)   /* guest thread, from vm_write32 / vm_write64 before the store lands */
+ {
+     __atomic_add_fetch(&s_put_snap_hook, 1, __ATOMIC_RELAXED);
+     const u32 old_put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0) & ~3u;
++    gcm_put_trace(old_put, new_put);   /* R&C patch 7118 */
+     if (!gcm_put_snap_mode()) return;
+     if ((new_put & ~3u) == old_put) return;
+     if (vm_read32(GCM_CONTROL_GUEST_ADDR + 4) != old_put) return;   /* walker not parked at the old put */

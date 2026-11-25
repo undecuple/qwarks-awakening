@@ -197,13 +197,59 @@ def test_phase4():
           and 'root["prefs"]["update_check"]' in mh, "model.h: reads playability and the phase 4 prefs")
 
 
+def test_unofficial():
+    """ENHANCEMENT: the opt-in Unofficial group is launch only: off by default, shown after the port's
+    own games, picked through the engine, never fetched, built or patched."""
+    with open(os.path.join(ROOT, "launcher", "src", "main.cpp"), encoding="utf-8") as f:
+        raw = f.read()
+    code = re.sub(r"//[^\n]*", "", raw)
+    check('SetPref("unofficial", on)' in code and 'Switch("##unofficial"' in code and "unofficialOn" in code,
+          "main.cpp: Settings has the Unofficial switch (set-pref unofficial)")
+    lib = re.search(r"static void LibraryScreen\(float W\) \{(.*?)\n\}", code, re.S)
+    check(lib is not None and lib.group(1).index("DrawCard(g, i,") < lib.group(1).index("UnofficialGroup(")
+          and "A.lib.unofficialOn" in lib.group(1), "main.cpp: the unofficial group comes after the port's own cards and only when on")
+    card = re.search(r"static void DrawUnofficialCard\(.*?\n\}", code, re.S)
+    check(card is not None and '"Unofficial"' in card.group(0) and "not supported here" in code,
+          "main.cpp: each card has the Unofficial badge and the not-supported note")
+    check('"unofficial-set"' in code and '"unofficial-clear"' in code and "BrowseExe" in code,
+          "main.cpp: picking an exe goes through the engine (unofficial-set / -clear)")
+    check("SDL_OpenURL(u.url" in raw and 'u.url.rfind("https://github.com/", 0) == 0' in raw,
+          "main.cpp: the card only opens the project page on request (no fetching)")
+    with open(os.path.join(ROOT, "launcher", "src", "model.h"), encoding="utf-8") as f:
+        m = f.read()
+    check('root["prefs"]["unofficial"]' in m and 'root["unofficial"]' in m and "if (lib.unofficialOn)" in m,
+          "model.h: entries are read only when prefs.unofficial is on")
+
+
+def test_firstrun_ux(code=None):
+    """First-run blockers (report items 3, 5, 7, 8, 13, 14): source contracts."""
+    if code is None:
+        with open(os.path.join(ROOT, "launcher", "src", "main.cpp"), encoding="utf-8") as f:
+            code = f.read()
+    check('"override", "--library"' in code and "AddQueueNext()" in code and '"Use these files##use"' in code,
+          "main.cpp: the Add drawer hands the chosen paths to the engine (override), Build waits for it")
+    check("you do not supply it" not in code, "main.cpp: the drawer no longer says the player does not supply the EBOOT")
+    check("SDL_ShowSimpleMessageBox" in code and code.count("return StartupFail(") >= 4 and "SDL_GetBasePath()" in code[code.index("static int StartupFail"):][:600],
+          "main.cpp: start-up failures show a message box with the reason and the install folder")
+    thr = re.search(r"static void TaskThread\(.*?\n\}", code, re.S)
+    check(thr is not None and "ended without a result (exit code" in thr.group(0),
+          "main.cpp: a build that ends without RESULT becomes a failed row with exit code and log path")
+    check("fixFiles" in code and "e.state == State::PortUpdated || e.state == State::NeedsAttention;" not in code,
+          "main.cpp: Build is not offered for a game that needs attention (Choose files opens Files)")
+    check("A.addDisc0 = g.disc; A.addUpd0 = g.update; } };" in code,
+          "main.cpp: a refused path resets the drawer baseline to the engine's paths (Build stays off)")
+    check("If that was not expected, the log is here" in code, "main.cpp: an unexpected game exit shows the log path")
+
+
 def main():
     test_catalog_imports()
+    test_firstrun_ux()
     test_main_cpp()
     test_theme()
     test_library_navigation()
     test_build_play()
     test_phase4()
+    test_unofficial()
     print("test_launcher_src:", "FAIL" if FAILS else "PASS")
     return 1 if FAILS else 0
 

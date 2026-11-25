@@ -1,0 +1,137 @@
+R&C patch 7068: the INLINE_ARRAY buffer grows on demand.
+
+rsx_dispatch.c stored an INLINE_ARRAY stream (vertices pushed through the FIFO between BEGIN_END(prim) and BEGIN_END(0))
+into a fixed RSX_DSP_INLINE_MAX_BYTES = 65536 buffer and dropped the whole stream when it would not fit. A Crack in Time's
+time-bomb bubble is two layers of quads at 48 bytes per vertex, 1365 vertices per 64 KB (RACiT PR 21), so it was lost.
+
+inline_data is now a heap pointer with inline_cap; the first inline word allocates RSX_DSP_INLINE_MAX_BYTES and the buffer
+doubles as needed (realloc). The sink interface (inline_array(data, bytes)) is unchanged. inline_dropped counts only a
+stream lost to an allocation failure (or past 2 GB). New rsx_dispatch_destroy frees the buffer; the draw engine and the
+live-draw shutdown call it. rsx_dispatch_init still memsets the struct, so an already-running dispatcher must be destroyed
+before it is initialised again.
+
+The struct shrinks by 64 KB, and inline_data stays the last member as the old comment required.
+
+--- a/libs/video/rsx_dispatch.h
++++ b/libs/video/rsx_dispatch.h
+@@ -83,11 +83,11 @@
+ #define RSX_DSP_CLASS_STATE     1   /* decoded by a getter the pipeline uses */
+ #define RSX_DSP_CLASS_EXEC      2   /* triggers an execution callback        */
+
+-/* Cap on one INLINE_ARRAY stream. A stream is bounded by a single
+- * BEGIN_END pair, and titles use inline arrays for small immediate-mode
+- * batches (UI quads, debug geometry); 64 KB is several hundred vertices of
+- * a fat format. Overruns are counted, not silently truncated -- half a
+- * vertex stream is worse than no draw. */
++/* Initial capacity of the INLINE_ARRAY buffer (R&C patch 7068). A stream is bounded by a single BEGIN_END pair; the
++ * buffer starts at 64 KB on first use and doubles on demand, so no stream is cut. A Crack in Time's time-bomb bubble
++ * is two layers of 48-byte-vertex quads, ~1365 vertices per 64 KB, and exceeded the old fixed cap (its whole stream
++ * was dropped). inline_dropped now counts only a stream lost to an allocation failure (or past 2 GB) -- half a vertex
++ * stream is still worse than no draw. */
+ #define RSX_DSP_INLINE_MAX_BYTES 65536
+
+ typedef struct rsx_dispatch rsx_dispatch;
+@@ -139,22 +139,27 @@
+     u32 seen[RSX_DSP_NUM_REGS];       /* per-register write count           */
+     u8  klass[RSX_DSP_NUM_REGS];      /* RSX_DSP_CLASS_*                    */
+
+-    /* INLINE_ARRAY accumulation, reset at every BEGIN_END(prim). A fixed
+-     * buffer rather than a grown allocation because rsx_dispatch_init
+-     * memsets the whole struct, which would drop a pointer on the floor.
++    /* INLINE_ARRAY accumulation, reset at every BEGIN_END(prim). Heap buffer grown by doubling (patch 7068), freed by
++     * rsx_dispatch_destroy; rsx_dispatch_init memsets the struct, so a dispatcher that already ran must be destroyed
++     * before it is initialised again (a zeroed struct, e.g. a static, is fine).
+      *
+      * LAST on purpose. Sitting it next to current_primitive pushed seen[]
+      * and klass[] 64 KB away from the register file, and those three are
+      * touched together on EVERY method write: The Simpsons Game, which
+      * emits no inline arrays at all, still lost an order of magnitude of
+      * poll rate in the regression gate purely from the added stride. */
+-    u8  inline_data[RSX_DSP_INLINE_MAX_BYTES];
++    u8* inline_data;                  /* NULL until the first inline word   */
++    u32 inline_cap;                   /* bytes allocated                    */
+ };
+
+ /* ---- lifecycle -------------------------------------------------------- */
+
+ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink);
+
++/* Free the INLINE_ARRAY buffer (R&C patch 7068). Safe on a zeroed or already destroyed dispatcher; the dispatcher stays
++ * usable (the buffer is reallocated on the next inline word). */
++void rsx_dispatch_destroy(rsx_dispatch* rsx);
++
+ /* Seed the register file / transform program from a captured initial state.
+  * No side effects, no callbacks — mirrors loading hardware context. */
+ void rsx_dispatch_seed_registers(rsx_dispatch* rsx, const u32* regs, u32 count);
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -144,6 +144,30 @@
+         rsx->klass[(method >> 2) + i] = klass;
+ }
+
++void rsx_dispatch_destroy(rsx_dispatch* rsx)
++{
++    free(rsx->inline_data);
++    rsx->inline_data = NULL;
++    rsx->inline_cap = 0;
++    rsx->inline_len = 0;
++}
++
++/* Make room for `need` bytes (doubling from RSX_DSP_INLINE_MAX_BYTES). 0 on allocation failure or past 2 GB. */
++static int inline_reserve(rsx_dispatch* rsx, u32 need)
++{
++    if (need <= rsx->inline_cap) return 1;
++    u32 cap = rsx->inline_cap ? rsx->inline_cap : RSX_DSP_INLINE_MAX_BYTES;
++    while (cap < need) {
++        if (cap > 0x40000000u) return 0;
++        cap *= 2u;
++    }
++    u8* p = (u8*)realloc(rsx->inline_data, cap);
++    if (!p) return 0;
++    rsx->inline_data = p;
++    rsx->inline_cap = cap;
++    return 1;
++}
++
+ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
+ {
+     memset(rsx, 0, sizeof(*rsx));
+@@ -462,15 +486,15 @@
+      * carrying no vertices at all: the backend saw BEGIN/END with nothing
+      * between them and counted an empty group. */
+     case M_INLINE_ARRAY:
+-        if (rsx->inline_len + 4u <= RSX_DSP_INLINE_MAX_BYTES) {
++        if (rsx->inline_len <= 0x7FFFFFFFu && inline_reserve(rsx, rsx->inline_len + 4u)) {
+             rsx->inline_data[rsx->inline_len + 0] = (u8)(arg >> 24);
+             rsx->inline_data[rsx->inline_len + 1] = (u8)(arg >> 16);
+             rsx->inline_data[rsx->inline_len + 2] = (u8)(arg >> 8);
+             rsx->inline_data[rsx->inline_len + 3] = (u8)arg;
+             rsx->inline_len += 4;
+         } else if (rsx->inline_len) {
+-            /* Truncating leaves a torn final vertex; drop the whole stream
+-             * and count it instead of drawing something half-read. */
++            /* Allocation failed: truncating leaves a torn final vertex; drop
++             * the whole stream and count it instead of drawing something half-read. */
+             rsx->inline_len = 0;
+             rsx->inline_dropped++;
+         }
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -3460,6 +3460,7 @@
+     if (!g.be) return;
+     if (g.ready && g.be->submit_and_wait)
+         g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_SHUTDOWN);
++    rsx_dispatch_destroy(&g.rsx);   /* R&C patch 7068: the grown inline buffer */
+     for (u32 i = 0; i < g.n_textures; i++)
+         if (g.textures[i].handle) g.be->texture_release(g.be->user, g.textures[i].handle);
+     for (u32 i = 0; i < g.n_pipelines; i++)
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -20798,6 +20798,7 @@
+             g.depth_snapshot_rootsig);
+     if (g.rootsig_x) g.rootsig_x->lpVtbl->Release(g.rootsig_x);
+     if (g_up) { rsx_upscale_set_retire(g_up, NULL, NULL); rsx_upscale_destroy(g_up); g_up = NULL; }   /* patch 2145 (GPU drained above) */
++    rsx_dispatch_destroy(&g.rsx);   /* R&C patch 7068: the grown inline buffer */
+     if (g.swap && g_dm_fs) g.swap->lpVtbl->SetFullscreenState(g.swap, FALSE, NULL);   /* patch 2095 */
+     if (g.swap) g.swap->lpVtbl->Release(g.swap);
+     if (g_ld_info_queue) {

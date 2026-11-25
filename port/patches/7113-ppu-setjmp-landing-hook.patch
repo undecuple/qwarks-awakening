@@ -1,0 +1,54 @@
+R&C patch 7113: a landing hook for the setjmp host frames (patch 1116), for a title's diagnostics.
+
+ppu_sj_landed (runtime/ppu/ppu_setjmp_rt.inc) logs `[ljmp] caught status=N` for the first 64 landings and every 1000th,
+and nothing more: Full Frontal Assault 1.05 caught 1000-1999 Lua errors at its luaD_pcall site 0x0080DE98 when it
+opened phoenix_ph1 (run ls-ffa-newgame-1119-203122, 238 s), all status 3 (LUA_ERRSYNTAX: lua_load failed), and the
+message the parser left at L->top - 1 was never printed. The text is title data (Lua's layout differs per game), so
+the runtime only gives the title a call: `ppu_sj_landed_fn(ctx, site, status)`, a function pointer, NULL by default
+(no change then), called at every landing after the dispatch-depth / vcall-sp counters are restored, with the guest
+registers setjmp saved and the same status word the `[ljmp]` line prints. The title side is
+port/rc/ffa/ffa_lua_errmsg.inc (RC_LUA_ERRMSG=N, default off).
+
+Test: port/rc/tests/run_ffa_lua_errmsg_test.sh (test_ffa_lua_errmsg.cpp): the runtime half with the hook set, a
+synthetic guest memory (lua_State, TValue, TString, SParser) and a host longjmp landing through PPU_SJ_CALL; with the
+hook unset (negative control) nothing but the `[ljmp]` line is printed.
+
+--- a/runtime/ppu/ppu_setjmp.h
++++ b/runtime/ppu/ppu_setjmp.h
+@@ -73,6 +73,10 @@
+ /* Host stack identity: a coroutine layer that runs guest code on several host stacks of one thread (and is not
+  * Windows fibers, which the default key follows through the TEB stack base) sets this to name the current one. */
+ extern uintptr_t (*ppu_sj_stack_key_fn)(void);
++/* R&C patch 7113: called at every landing (after the counters are restored, before the call site's code goes on) with
++ * the `bl` site and the status word (status_off, else longjmp's value); the guest registers are the ones setjmp saved.
++ * NULL (the default) = nothing. For a title's diagnostics, e.g. the Lua error text at a luaD_pcall site. */
++extern void (*ppu_sj_landed_fn)(struct ppu_context* ctx, uint32_t site, int32_t status);
+ /* Counters (any thread): landings, longjmps with no record, pushes refused (table full). */
+ unsigned long long ppu_sj_stat(int which);
+ #ifdef __cplusplus
+--- a/runtime/ppu/ppu_setjmp_rt.inc
++++ b/runtime/ppu/ppu_setjmp_rt.inc
+@@ -19,6 +19,7 @@
+ static PPU_THREAD_LOCAL ppu_sj_rec* t_sj_land;   /* the record ppu_sj_longjmp is landing on */
+ static unsigned long long g_sj_stat[3];          /* caught, unmatched, full (atomic adds) */
+ extern "C" uintptr_t (*ppu_sj_stack_key_fn)(void) = nullptr;
++extern "C" void (*ppu_sj_landed_fn)(struct ppu_context*, uint32_t, int32_t) = nullptr;   /* R&C patch 7113 */
+ 
+ static int ppu_sj_on(void)
+ {
+@@ -74,10 +75,13 @@
+     *ps3_ppu_dispatch_depth_slot() = r->depth0;
+     *ps3_ppu_vcall_sp_slot() = r->vsp0;
+     const unsigned long long n = __atomic_add_fetch(&g_sj_stat[0], 1, __ATOMIC_RELAXED);
+-    if (n <= 64 || n % 1000 == 0) {
++    void (*hook)(struct ppu_context*, uint32_t, int32_t) = ppu_sj_landed_fn;
++    if (hook || n <= 64 || n % 1000 == 0) {
+         const int32_t val = (int32_t)ctx->gpr[3];
+         const int32_t st = r->status_off >= 0 ? (int32_t)vm_read32((uint64_t)r->raw_jb + (uint32_t)r->status_off) : val;
+-        fprintf(stderr, "[ljmp] caught status=%d (#%llu, val=%d, site 0x%08X, jmp_buf 0x%08X)\n", st, n, val, r->site, r->jb);
++        if (n <= 64 || n % 1000 == 0)
++            fprintf(stderr, "[ljmp] caught status=%d (#%llu, val=%d, site 0x%08X, jmp_buf 0x%08X)\n", st, n, val, r->site, r->jb);
++        if (hook) hook(ctx, r->site, st);   /* R&C patch 7113 */
+     }
+ }
+ 

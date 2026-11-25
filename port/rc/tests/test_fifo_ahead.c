@@ -77,6 +77,61 @@ int main(void)
     n_got = 0;
     CHECK(rsx_fifo_ahead(0x208, 0x2000, 0x300, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_FLIP && n_got == 1 &&
           got_m[0] == 0x1FEC, "walker's CALL return");
+
+    /* R&C patch 7082: every stop is decided before a packet's arguments are read. */
+    memset(mem, 0, sizeof mem);
+    /* put falls inside a packet: header at 0x800, 4 arguments at 0x804..0x810, put = 0x808 (2 words in). */
+    mem[0x800 / 4] = hdr(0, 0x1808, 4, 0); mem[0x804 / 4] = 1; mem[0x808 / 4] = 2; mem[0x80C / 4] = 3; mem[0x810 / 4] = 4;
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x808, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_PUT && n_got == 0,
+          "7082: arguments past put are not read");
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x810, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_PUT && n_got == 0,
+          "7082: the last argument at put is not read");
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x814, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_PUT && n_got == 4,
+          "7082: a packet that ends at put is read whole");
+    /* the same bound holds for a packet of a subchannel the scan does not hand on (2D, subchannel 3) */
+    mem[0x820 / 4] = hdr(3, 0x0300, 3, 0);
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x820, 0x82C, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_PUT && n_got == 0,
+          "7082: put inside a 2D packet stops too");
+    /* the word budget: 1 header word left, the packet needs 4 more */
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x900, 0, 2, rd, NULL, fn, NULL) == RSX_AHEAD_LIMIT && n_got == 0,
+          "7082: over the word budget, nothing is handed on");
+    /* the header word takes one word of the budget: header + 4 arguments = 5 words read the packet, 4 do not */
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x814, 0, 5, rd, NULL, fn, NULL) == RSX_AHEAD_PUT && n_got == 4,
+          "7082: a budget of header + arguments reads the packet");
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x800, 0x814, 0, 4, rd, NULL, fn, NULL) == RSX_AHEAD_LIMIT && n_got == 0,
+          "7082: one word short stops before the arguments");
+    /* an incrementing packet from 0x60 with 3 methods: its third is the acquire 0x68 */
+    mem[0x900 / 4] = hdr(0, 0x0060, 3, 0); mem[0x904 / 4] = 0xFE; mem[0x908 / 4] = 0x10; mem[0x90C / 4] = 1;
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x900, 0xA00, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_ACQUIRE && n_got == 0,
+          "7082: acquire inside an incrementing packet, nothing handed on before it");
+    /* the same packet with 2 methods (0x60, 0x64) does not reach it; nor does a 0x60 non-incrementing one */
+    mem[0x900 / 4] = hdr(0, 0x0060, 2, 0); mem[0x90C / 4] = 0xFEAD0000u;
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x900, 0xA00, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_FLIP && n_got == 2,
+          "7082: 0x60..0x64 is not an acquire");
+    mem[0x900 / 4] = hdr(0, 0x0060, 2, 1);
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x900, 0xA00, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_FLIP && n_got == 2,
+          "7082: non-incrementing 0x60 is not an acquire");
+    /* on subchannel 1 the method 0x68 is not the semaphore */
+    mem[0x900 / 4] = hdr(1, 0x0060, 3, 0); mem[0x910 / 4] = 0xFEAD0000u;
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0x900, 0xA00, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_FLIP && n_got == 3,
+          "7082: subchannel 1 has no acquire");
+    /* put before off (the ring wrapped through a JUMP): not a stop by itself */
+    mem[0xA00 / 4] = hdr(0, 0x1808, 1, 0); mem[0xA04 / 4] = 7; mem[0xA08 / 4] = 0xFEAD0000u;
+    n_got = 0;
+    CHECK(rsx_fifo_ahead(0xA00, 0x100, 0, 1000, rd, NULL, fn, NULL) == RSX_AHEAD_FLIP && n_got == 1,
+          "7082: put below off does not stop a packet");
+
     if (fails) { fprintf(stderr, "%d failure(s)\n", fails); return 1; }
     printf("fifo ahead test: ok\n");
     return 0;

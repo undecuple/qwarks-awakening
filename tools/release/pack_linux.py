@@ -25,6 +25,9 @@ The tarball (names.linux_tar_name(version), every entry under names.linux_tar_to
                                       (HIDAPI, BSD-style; yuv2rgb, BSD-3-Clause), Dear ImGui (MIT), each font's OFL
                                       text, ps3recomp (MIT); NOTICE.md beside them
   README.txt                          what the download holds, requirements, install and removal
+  recomplauncher.json                 RecompLauncher's description of this port (public/recomplauncher.json, format 1), at
+                                      the top beside the launcher; start.program lists the Linux program and AppImage name
+                                      after the Windows exe (the first path that exists runs)
   docs/LINUX.md                       the Linux guide (public/docs/LINUX.md: install, NixOS, Proton, logs, building)
   cmake/release-ident.txt             the version and the public commit (--commit, else $GITHUB_SHA) a game built
                                       from these files names in its log header (cmake/rc_build_ident.cmake)
@@ -322,6 +325,7 @@ def gather(program, sdl3_licenses, toolkit, root, version, commit=""):
     need("licenses/LICENSE.txt", pack_zip.repo_file(root, "LICENSE"))
     need("NOTICE.md", pack_zip.repo_file(root, "NOTICE.md"))
     need("docs/LINUX.md", pack_zip.repo_file(root, "docs/LINUX.md"))
+    need("recomplauncher.json", pack_zip.repo_file(root, "recomplauncher.json"))   # beside the program, as in the zips
     if os.path.exists(os.path.join(root, *pack_zip.IDENT.split("/"))):
         problems.append(f"{pack_zip.IDENT}: present in the source tree (the pack writes it; remove it)")
     files.append((pack_zip.IDENT, pack_zip.release_ident(version, commit), False))

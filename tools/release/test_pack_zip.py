@@ -16,7 +16,8 @@ Phase 4: --make-kit-manifest lists the kit (source subset, ps3recomp, toolchain 
 texts) and never a bare launcher file; the full build zip = the bare files + the kit + kit.json under
 names.build_zip_top; refused: an exe without the kit list's SHA-256, a kit file changed after the list was made, a
 list of another version, a hand-edited list, a toolkit that is not a patched ps3recomp; kit.py installs the kit from
-the full zip into an unpacked bare launcher (status ready, every file verified).
+the full zip into an unpacked bare launcher (status ready, every file verified); a kit without a released game's
+build input (its glue, SPU tables, the config's lift table, tools/spu/<profile>_raw_spu.json) is refused.
 """
 import contextlib
 import hashlib
@@ -78,6 +79,8 @@ def tree(tmp):
     write(os.path.join(root, "tools", "release", "kit.py"), "print('downloader')\n")
     write(os.path.join(root, "data", "titles", "catalog.json"), "{}\n")
     write(os.path.join(root, "data", "titles", "library.example.json"), "{}\n")
+    write(os.path.join(root, "data", "titles", "unofficial.json"), "{}\n")
+    write(os.path.join(root, "public", "recomplauncher.json"), '{"format": 1}\n')
     write(os.path.join(tmp, "launcher.exe"), pe())
     write(os.path.join(tmp, "sdl3", "SDL3.dll"), pe(dll=True))
     write(os.path.join(tmp, "sdl3", "LICENSE.txt"), SDL_LICENCE)
@@ -145,7 +148,7 @@ def main_args(*args):
 
 BARE = (names.LAUNCHER_EXE, "SDL3.dll", "README.txt", "fonts/AdwaitaSans-Regular.ttf", "fonts/RussoOne-Regular.ttf",
         "tools/release/catalog.py", "tools/release/kit.py", "data/titles/catalog.json",
-        "data/titles/library.example.json", "licenses/LICENSE.txt", "licenses/SDL3-LICENSE.txt",
+        "data/titles/library.example.json", "data/titles/unofficial.json", "recomplauncher.json", "licenses/LICENSE.txt", "licenses/SDL3-LICENSE.txt",
         "licenses/SDL3-hidapi-LICENSE.txt", "licenses/SDL3-yuv2rgb-LICENSE.txt",
         "licenses/imgui-LICENSE.txt", "licenses/OFL-adwaita.txt", "licenses/OFL-russo-one.txt",
         "licenses/Python-LICENSE.txt", "python/python.exe", "python/pythonw.exe", "python/python313.dll",
@@ -345,6 +348,48 @@ def test_kit(tmp, root):
     check(rc == 2, "--make-kit-manifest needs --toolkit and --toolchain", out)
 
 
+def test_kit_inputs(tmp):
+    """A released game's build inputs (0.4.0: tools/spu/<profile>_raw_spu.json of four games missing from the kit, their
+    builds stopped at spu-lift): the kit list is refused without one, and accepted with all."""
+    base = os.path.join(tmp, "inputs")
+    root = tree(base)
+    tk, trees = kit_tree(base, root)
+    cat = {"games": [{"id": "tods", "title": "T", "supported": True, "builds": True},
+                     {"id": "coll", "title": "C", "supported": False, "builds": False,
+                      "children": [{"id": "g1", "title": "G1", "supported": False, "builds": True}]},
+                     {"id": "old", "title": "O", "supported": False, "builds": False}]}
+    profs = {"schema": 1, "profiles": [{"id": "tods", "catalog_id": "tods", "exe": "tods", "aliases": []},
+                                       {"id": "coll_g1", "catalog_id": "g1", "exe": "g1", "aliases": ["g1"]},
+                                       {"id": "old", "catalog_id": "old", "exe": "old", "aliases": []}]}
+    write(os.path.join(root, "data", "titles", "catalog.json"), json.dumps(cat))
+    write(os.path.join(root, "data", "titles", "build_profiles.json"), json.dumps(profs))
+    need = ["port/rc/tods/hle_tods.cpp", "data/titles/tods_spu_config.json", "data/titles/tods_spu_jobs.json",
+            "data/titles/tods_spu_code.json", "data/titles/shared_lift_table.tsv", "tools/spu/tods_raw_spu.json",
+            "port/rc/coll_g1/hle_coll_g1.cpp"]
+    for rel in need:
+        write(os.path.join(root, *rel.split("/")), '{"lift_table": "shared_lift_table.tsv"}\n' if rel.endswith("config.json") else "x\n")
+    import firstrun_check as fc
+    check(fc.released_profiles(root) == ["tods", "coll_g1"], "released profiles: buildable games and Collection games, "
+          "by profile id; a parent with children and an unbuildable game are not", fc.released_profiles(root))
+    req, opt = fc.profile_build_inputs(root, "tods")
+    check(set(req) == set(need[:6]) and opt == [], "tods' required inputs: glue, SPU config, jobs, code, the config's "
+          "lift table, raw SPU table", (req, opt))
+    check(fc.profile_build_inputs(root, "coll_g1")[0] == ["port/rc/coll_g1/hle_coll_g1.cpp"],
+          "a profile without SPU tables needs only its glue (firstrun skips spu-lift)")
+    man = os.path.join(base, "kit.json")
+    args = ("--toolkit", tk, "--toolchain", trees, "--version", "1.2.3", "--root", root, "--no-estimate")
+    rc, out = main_args("--make-kit-manifest", man, *args)
+    check(rc == 0, "kit list accepted with every released game's build inputs", out)
+    for gone in ("tools/spu/tods_raw_spu.json", "data/titles/shared_lift_table.tsv", "port/rc/tods/hle_tods.cpp"):
+        src = os.path.join(root, *gone.split("/"))
+        keep = open(src, "rb").read()
+        os.remove(src)
+        rc, out = main_args("--make-kit-manifest", os.path.join(base, "x.json"), *args)
+        check(rc == 1 and f"REFUSED {gone}: the build of tods reads it" in out and not os.path.exists(os.path.join(base, "x.json")),
+              f"kit list refused without {gone}", out)
+        write(src, keep)
+
+
 def test_symbols(tmp, root):
     data = b"\x7fdebug information of the launcher" * 50
     exe = os.path.join(tmp, "symexe", "launcher.exe")
@@ -374,6 +419,7 @@ def main():
         test_good(tmp, root)
         test_refusals(tmp, root)
         test_kit(tmp, root)
+        test_kit_inputs(tmp)
         test_symbols(tmp, root)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

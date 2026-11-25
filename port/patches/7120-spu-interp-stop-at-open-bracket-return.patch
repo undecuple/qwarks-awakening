@@ -1,0 +1,296 @@
+SPU: an interpreter handoff stops at the innermost open call bracket's return address (hop_ret_pc) for every image.
+
+Port of patch 7063 (spu-interp-stop-at-open-bracket-return, branch rc-sse41 b3b73f5, never on main), regenerated
+2026-11-24 with exact context against the fully patched tree (every port/patches/*.patch up to 7115) and renumbered after
+7115: in its old slot it broke 7099 (spu_channels.c, the resolver interpreter block) and 7106, and after the series it no
+longer applied without fuzz. Changes against 7063: the resolver-path hunk sits around 7099's frame checks (the stop and
+the owned-stop note come before 7099's site-5 check, so a stop at an OLDER framed call's return reached from deeper still
+unwinds there), and the log tag reads "(R&C 7120)". Behaviour and host test are 7063's.
+
+Games: Tools of Destruction (PhysColl, job module 5c9062ea153f_eDFF8, overlay 207, under policy module pm_10053d00;
+dev levels 12 "zordoom prison" and 17 "meridian city" through the game's -level argv). Shared runtime code: every title
+that runs unlifted SPU code under a lifted call.
+
+Bug: a host frame leaked per call until the depth guard (KZ3 patch 1086, SPU_HOST_DEPTH_MAX 2000) halted the SPU, and
+PhysColl never completed (the game stalls for good: the PPU main thread waits in 0x5FB2F0 for PhysColl, prints
+"For PhysColl, WwsJobDelay timed out", and no frame is drawn again). The lifted job loops through `bisl $0,$91` at LS
+0xA3FC (link 0xA400) into a plugin at 0x1B360 that has no lift (lvl12: `bisl $0` at 0x7870, link 0x7998, into 0x1D930;
+a second site 0xCCAC -> 0x1BE00; the plugins sit above the module's 0x4000..0x121A0 image). The generated bracket
+publishes hop_ret_pc = the link, host_depth++, and calls spu_indirect_branch at once; its KZ3 1069 interpreter fallback
+(spu_channels.c) passed stop 0 for an image >= 0 (only the image -1 case got hop_ret_pc, R&C patch 7039). The plugin's
+`bi $0` to the link therefore did not stop: the link is mid-function (no lifted entry), so the interpreter ran the
+caller's continuation inside the callee's host frame and rejoined lifted code at the next entry (0xA410; lvl12 0x7808 or 0x7870).
+spu_drain_call(link) then saw a pc != its return pc and ran the caller's loop as callee work, one host level deeper; the
+next pass's bisl nested again. Evidence (N = interpreter entry, J = where it stopped, /d = host depth mod 256):
+- work/proton/tods-play-1114 (2026-10-22): [spu-depth] img=2 host_depth=2000; ring `0A3B4 N:1B360/205 J:0A410/205`,
+  then /206, /207: one level per loop pass, and J is 0xA410, never the bracket's 0xA400.
+- ls-tods-lvl12-zordoom-prison-1123-231208 (2026-11-23, main exe, -level "zordoom prison"): last flip 5030 at t=113 s,
+  then `[spu-depth] img=2 pc=0x07808 lr=0x07998 host_depth=2000`, ring `N:1D930/199 J:07808/199` .. `/208`, and four
+  "For PhysColl, WwsJobDelay timed out" lines (app_stdout.txt:6196-6242). Lifted call site:
+  work/spu/tods/lift/jobmod_5c9062ea153f_eDFF8/spu_recomp.c:4382 (hop_ret_pc = 0x7998; host_depth++;
+  spu_indirect_branch; spu_drain_call(ctx, 0x7998)).
+- lvl17-meridian-city-1113-121244 (2026-11-13): two PhysColl lanes halt at depth 2000 with rings N:1BE00 -> J:0DA34 and
+  N:1B360 -> J:0A410 (app_stdout.txt:5619-5634).
+The microstep -> interpreter handoff (spu_smc_microstep_body) had the same gap from the other side: it stopped at
+drain_ret_pc, which an immediate bisl has not set yet (it still names the outer bracket, or 0 after the inline fast drain).
+
+Fix: both handoffs stop at hop_ret_pc, the innermost open bracket's return address (published before the callee runs,
+kept by spu_drain_call_full, restored when the bracket closes, reset at run start, stack reset and IRQ landing). Stopped
+there, the fallback leaves spu_indirect_branch pending with pc == the bracket's return, which spu_drain_call_body's first
+test consumes (or, from the microstep, nothing pending and the inline drain's pc test): the continuation runs once, lifted,
+in the host frame that owns it. This is the rule KZ3 patch 1097 already applies to a lifted computed hop (pc ==
+hop_ret_pc returns to the bracket) and R&C 7039 to image -1 contexts. Image -1 behaviour is unchanged.
+RC_SPU_OWNED_STOP=0 restores the old stops (A/B only; default on: a pure fix). "[spu] owned-stop (R&C 7120)" logs the
+first 8 stops the old rule would have missed (any site: ToD makes 16+ img=2 resolver handoffs before PhysColl in every
+-level run, so the PhysColl site may not be among the 8; name the site with SPU_INTERP_HIST=1, not with this note).
+Not a token-based return contract (docs/in-progress/spu-return-contract-2026-11-07.md): the stop is a PC test against
+the bracket that is provably innermost; an interpreted recursive call through the same call site would still stop early
+(no such case in a lifted caller, whose entry the interpreter rejoins lifted). Not a cap: SPU_HOST_DEPTH_MAX is unchanged.
+If a run with this patch shows no [spu-depth] but still stalls with WwsJobDelay, that is a second cause (the 0x7870 loop
+walks a linked list: a list that loops back on itself), not a failure of this fix.
+
+Host test: tools/test_spu_interpreter_handoff.py (runtime/spu/tests/test_spu_interpreter_handoff.c): nested_entry now
+publishes hop_ret_pc like the generated bracket; new modes nested-return-immediate (0x204 registered),
+nested-return-immediate-unlifted (the PhysColl shape: 0x204 unlifted, must not run interpreted, bracket depth back to 0)
+and nested-return-immediate-unlifted-microstep (policy_mode 0, the microstep handoff), each unlifted mode with an A/B
+control: with RC_SPU_OWNED_STOP=0 it must fail. The .py checks the owned-stop note is logged for the unlifted returns
+and not for 0x204 registered (rc_spu_interp_rejoins_at in spu_interp.c skips stops the old rule made anyway).
+The test builds against the patched tree: g_spu_trampoline_fn is rebound to the file-scope ctx (KZ3 1017), the .py links
+runtime/diag/kz3_wait_acct.c (KZ3 1085/1135), the stop modes expect the STOPPED_BY_STOP status of patch 1069's
+policy-mode interpreter path, and the stepcap modes run with policy_mode 0. Run from the patched tree:
+python3 tools/test_spu_interpreter_handoff.py (R&C wrapper: port/rc/tests/run_spu_interp_handoff_test.sh, in
+tools/host-tests.txt).
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -3052,6 +3052,34 @@
+     if (s < 0) { const char* e = getenv("KZ3_SPU_WWS_INTERP"); s = (e && *e == '0') ? 0 : 1; }
+     return s;
+ }
++/* R&C patch 7120: the return address an interpreter handoff stops at is the innermost OPEN call bracket's (hop_ret_pc).
++ * A lifted brsl/bisl publishes hop_ret_pc before it invokes its callee, spu_drain_call_full keeps it while the callee
++ * drains, and the bracket restores the outer one when it closes; drain_ret_pc is only set by a drain step, so for an
++ * immediate `bisl` into unlifted code (the generated bracket calls spu_indirect_branch before spu_drain_call) it still
++ * names the OUTER bracket, or 0 after the inline fast drain. Without this stop an interpreted callee's return to its
++ * caller ran on through the caller's continuation (interpreted, inside the callee's host frame) to the next lifted
++ * entry, whose code the bracket's drain then ran as callee work: one host frame leaked per call, until the depth guard
++ * halted the SPU (ToD PhysColl: `bisl $0,$91` at LS 0xA3FC calls a plugin at 0x1B360, link 0xA400; the ring showed
++ * N:1B360/d J:0A410/d with d one higher per loop pass). RC_SPU_OWNED_STOP=0 restores the old stops (A/B only). */
++static int rc_spu_owned_stop_on(void)
++{
++    static int s = -1;
++    if (s < 0) { const char* e = getenv("RC_SPU_OWNED_STOP"); s = (e && *e == '0') ? 0 : 1; }
++    return s;
++}
++/* R&C patch 7120: one log line per stop the old rule would have missed (first 8): the run shows the fix engaging. The old
++ * rule also stopped at old_stop and at every address the interpreter rejoins (a lifted or overlay entry: a bracket's
++ * return address can be one), so those are not logged. */
++static void rc_spu_owned_stop_note(const spu_context* ctx, uint32_t from, uint32_t old_stop)
++{
++    extern int rc_spu_interp_rejoins_at(const spu_context*, uint32_t);   /* spu_interp.c */
++    static int _n = 0;
++    const uint32_t pc = (uint32_t)ctx->pc & SPU_LS_MASK;
++    if (pc == ctx->hop_ret_pc && pc != old_stop && !rc_spu_interp_rejoins_at(ctx, pc) && PS3_LOG_FIRST(_n, 8))
++        fprintf(stderr, "[spu] owned-stop (R&C 7120): interpreted callee from 0x%05X returned to its open bracket's "
++                "0x%05X img=%d depth=%u ovl=%d (old stop 0x%05X)\n", from, pc, ctx->image_id, ctx->host_depth,
++                (int)ctx->resident_ovl, old_stop);
++}
+ static int spu_smc_microstep_body(spu_context* ctx);
+ static int spu_smc_microstep(spu_context* ctx)   /* KZ3 patch 1068: marks around the body */
+ {
+@@ -3259,8 +3287,11 @@
+         /* Stop at the drain's return point too: it sits mid-function, so it is
+          * no lifted entry, and a job's return would otherwise run on through
+          * the caller's code (GH3's song-freeze; see drain_ret_pc). */
+-        const uint32_t return_pc = ctx->drain_ret_pc;
++        /* R&C patch 7120: the innermost open bracket's return (hop_ret_pc), which drain_ret_pc lags behind at an
++         * immediate bisl (see rc_spu_owned_stop_on). */
++        const uint32_t return_pc = (rc_spu_owned_stop_on() && ctx->hop_ret_pc) ? ctx->hop_ret_pc : ctx->drain_ret_pc;
+         uint32_t result = spu_interp_run_until(ctx, pc, return_pc);
++        if (rc_spu_owned_stop_on()) rc_spu_owned_stop_note(ctx, pc, ctx->drain_ret_pc);
+         /* A live interpreter rejoin is a transfer, not a host return. Nested
+          * drains can repair an empty trampoline, but the top-level driver
+          * otherwise ends the run before executing the lifted target.
+@@ -4108,7 +4139,14 @@
+             /* R&C patch 7039: an image -1 context stops at the innermost open call bracket's return address too (hop_ret_pc,
+              * set by spu_drain_call_full: an interpreted job returning into the lifted kernel mid-function, whose host
+              * frame owns that continuation; drain_ret_pc can already be 0 here). */
+-            spu_interp_run_until(ctx, p, ctx->image_id < 0 ? ctx->hop_ret_pc : 0);
++            /* R&C patch 7120 (was 7063 on rc-sse41): and so does every other image (rc_spu_owned_stop_on): its lifted
++             * functions are rejoined at entries only, and a bracket's return address is mid-function, so the interpreter
++             * used to run the caller's continuation inside the callee's frame. Stopped there, the bracket's drain sees its
++             * own return pending and returns: the continuation runs once, in the host frame that owns it. 7099's frame
++             * check below still unwinds when that pc is an OLDER framed call's return reached from deeper. */
++            const int owned = ctx->image_id < 0 || rc_spu_owned_stop_on();
++            spu_interp_run_until(ctx, p, owned ? ctx->hop_ret_pc : 0);
++            if (owned && ctx->image_id >= 0) rc_spu_owned_stop_note(ctx, p, 0);
+             spu_recent_mark(ctx, 11, ctx->pc);
+             if (ctx->status == SPU_STATUS_RUNNING && ctx->call_frame) spu_call_frame_check(ctx, 5);   /* R&C patch 7099 */
+             if (ctx->status == SPU_STATUS_RUNNING) {
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -563,6 +563,14 @@
+     return 0;
+ }
+ 
++/* R&C patch 7120: 1 when the interpreter stops at pc whatever stop address it was given (a rejoin: for an image >= 0
++ * context any lifted, overlay or located entry, spu_interp_rejoin_lookup; for image -1 a resident span's entry).
++ * spu_channels.c's owned-stop note uses it so it logs only the stops the old rule would have missed. */
++int rc_spu_interp_rejoins_at(const spu_context* ctx, uint32_t pc)
++{
++    return ctx->image_id >= 0 ? spu_interp_rejoin_lookup(ctx, pc) != NULL : rc_interp_resident_rejoin(ctx, pc);
++}
++
+ static uint32_t spu_interp_run_until_body(spu_context* ctx, uint32_t start_lsa, uint32_t stop_lsa, uint64_t* nsteps, uint32_t* plo, uint32_t* phi) {
+     ctx->pc = start_lsa & 0x3FFFC;
+     ctx->status = SPU_STATUS_RUNNING;
+diff --git a/runtime/spu/tests/test_spu_interpreter_handoff.c b/runtime/spu/tests/test_spu_interpreter_handoff.c
+--- a/runtime/spu/tests/test_spu_interpreter_handoff.c
++++ b/runtime/spu/tests/test_spu_interpreter_handoff.c
+@@ -9,6 +9,10 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++/* KZ3 patch 1017 made g_spu_trampoline_fn ((ctx)->tramp_fn); this test has one file-scope `ctx`. */
++#undef g_spu_trampoline_fn
++#define g_spu_trampoline_fn (ctx.tramp_fn)
++
+ uint8_t* vm_base;
+ uint32_t ppu_vm_size;
+ extern void spu_begin_image(int);
+@@ -39,14 +43,22 @@
+     c->pc = 0x4000; g_spu_trampoline_fn = spu_indirect_branch;
+ }
+ static int queued_call;
++static uint32_t depth_after = 0xFFFFFFFFu;
++/* The generated bisl bracket (tools/spu_lifter.py, KZ3 patch 1096): hop_ret_pc names
++ * this bracket's return before the callee runs; the immediate form calls
++ * spu_indirect_branch before spu_drain_call publishes anything (R&C patch 7120). */
+ static void nested_entry(spu_context* c) {
+     c->gpr[0] = spu_link(0x204);
++    const uint32_t hr = c->hop_ret_pc;
++    c->hop_ret_pc = 0x204;
+     c->host_depth++;
+     c->pc = 0x4000;
+     if (queued_call) g_spu_trampoline_fn = spu_indirect_branch;
+     else spu_indirect_branch(c);
++    c->hop_ret_pc = hr;
+     spu_drain_call(c, 0x204);
+     c->host_depth--;
++    depth_after = c->host_depth;   /* the bracket closed: no host frame leaked */
+     c->gpr[20]._u32[0]++;
+     finish(c);
+ }
+@@ -56,10 +68,18 @@
+     spu_context_init(&ctx, 0);
+     ctx.image_id = 77;
+     ctx.policy_mode = 1; /* live policy APIs are below the unlifted job */
++    /* KZ3 patch 1069: a policy-mode context's unlifted code in a WWS range runs in the full interpreter and, once the
++     * interpreter returns with the SPU RUNNING, re-dispatches. A STEPCAP dump is such a return, so the two stepcap
++     * modes (which assert the adapter's STOP-less return) use the SMC microstep's handoff instead. */
++    if (!strcmp(mode, "stepcap") || !strcmp(mode, "negative-stepcap")) ctx.policy_mode = 0;
++    /* R&C patch 7120: the same immediate unlifted return through the microstep handoff (spu_smc_microstep_body): a
++     * non-policy context, whose callee's first word (ori) is outside the microstep set, so it is handed to the
++     * interpreter with the bracket's stop. */
++    if (!strcmp(mode, "nested-return-immediate-unlifted-microstep")) ctx.policy_mode = 0;
+     ctx.status = SPU_STATUS_RUNNING;
+     spu_begin_image(77);
+     spu_register_function(0x200, helper);
+-    if (strcmp(mode, "nested-return-unlifted"))
++    if (!strstr(mode, "-unlifted"))   /* nested-return-unlifted, nested-return-immediate-unlifted[-microstep] */
+         spu_register_function(0x204, wrong_continuation);
+     spu_register_function(0x240, finish);
+     if (!strcmp(mode, "top-zero")) spu_register_function(0, finish);
+@@ -75,7 +95,11 @@
+     } else if (!strcmp(mode, "top")) {
+         word(0x4004, 0x30004800); /* bra 0x240 */
+     } else if (!strncmp(mode, "nested-return", 13)) {
+-        entry = nested_entry; queued_call = 1;
++        /* R&C patch 7120: "nested-return-immediate[-unlifted[-microstep]]" is the generated
++         * immediate bisl (ToD PhysColl's `bisl $0,$91` into an unlifted plugin):
++         * the interpreted callee's return must stop at the bracket's own return
++         * address, not run the caller's bytes at 0x204 inside the callee frame. */
++        entry = nested_entry; queued_call = strncmp(mode, "nested-return-immediate", 23) != 0;
+         word(0x204, 0x1C004A95); /* ai $21,$21,1: must NOT be interpreted */
+         word(0x208, 0x30004800); /* bra 0x240 */
+         word(0x4004, 0x35000000); /* bi $0 -> 0x204 */
+@@ -152,8 +176,9 @@
+          * deliberately outside this narrowly scoped rejoin fix. */
+         assert(ctx.gpr[11]._u32[0] == 0 && ctx.gpr[20]._u32[0] == 0);
+         assert(halted == (!strcmp(mode, "nested-stop") ? 1 : 0));
+-        assert(ctx.status == (!strcmp(mode, "stop-code") ?
+-               SPU_STATUS_STOPPED_BY_STOP : SPU_STATUS_STOPPED_BY_HALT));
++        /* KZ3 patch 1069: a policy-mode context's interpreter stop (any code) leaves the SPU STOPPED_BY_STOP; only the
++         * conditional halt (heqi) is STOPPED_BY_HALT. */
++        assert(ctx.status == (!strcmp(mode, "halt") ? SPU_STATUS_STOPPED_BY_HALT : SPU_STATUS_STOPPED_BY_STOP));
+         assert(ctx.stop_code == (!strcmp(mode, "halt") ? 0x1000u :
+                !strcmp(mode, "stop-code") ? 0x2123u : 0u));
+         puts("PASS (legacy stop/halt baseline unchanged)"); return 0;
+@@ -161,6 +186,7 @@
+     assert(halted == 1 && ctx.status == SPU_STATUS_STOPPED_BY_STOP);
+     assert(ctx.gpr[11]._u32[0] == 1);
+     assert(ctx.gpr[20]._u32[0] == (!strncmp(mode, "nested-return", 13) ? 1u : 0u));
++    if (!strncmp(mode, "nested-return", 13)) assert(depth_after == 0);
+     assert(ctx.gpr[10]._u32[0] == (!strcmp(mode, "nested-calls") ? 2u : 0u));
+     puts("PASS"); return 0;
+ }
+diff --git a/tools/test_spu_interpreter_handoff.py b/tools/test_spu_interpreter_handoff.py
+--- a/tools/test_spu_interpreter_handoff.py
++++ b/tools/test_spu_interpreter_handoff.py
+@@ -13,20 +13,25 @@
+ sources = ['spu_channels.c', 'spu_drain.c', 'spu_lockstep.c', 'spu_coherency.c',
+            'spu_workload.c', 'spurs_policy.c', 'spurs_job.c', 'spu_tsp_weak.c',
+            'spu_vm_pagemap.c', 'spurs_policy_blob_weak.c', 'spu_interp.c']
++# R&C: KZ3 patches 1085/1135 reference the wait-accounting diagnostics from the SPU runtime; link the real source.
++sources_extra = [root/'runtime/diag/kz3_wait_acct.c']
+ with tempfile.TemporaryDirectory(prefix='spu-interp-handoff-') as tmp:
+     binary = Path(tmp) / 'test'
+     subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu17', '-O1', '-UNDEBUG',
+                     '-I'+str(root/'include'), '-I'+str(spu),
+-                    '-I'+str(root/'runtime/platform'),
++                    '-I'+str(root/'runtime/platform'), '-I'+str(root/'runtime/diag'),
+                     str(spu/'tests/test_spu_interpreter_handoff.c'),
+-                    *[str(spu / name) for name in sources],
++                    *[str(spu / name) for name in sources], *map(str, sources_extra),
+                     str(root/'runtime/platform/win32_compat.c'), '-pthread', '-lm',
+                     '-o', str(binary)], check=True)
+     failed = []
+-    for mode in ['top', 'top-zero', 'nested-return', 'nested-return-unlifted', 'nested-calls', 'stop-zero',
++    # R&C patch 7120: 'nested-return-immediate[-unlifted]' is the generated immediate bisl bracket through KZ3 1069's
++    # interpreter fallback (policy mode); '-microstep' is the same return through the SMC microstep handoff.
++    for mode in ['top', 'top-zero', 'nested-return', 'nested-return-unlifted', 'nested-return-immediate',
++                 'nested-return-immediate-unlifted', 'nested-return-immediate-unlifted-microstep', 'nested-calls', 'stop-zero',
+                  'nested-stop', 'stop-code', 'halt', 'smc', 'smc-ldst', 'smc-ldst-diag', 'pure-interpreter', 'stepcap', 'negative-stepcap']:
+         env = {k: v for k, v in os.environ.items()
+-               if not k.startswith(('SPU_', 'SPURS_', 'YDKJ_', 'LBP_', 'GH3_'))}
++               if not k.startswith(('SPU_', 'SPURS_', 'YDKJ_', 'LBP_', 'GH3_', 'RC_SPU_'))}
+         if mode in ('stepcap', 'negative-stepcap'):
+             env.update(YDKJ_SPU_TRACE='1', SPU_STEPCAP='2')
+         result = subprocess.run([str(binary), mode], capture_output=True,
+@@ -35,5 +40,24 @@
+         if result.returncode:
+             print(result.stderr[-2500:])
+             failed.append(mode)
++        # R&C patch 7120: the owned-stop note logs only stops the old rule missed: the unlifted return address, never
++        # one the interpreter rejoins anyway (0x204 registered in 'nested-return-immediate').
++        noted = '[spu] owned-stop (R&C 7120)' in result.stderr
++        if mode.startswith('nested-return-immediate') and noted != ('-unlifted' in mode):
++            print('%s: owned-stop note %s (want %s)' % (mode, 'logged' if noted else 'missing',
++                                                        'logged' if '-unlifted' in mode else 'none'))
++            failed.append(mode + ' owned-stop note')
++    # R&C patch 7120 A/B control: with the old stop rule the unlifted immediate return must still fail
++    # (the caller's bytes at 0x204 run interpreted inside the callee's frame), or the mode tests nothing.
++    # Both handoffs: KZ3 1069's interpreter fallback and the microstep's.
++    env = {k: v for k, v in os.environ.items()
++           if not k.startswith(('SPU_', 'SPURS_', 'YDKJ_', 'LBP_', 'GH3_', 'RC_SPU_'))}
++    env['RC_SPU_OWNED_STOP'] = '0'
++    for mode in ['nested-return-immediate-unlifted', 'nested-return-immediate-unlifted-microstep']:
++        result = subprocess.run([str(binary), mode], capture_output=True,
++                                text=True, timeout=5, cwd=tmp, env=env)
++        print('RC_SPU_OWNED_STOP=0 %s: exit %d (must fail)' % (mode, result.returncode))
++        if result.returncode == 0:
++            failed.append('%s passed with RC_SPU_OWNED_STOP=0 (control lost)' % mode)
+     if failed:
+         raise SystemExit('FAILED: ' + ', '.join(failed))

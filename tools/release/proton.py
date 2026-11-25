@@ -507,9 +507,11 @@ def launch(library, gid, data=None, env=None):
     if lib is None:
         raise Error("The library has not been made yet; start the launcher once.")
     try:
-        (exe, eboot), add_env, cwd = catalog.play_command(lib, gid)
+        args, add_env, cwd = catalog.play_command(lib, gid)
     except ValueError as ex:
         raise Error(str(ex))
+    exe, rest = args[0], args[1:]   # the port's games: [exe, eboot]; an unofficial game (ENHANCEMENT): [exe] alone
+    unofficial = any(x.get("id") == gid for x in lib.get("unofficial") or [])
     warnings = []
     upd = ((catalog._find_game(lib, gid) or {}).get("files") or {}).get("update")
     if upd and "PS3_HDD0_LOWER" not in add_env:
@@ -519,20 +521,21 @@ def launch(library, gid, data=None, env=None):
     root = data_root(env)
     prefix = real_dir(os.path.join(root, "prefixes", gid))
     e = {k: wine_path(v) for k, v in add_env.items() if k in PATH_ENV}
-    if "PS3_HDD0_ROOT" not in e:   # saves outside the prefix, so a prefix can be deleted without losing them
+    if "PS3_HDD0_ROOT" not in e and not unofficial:   # saves outside the prefix, so a prefix can be deleted without losing them
         e["PS3_HDD0_ROOT"] = wine_path(os.path.join(root, "saves", gid, "dev_hdd0"))
     if mode == "umu":
         e.update(WINEPREFIX=prefix, PROTONPATH=proton, GAMEID="0", PROTONFIXES_DISABLE="1",
                  PROTON_VERB="waitforexitandrun", STORE="none")
-        argv = [umu, exe, wine_path(eboot)]
+        argv = [umu, exe] + [wine_path(x) for x in rest]
     else:
         # app id 0 as umu sets it: GE-Proton's protonfixes otherwise reads a Steam app id from the prefix path and
         # stops when there is none (first walk, 2026-11-16); its game fixes are for Steam titles, so they stay off
         e.update(STEAM_COMPAT_DATA_PATH=prefix, STEAM_COMPAT_CLIENT_INSTALL_PATH=os.path.join(root, "steam"),
                  STEAM_COMPAT_APP_ID="0", SteamAppId="0", SteamGameId="0", PROTONFIXES_DISABLE="1")
-        argv = wrapper + [os.path.join(proton, "proton"), "waitforexitandrun", exe, wine_path(eboot)]
+        argv = wrapper + [os.path.join(proton, "proton"), "waitforexitandrun", exe] + [wine_path(x) for x in rest]
     return {"argv": argv, "env": e, "cwd": cwd, "prefix": prefix, "proton": proton, "mode": mode,
-            "wrapper": wrapper, "warnings": warnings, "settings": data or config_root(env), "exe_dir": cwd}
+            "wrapper": wrapper, "warnings": warnings, "settings": data or config_root(env), "exe_dir": cwd,
+            "unofficial": unofficial}
 
 
 def run_file(gid, env=None):
@@ -648,7 +651,8 @@ def play(library, gid, data=None, stop_file=None, out=sys.stdout, env=None, pope
     for w in L["warnings"]:
         print(w, file=out, flush=True)
     try:
-        bridge_settings(L["exe_dir"], gid, L["settings"])
+        if not L["unofficial"]:   # ENHANCEMENT: never write into another project's folder (no settings bridge)
+            bridge_settings(L["exe_dir"], gid, L["settings"])
     except (Error, OSError) as ex:
         print(f"REASON {ex}", file=out, flush=True)
         return 1

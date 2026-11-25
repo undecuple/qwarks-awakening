@@ -1,0 +1,406 @@
+SPU: unwindable frame for the ig job kernel's job call (bisl lifted with --framed-bisl).
+
+All 4 One 1.03 stalls at luminopolis: ig lane 0's host_depth (live lifted call brackets) rises ~386 per HUD reload
+(351 -> 737 -> 1123 -> 1514 at the kernel idle pc 0x3F750, sp 0x3F450 each time) because a job (0x00D3C580) leaves
+through the kernel's job-call return 0x3F8F4 from inside nested calls, and the drain continuations (patch 7039
+interpreter fallback, resolver) keep running the kernel inside the dead job brackets. A bisl lifted with --framed-bisl
+pushes {return_pc, depth, jmp_buf}; reaching that return pc from deeper longjmps back to the frame (dead host frames
+dropped, depth/image/irq frame/pc restored), as the interrupt frame already does. Only kernels lifted with the flag
+(tools/spu/lift_igjobs.py: the ig kernel, not the jobs) change; other titles' generated code is unchanged.
+Diagnostics: [spu-jobframe] drain-interp / resolver-interp / unwind, first 16 events each.
+Host test runtime/spu/tests/test_spu_call_frame.c: 17 pass with, 6 fail without (-DNO_7099). RPCS3 reference
+a4o-rpcs3-lumi reached luminopolis. Source: SPU notes, 2026-11-18.
+
+diff --git a/runtime/spu/spu_call_frame.h b/runtime/spu/spu_call_frame.h
+new file mode 100644
+index 0000000..84568b0
+--- /dev/null
++++ b/runtime/spu/spu_call_frame.h
+@@ -0,0 +1,41 @@
++/* R&C patch 7099: unwindable call frames for a job kernel's job call.
++ *
++ * A lifted `bisl` is a host call bracket: host_depth++, the callee, then a drain that waits for the guest to come back
++ * at the bracket's return address. When a guest routine deeper inside the callee leaves through the return address
++ * of an OUTER bracket (a job's exit/yield path that branches to the kernel's job-call return, from two calls deep),
++ * the inner brackets' guest frames are gone but their host frames stay open: the drain continuation paths (the
++ * patch 7039 interpreter fallback, the resolver's) then run the kernel's code inside the innermost job bracket, and
++ * every later job call nests on top of it. A4O 1.03 luminopolis: lane 0's host_depth rose 351 -> 737 -> 1123 -> 1514
++ * at the kernel's idle (pc 0x3F750, sp 0x3F450 every time), ~386 per burst (SPU notes 2026-11-18).
++ *
++ * The fix: a bisl lifted with --framed-bisl (the ig job kernels') pushes a frame {return_pc, depth, jmp_buf} on the
++ * context; whenever the guest reaches the return pc of an open frame with host_depth above that frame's depth, the
++ * continuation paths longjmp to it: the dead host frames are dropped, the depth is the frame's again and the kernel
++ * continues in its own bracket. The innermost frame with a matching return pc decides (its own drain sees
++ * depth == frame depth: no unwind). Pure header: the frame list and the match, host-testable. */
++#ifndef SPU_CALL_FRAME_H
++#define SPU_CALL_FRAME_H
++
++#include <setjmp.h>
++#include <stdint.h>
++
++typedef struct spu_call_frame {
++    jmp_buf                env;
++    struct spu_call_frame* prev;
++    uint32_t               return_pc;     /* LS address, masked */
++    uint32_t               depth;         /* host_depth inside the bracket (after its ++) */
++    int                    image_id;
++    void*                  irq_frame;     /* ctx->irq_frame at entry: deeper drains' frames die with the unwind */
++    uint32_t               drain_ret_pc;  /* ctx->drain_ret_pc at entry */
++} spu_call_frame;
++
++/* The open frame the guest's arrival at `pc` (masked) with host depth `depth` unwinds to, or 0. */
++static inline spu_call_frame* spu_call_frame_match(spu_call_frame* top, uint32_t pc, uint32_t depth)
++{
++    for (spu_call_frame* f = top; f; f = f->prev)
++        if (f->return_pc == pc)
++            return depth > f->depth ? f : 0;
++    return 0;
++}
++
++#endif /* SPU_CALL_FRAME_H */
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 33e68b1..439e9ef 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -377,6 +377,7 @@ int spu_run_with_halt(void (SPU_ABI *entry)(spu_context*), spu_context* ctx)
+      * recursion guard halted the SPU at 2000 after a few minutes of idling. */
+     ctx->host_depth = 0;
+     ctx->irq_frame = 0;
++    ctx->call_frame = 0;   /* R&C patch 7099: no framed job call is open at a run's start */
+     ctx->drain_ret_pc = 0;
+     ctx->hop_ret_pc = 0;   /* KZ3 patch 1096 */
+     { extern int g_spu_hop_on; extern void spu_hop_init(void); if (g_spu_hop_on < 0) spu_hop_init(); }
+@@ -405,6 +406,7 @@ int spu_run_with_halt(void (SPU_ABI *entry)(spu_context*), spu_context* ctx)
+          * Re-enter its target with the same guest state on the driver stack. */
+         ctx->host_depth = 0;
+         ctx->hop_ret_pc = 0;   /* KZ3 patch 1096 */
++        ctx->call_frame = 0;   /* R&C patch 7099: the reset dropped every lifted host caller, framed job calls too */
+         g_spu_trampoline_fn = 0;
+         spu_recent_mark(ctx, 5, ctx->pc);   /* KZ3 patch 1068 */
+         spu_indirect_branch(ctx);
+@@ -3987,11 +3989,21 @@ void spu_indirect_branch(spu_context* ctx)
+         if (ctx->ls[p] | ctx->ls[p + 1] | ctx->ls[p + 2] | ctx->ls[p + 3]) {
+             extern uint32_t spu_interp_run_until(spu_context*, uint32_t, uint32_t);
+             spu_recent_mark(ctx, 10, p);
++            /* R&C patch 7099: the guest at an open framed job call's return pc from deeper unwinds to that frame;
++             * otherwise log which continuations take this path (first 16). */
++            if (ctx->call_frame) spu_call_frame_check(ctx, 4);
++            { static int _n = 0; if (PS3_LOG_FIRST(_n, 16)) {
++                const spu_call_frame* cf = (const spu_call_frame*)ctx->call_frame;
++                fprintf(stderr, "[spu-jobframe] resolver-interp hop_ret=0x%05X p=0x%05X depth=%d img=%d ovl=%d r0=0x%05X "
++                        "sp=0x%05X frame_ret=0x%05X frame_depth=%d\n", ctx->hop_ret_pc & SPU_LS_MASK, p, ctx->host_depth,
++                        ctx->image_id, (int)ctx->resident_ovl, ctx->gpr[0]._u32[0] & SPU_LS_MASK,
++                        ctx->gpr[1]._u32[0] & SPU_LS_MASK, cf ? cf->return_pc : 0u, cf ? (int)cf->depth : -1); } }
+             /* R&C patch 7039: an image -1 context stops at the innermost open call bracket's return address too (hop_ret_pc,
+              * set by spu_drain_call_full: an interpreted job returning into the lifted kernel mid-function, whose host
+              * frame owns that continuation; drain_ret_pc can already be 0 here). */
+             spu_interp_run_until(ctx, p, ctx->image_id < 0 ? ctx->hop_ret_pc : 0);
+             spu_recent_mark(ctx, 11, ctx->pc);
++            if (ctx->status == SPU_STATUS_RUNNING && ctx->call_frame) spu_call_frame_check(ctx, 5);   /* R&C patch 7099 */
+             if (ctx->status == SPU_STATUS_RUNNING) {
+                 g_spu_trampoline_fn = spu_indirect_branch;   /* dispatch the lifted code it stopped at */
+                 return;
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index 1a4f259..95f927a 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -59,6 +59,7 @@
+ #  define SPU_SETJMP(b) _setjmp(b)
+ #  define SPU_LONGJMP(b, v) _longjmp((b), (v))
+ #endif
++#include "spu_call_frame.h"   /* R&C patch 7099 */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -432,6 +433,8 @@ typedef struct spu_context {
+      * handler's frames and its return address then missed every drain on the
+      * way up (drain-mismatch return_pc=0xA90 pc=0x2D28, once per job). */
+     void*    irq_frame;
++    /* R&C patch 7099: innermost open framed job call (spu_call_frame.h), 0 when none. */
++    void*    call_frame;
+ 
+     /* Parked DMA-list commands (stall-and-notify), keyed PER TAG GROUP. A
+      * GETL/PUTL that transfers a list element with the stall-and-notify bit
+@@ -1223,6 +1226,10 @@ void spu_irqwait_diag(spu_context* ctx);
+ 
+ /* Drain a translated call up to its explicit architectural return PC. */
+ void spu_drain_call_full(spu_context* ctx, uint32_t return_pc);
++/* R&C patch 7099: a `bisl` lifted with --framed-bisl: spu_indirect_branch inside an unwindable frame
++ * (spu_call_frame.h); spu_call_frame_check longjmps to it when the guest reaches its return pc from deeper. */
++void spu_bisl_framed(spu_context* ctx, uint32_t return_pc);
++void spu_call_frame_check(spu_context* ctx, int site);
+ /* KZ3 patch 1039: the callee returned normally (SPU_RET with host_depth > 0 leaves no pending transfer and pc
+  * at the link) in nearly every call; the full drain then only ran spu_depth_guard (its limit test, plus a ring of
+  * recent drain sites shared by all SPU host threads) and cleared drain_ret_pc. Do that inline. The ring is
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+index 8aa3043..da20410 100644
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -757,6 +757,48 @@ void spu_drain_call_full(spu_context* ctx, uint32_t return_pc)
+         kz3_jobcall_close(ctx, return_pc);
+     }
+ }
++/* R&C patch 7099 (spu_call_frame.h): the framed job call. The bracket around it (host_depth++, hop_ret_pc, the drain,
++ * img restore) is the lifter's as for any bisl; this adds the frame the continuation paths unwind to. */
++void spu_bisl_framed(spu_context* ctx, uint32_t return_pc)
++{
++    spu_call_frame f;
++    f.prev = (spu_call_frame*)ctx->call_frame;
++    f.return_pc = return_pc & SPU_LS_MASK;
++    f.depth = (uint32_t)ctx->host_depth;
++    f.image_id = ctx->image_id;
++    f.irq_frame = ctx->irq_frame;
++    f.drain_ret_pc = ctx->drain_ret_pc;
++    ctx->call_frame = &f;
++    if (SPU_SETJMP(f.env) == 0) {
++        extern void spu_jmp_no_unwind(void*);   /* spu_channels.c */
++        spu_jmp_no_unwind(f.env);
++        spu_indirect_branch(ctx);
++    } else {
++        /* The guest came back at return_pc from deeper: the host frames above this one held guest frames the guest
++         * already left. Registers and LS are the guest's; restore the host bookkeeping this frame owns. */
++        ctx->host_depth = f.depth;
++        ctx->image_id = f.image_id;
++        ctx->irq_frame = f.irq_frame;
++        ctx->drain_ret_pc = f.drain_ret_pc;
++        ctx->pc = f.return_pc;
++        g_spu_trampoline_fn = 0;
++    }
++    ctx->call_frame = f.prev;
++}
++
++/* site: 1 drain trampoline, 2 drain after the callee, 3 drain after the 7039 interpreter, 4/5 resolver before/after it */
++void spu_call_frame_check(spu_context* ctx, int site)
++{
++    spu_call_frame* f = spu_call_frame_match((spu_call_frame*)ctx->call_frame, ctx->pc & SPU_LS_MASK,
++                                             (uint32_t)ctx->host_depth);
++    if (!f) return;
++    { static int _n = 0; if (PS3_LOG_FIRST(_n, 16))
++        fprintf(stderr, "[spu-jobframe] unwind site=%d to return_pc=0x%05X depth %d -> %u img=%d ovl=%d sp=0x%05X\n",
++                site, f->return_pc, ctx->host_depth, f->depth, ctx->image_id, (int)ctx->resident_ovl,
++                ctx->gpr[1]._u32[0] & SPU_LS_MASK); }
++    SPU_LONGJMP(f->env, 1);
++}
++
+ static void spu_drain_call_body(spu_context* ctx, uint32_t return_pc)
+ {
+     if (__builtin_expect(g_spu_direct < 0, 0)) spu_direct_init();
+@@ -783,6 +825,7 @@ static void spu_drain_call_body(spu_context* ctx, uint32_t return_pc)
+ #define SPU_DRAIN_POP_IRQ() do { if (ctx->irq_frame == &f) ctx->irq_frame = f.prev; ctx->drain_ret_pc = outer_ret_pc; } while (0)
+     for (;;) {
+         while (*tramp) {
++            if (*tramp == spu_indirect_branch && ctx->call_frame) spu_call_frame_check(ctx, 1);   /* R&C patch 7099 */
+             if (*tramp == spu_indirect_branch &&
+                 (ctx->pc & SPU_LS_MASK) == (return_pc & SPU_LS_MASK)) {
+                 *tramp = 0;
+@@ -821,6 +864,7 @@ static void spu_drain_call_body(spu_context* ctx, uint32_t return_pc)
+             }
+             fn(ctx);
+         }
++        if (ctx->call_frame) spu_call_frame_check(ctx, 2);   /* R&C patch 7099 */
+         if ((ctx->pc & SPU_LS_MASK) == (return_pc & SPU_LS_MASK)) {
+             SPU_DRAIN_POP_IRQ();
+             return;
+@@ -855,8 +899,17 @@ static void spu_drain_call_body(spu_context* ctx, uint32_t return_pc)
+                 (ctx->ls[p] | ctx->ls[p + 1] | ctx->ls[p + 2] | ctx->ls[p + 3])) {
+                 extern uint32_t spu_interp_run_until(spu_context*, uint32_t, uint32_t);
+                 spu_recent_mark(ctx, 10, p);
++                {   /* R&C patch 7099: which continuations take this path (first 16) */
++                    static int _n = 0; if (PS3_LOG_FIRST(_n, 16)) {
++                        const spu_call_frame* cf = (const spu_call_frame*)ctx->call_frame;
++                        fprintf(stderr, "[spu-jobframe] drain-interp return_pc=0x%05X p=0x%05X depth=%d img=%d ovl=%d "
++                                "r0=0x%05X sp=0x%05X frame_ret=0x%05X frame_depth=%d\n",
++                                (unsigned)(return_pc & SPU_LS_MASK), p, ctx->host_depth, ctx->image_id,
++                                (int)ctx->resident_ovl, ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[1]._u32[0] & SPU_LS_MASK,
++                                cf ? cf->return_pc : 0u, cf ? (int)cf->depth : -1); } }
+                 spu_interp_run_until(ctx, p, return_pc & SPU_LS_MASK);
+                 spu_recent_mark(ctx, 11, ctx->pc);
++                if (ctx->status == SPU_STATUS_RUNNING && ctx->call_frame) spu_call_frame_check(ctx, 3);   /* R&C patch 7099 */
+                 if (ctx->status == SPU_STATUS_RUNNING) {
+                     if ((ctx->pc & SPU_LS_MASK) == (return_pc & SPU_LS_MASK)) {
+                         SPU_DRAIN_POP_IRQ();
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+index 32b50c0..9acb8cd 100644
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -605,7 +605,10 @@ static uint32_t spu_interp_run_until_body(spu_context* ctx, uint32_t start_lsa,
+         /* R&C patch 7039: an image -1 context (an unlifted policy module, patch 7034) rejoins only lifted code that
+          * owns a bounded resident span (a verified streamed region: the igPm job kernel and its job blobs), or stops at
+          * the caller's stop point (the return address of the lifted call it runs under: mid-function, no entry). */
+-        if (ctx->image_id < 0 && ((stop_lsa && ctx->pc == stop_lsa) || rc_interp_resident_rejoin(ctx, ctx->pc))) { g_spu_interp_steps = steps; g_spu_interp_last_pc = ctx->pc; return ctx->pc; }
++        /* R&C patch 7099: also at an open framed job call's return pc reached from deeper (the caller unwinds to it) */
++        if (ctx->image_id < 0 && ((stop_lsa && ctx->pc == stop_lsa) || rc_interp_resident_rejoin(ctx, ctx->pc) ||
++                                  (ctx->call_frame && spu_call_frame_match((spu_call_frame*)ctx->call_frame,
++                                       ctx->pc & SPU_LS_MASK, (uint32_t)ctx->host_depth)))) { g_spu_interp_steps = steps; g_spu_interp_last_pc = ctx->pc; return ctx->pc; }
+         g_spu_interp_last_pc = ctx->pc;
+         if (g_spu_interp_pc_hist) {   /* KZ3 patch 1070 */
+             const uint32_t o = (ctx->pc - g_spu_interp_pc_hist_lo) >> 2;
+diff --git a/runtime/spu/tests/test_spu_call_frame.c b/runtime/spu/tests/test_spu_call_frame.c
+new file mode 100644
+index 0000000..c95305e
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_call_frame.c
+@@ -0,0 +1,121 @@
++/* R&C patch 7099 host test: a synthetic job kernel whose job leaves through the kernel's job-call return
++ * (0x3F8F4) from two calls deep. The lifted shapes are modelled one to one: a bracket is host_depth++, the callee,
++ * a drain that waits for its return pc, host_depth--; SPU_RET publishes r0 and host-returns; the drain's
++ * continuation for a foreign pc (the patch 7039 interpreter fallback) runs the kernel on from 0x3F8F4 inside the
++ * bracket that saw it. With 7099 the kernel's job call is framed (spu_bisl_framed) and the drain unwinds to it
++ * (spu_call_frame_check), as in spu_drain.c. Build with -DNO_7099 for the pre-patch shape: host_depth at the
++ * kernel's idle grows by 2 per job, and this test FAILS. Without it: depth 0 at every idle, PASS.
++ *   cc -std=gnu17 -Wall -Wextra -I runtime/spu runtime/spu/tests/test_spu_call_frame.c && ./a.out */
++#include <setjmp.h>
++#include <stdio.h>
++#include <stdint.h>
++#include "spu_call_frame.h"
++
++#define KERNEL_JOBCALL_RET 0x3F8F4u
++#define JOB_A_RET 0x01010u
++#define JOB_B_RET 0x01020u
++#define NJOBS 6
++
++typedef struct {
++    uint32_t pc, r0, host_depth;
++    void* call_frame;
++    int jobs_left, done, idle_n, unwinds;
++    uint32_t idle_depth[NJOBS + 2];
++} ctx_t;
++
++static int fails, passes;
++#define CHECK(c, ...) do { if (c) passes++; else { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
++
++static void kernel_after_job(ctx_t* ctx);
++
++#ifndef NO_7099
++/* spu_call_frame_check (spu_drain.c) */
++static void call_frame_check(ctx_t* ctx)
++{
++    spu_call_frame* f = spu_call_frame_match((spu_call_frame*)ctx->call_frame, ctx->pc, ctx->host_depth);
++    if (f) { ctx->unwinds++; longjmp(f->env, 1); }
++}
++#endif
++
++/* spu_drain_call_body: the callee came back; pc == return_pc ends the bracket, else the continuation runs here */
++static void drain(ctx_t* ctx, uint32_t return_pc)
++{
++#ifndef NO_7099
++    if (ctx->call_frame) call_frame_check(ctx);
++#endif
++    if (ctx->pc == return_pc || ctx->done) return;
++    if (ctx->pc == KERNEL_JOBCALL_RET)   /* no lifted entry there: interpret on into the lifted kernel loop */
++        kernel_after_job(ctx);
++}
++
++/* job helper B (two calls deep): the job's exit, `lqd $r0` from the job entry's frame, `bi $r0` (SPU_RET) */
++static void job_helper_b(ctx_t* ctx) { ctx->r0 = KERNEL_JOBCALL_RET; ctx->pc = ctx->r0; }
++static void job_helper_a(ctx_t* ctx)
++{
++    ctx->r0 = JOB_B_RET; ctx->host_depth++; job_helper_b(ctx); drain(ctx, JOB_B_RET); ctx->host_depth--;
++    ctx->pc = ctx->r0 = 0xDEAD0;   /* not reached on hardware: the guest left this frame */
++}
++static void job_entry(ctx_t* ctx)
++{
++    ctx->r0 = JOB_A_RET; ctx->host_depth++; job_helper_a(ctx); drain(ctx, JOB_A_RET); ctx->host_depth--;
++    ctx->pc = KERNEL_JOBCALL_RET;
++}
++
++#ifndef NO_7099
++/* spu_bisl_framed (spu_drain.c) */
++static void bisl_framed(ctx_t* ctx, uint32_t return_pc, void (*callee)(ctx_t*))
++{
++    spu_call_frame f;
++    f.prev = (spu_call_frame*)ctx->call_frame; f.return_pc = return_pc; f.depth = ctx->host_depth;
++    f.image_id = -1; f.irq_frame = 0; f.drain_ret_pc = 0;
++    ctx->call_frame = &f;
++    if (setjmp(f.env) == 0) callee(ctx);
++    else { ctx->host_depth = f.depth; ctx->pc = f.return_pc; }
++    ctx->call_frame = f.prev;
++}
++#endif
++
++/* the lifted kernel from its job-call return 0x3F8F4: idle, then the next job call (bisl @0x3F8F0) */
++static void kernel_after_job(ctx_t* ctx)
++{
++    for (;;) {
++        if (ctx->idle_n < NJOBS + 2) ctx->idle_depth[ctx->idle_n++] = ctx->host_depth;   /* pc 0x3F750 */
++        if (ctx->jobs_left == 0) { ctx->done = 1; return; }
++        ctx->jobs_left--;
++        ctx->r0 = KERNEL_JOBCALL_RET; ctx->host_depth++;
++#ifndef NO_7099
++        bisl_framed(ctx, KERNEL_JOBCALL_RET, job_entry);
++#else
++        job_entry(ctx);
++#endif
++        drain(ctx, KERNEL_JOBCALL_RET); ctx->host_depth--;
++        if (ctx->done) return;
++    }
++}
++
++int main(void)
++{
++    ctx_t c = {0};
++    c.jobs_left = NJOBS;
++    kernel_after_job(&c);
++    CHECK(c.done && c.jobs_left == 0, "all %d jobs ran (left %d)", NJOBS, c.jobs_left);
++    CHECK(c.idle_n == NJOBS + 1, "kernel idled %d times, want %d", c.idle_n, NJOBS + 1);
++    for (int i = 0; i < c.idle_n; i++)
++        CHECK(c.idle_depth[i] == 0, "host_depth at kernel idle %d is %u, want 0", i, c.idle_depth[i]);
++    CHECK(c.host_depth == 0, "host_depth after the kernel is %u, want 0", c.host_depth);
++    CHECK(c.call_frame == 0, "no frame left open");
++#ifndef NO_7099
++    CHECK(c.unwinds == NJOBS, "one unwind per job exit (%d)", c.unwinds);
++    {   /* the match: innermost frame with the pc decides; its own depth does not unwind */
++        spu_call_frame o = {0}, i = {0};
++        o.return_pc = KERNEL_JOBCALL_RET; o.depth = 1; i.prev = &o; i.return_pc = 0x2000; i.depth = 3;
++        CHECK(spu_call_frame_match(&i, KERNEL_JOBCALL_RET, 4) == &o, "outer frame found from depth 4");
++        CHECK(spu_call_frame_match(&i, KERNEL_JOBCALL_RET, 1) == 0, "own depth: no unwind");
++        CHECK(spu_call_frame_match(&i, 0x2000, 3) == 0, "inner frame at its own depth: no unwind");
++        CHECK(spu_call_frame_match(&i, 0x2000, 5) == &i, "inner frame from deeper");
++        CHECK(spu_call_frame_match(&i, 0x3000, 9) == 0, "unknown pc: no unwind");
++    }
++#endif
++    printf("%d passed, %d failed\n", passes, fails);
++    return fails ? 1 : 0;
++}
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+index 773c5db..d132dab 100644
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -46,6 +46,8 @@ Usage:
+ import argparse
+ import json
+ import os
++
++FRAMED_BISL = False   # R&C patch 7099: --framed-bisl
+ import re
+ import sys
+ from dataclasses import dataclass, field
+@@ -1041,11 +1043,13 @@ class SPULifter:
+             # Indirect call: nested dispatch bracketed like brsl (host_depth +
+             # SPU_DRAIN + image save/restore) so the callee's tail-chains drain
+             # here and its `bi $r0` returns via host return.
++            # R&C patch 7099: --framed-bisl calls through an unwindable frame (spu_call_frame.h).
++            _call = f"spu_bisl_framed(ctx, 0x{addr + 4:X})" if FRAMED_BISL else "spu_indirect_branch(ctx)"
+             return (f"{{ const uint32_t _bisl_target = {g(tgt_reg)}._u32[0]; "
+                     f"{g(link_rt)} = spu_link(0x{addr + 4:X}); int32_t _si = (int32_t)ctx->image_id; "
+                     f"{_ied}ctx->pc = _bisl_target; const uint32_t _hr = ctx->hop_ret_pc; "
+                     f"ctx->hop_ret_pc = 0x{addr + 4:X}; ctx->host_depth++; "
+-                    f"spu_indirect_branch(ctx); ctx->hop_ret_pc = _hr; spu_drain_call(ctx, 0x{addr + 4:X}); "
++                    f"{_call}; ctx->hop_ret_pc = _hr; spu_drain_call(ctx, 0x{addr + 4:X}); "
+                     f"ctx->host_depth--; spu_img_restore(ctx, _si); }}")
+         # bisled: set link, branch to RA only if an external event is pending.
+         if mn in ("bisled",):
+@@ -1263,7 +1267,13 @@ def main() -> None:
+                         "dispatch table at 0x1BD8, `br` into a fallthrough chain, "
+                         "dispatched blocks later -- classified as a return, which "
+                         "silently skipped every job-command handler).")
++    p.add_argument("--framed-bisl", action="store_true",
++                   help="R&C patch 7099: lift every bisl as spu_bisl_framed (an unwindable call frame, "
++                        "runtime/spu/spu_call_frame.h). For job kernels whose jobs can leave through the kernel's "
++                        "job-call return from deeper inside.")
+     args = p.parse_args()
++    global FRAMED_BISL
++    FRAMED_BISL = args.framed_bisl
+ 
+     if args.auto_functions:
+         from find_spu_functions import detect_functions, parse_elf, pick_text, text_image

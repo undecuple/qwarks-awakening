@@ -1,0 +1,23 @@
+EDAT reader: the missing-licence line names no key procedure. A licence type 1/2 file without licence data
+printed how to supply a key (an environment variable, a key sidecar file and where the key comes from). That line
+reaches the player's log, and the public text names no key and no procedure, so it now only says that the file has
+no licence data and stays encrypted. Behaviour is unchanged (same return value). Applies after 5002. Test:
+port/rc/tests/run_edat_hint_test.sh. Not for upstream (wording policy of this port).
+
+--- a/libs/filesystem/edat.c
++++ b/libs/filesystem/edat.c
+@@ -546,11 +546,10 @@
+             fclose(in); return -6;
+         }
+         if (!have_key) {
++            /* R&C 7114: this line reaches the player's log, so it names no key, no key file and no
++             * procedure. The caller then opens the file as it is (still encrypted). */
+             fprintf(stderr,
+-                "[edat] license type %u needs a RIF key and none was supplied.\n"
+-                "[edat]   set PS3_RIF_KEY=<32 hex chars>, or put the 16 raw bytes in\n"
+-                "[edat]   %s.rifkey -- it is derived from your own .rap for this\n"
+-                "[edat]   content id, which this runtime deliberately cannot do for you.\n",
++                "[edat] license type %u: no licence data for %s; the file stays encrypted.\n",
+                 license, in_path);
+             fclose(in); return -6;
+         }

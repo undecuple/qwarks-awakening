@@ -120,6 +120,12 @@
         };
         # `nix develop .#re` : lightweight shell for extraction / analysis
         re = pkgs.mkShell { packages = reTools; shellHook = fixLdflags; };
+        # `nix develop .#peach` : the nightly level sweep's runtime on the second test host peach (CachyOS; tools/peach/,
+        # docs/guides/peach.md): Xvfb, xdotool and ImageMagick for the hidden display and shots, bubblewrap for the run's
+        # sandbox, plain Python for the run provenance. Proton runs directly on the host's libraries (no steam-run).
+        peach = pkgs.mkShell {
+          packages = with pkgs; [ python3 bubblewrap xvfb xdotool imagemagick coreutils procps ];
+        };
         # `nix develop .#win` : cross-compile the port to Windows x64 (MinGW-w64).
         # Vulkan is loaded at runtime (volk) from vulkan-1.dll, which Proton/the NVIDIA
         # driver provide, so no Windows Vulkan SDK is needed.

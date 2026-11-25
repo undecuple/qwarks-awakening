@@ -1,0 +1,196 @@
+{
+  "format": 1,
+  "repo": "undecuple/qwarks-awakening",
+  "game": {
+    "kind": "iso_or_folder",
+    "label": "Your own copy of a Ratchet & Clank game for the PS3: the game's PS3_GAME folder or its disc image. The port also needs the decrypted EBOOT.elf made from your copy; this download includes no game files and no tools for making it. The launcher lists the games it knows and builds each one on your PC.",
+    "check": {
+      "ids": [
+        "BCUS98127",
+        "BCES00301",
+        "BCUS98124",
+        "BCUS98175",
+        "BCES01141",
+        "BCES01142",
+        "BCAS20200",
+        "BCJS30081",
+        "BCUS98380",
+        "BCES01594",
+        "BCES01626",
+        "BCUS99245",
+        "BCES01908",
+        "BCES01949",
+        "BCUS98282",
+        "NPUA80646"
+      ]
+    }
+  },
+  "start": {
+    "program": [
+      "Qwarks-Awakening-launcher.exe",
+      "qwarks-awakening",
+      "qwarks-awakening-launcher.AppImage"
+    ]
+  },
+  "config": [
+    {
+      "id": "display",
+      "format": "ini",
+      "file": [
+        {
+          "path": "{config}/Qwark's Awakening/shared/display.ini",
+          "if": "{config}/Qwark's Awakening"
+        },
+        {
+          "path": "{config}/qwarks-awakening/shared/display.ini"
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "id": "display_mode",
+      "label": "Window mode",
+      "help": "How the game window is shown. The choice applies to every game of the port.",
+      "in": "display",
+      "group": "Display",
+      "choices": [
+        {
+          "label": "Windowed",
+          "set": {
+            "display/mode": "windowed"
+          }
+        },
+        {
+          "label": "Borderless",
+          "set": {
+            "display/mode": "borderless"
+          }
+        },
+        {
+          "label": "Fullscreen",
+          "set": {
+            "display/mode": "fullscreen"
+          }
+        }
+      ],
+      "defaults": {
+        "display/mode": "windowed"
+      }
+    },
+    {
+      "id": "display_size",
+      "label": "Window size",
+      "help": "The size of the window at the first start of a game, before it has remembered one.",
+      "in": "display",
+      "group": "Display",
+      "choices": [
+        {
+          "label": "720p",
+          "set": {
+            "display/size": "720p"
+          }
+        },
+        {
+          "label": "900p",
+          "set": {
+            "display/size": "900p"
+          }
+        },
+        {
+          "label": "1080p",
+          "set": {
+            "display/size": "1080p"
+          }
+        },
+        {
+          "label": "1440p",
+          "set": {
+            "display/size": "1440p"
+          }
+        },
+        {
+          "label": "4K",
+          "set": {
+            "display/size": "4k"
+          }
+        }
+      ],
+      "defaults": {
+        "display/size": "1280x720"
+      }
+    },
+    {
+      "id": "display_scaling",
+      "label": "Picture shape",
+      "help": "Fit keeps the picture's shape with black bars; Stretch fills the window.",
+      "in": "display",
+      "group": "Display",
+      "choices": [
+        {
+          "label": "Fit",
+          "set": {
+            "display/scaling": "fit"
+          }
+        },
+        {
+          "label": "Stretch",
+          "set": {
+            "display/scaling": "stretch"
+          }
+        }
+      ],
+      "defaults": {
+        "display/scaling": "fit"
+      }
+    },
+    {
+      "id": "display_upscale",
+      "label": "Upscaler",
+      "help": "FSR 1 sharpens the 720p picture when it is scaled to a larger window.",
+      "in": "display",
+      "group": "Display",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "display/upscale": "none"
+          }
+        },
+        {
+          "label": "FSR 1",
+          "set": {
+            "display/upscale": "fsr1"
+          }
+        }
+      ],
+      "defaults": {
+        "display/upscale": "none"
+      }
+    },
+    {
+      "id": "display_vsync",
+      "label": "VSync",
+      "help": "Waits for the screen's refresh when on.",
+      "in": "display",
+      "group": "Display",
+      "choices": [
+        {
+          "label": "On",
+          "set": {
+            "display/vsync": "on"
+          }
+        },
+        {
+          "label": "Off",
+          "set": {
+            "display/vsync": "off"
+          }
+        }
+      ],
+      "defaults": {
+        "display/vsync": "on"
+      }
+    }
+  ]
+}

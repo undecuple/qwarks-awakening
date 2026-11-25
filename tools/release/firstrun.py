@@ -92,7 +92,7 @@ GIB = 1 << 30
 CONFIGS = ("RelWithDebInfo", "Release")
 STEP_REASONS = {          # the player's message when a step's tool fails (the log has the tool's own lines)
     "toolkit": "Preparing the port's recompiler failed.",
-    "extract": "Copying the game files out of the disc image failed.",
+    "extract": "Copying the game files out of the disc image failed; the image may be damaged or incomplete.",
     "load": "Reading the game's program failed. Check that the EBOOT is the decrypted one made from your own copy.",
     "ppu-lift": "Recompiling the game's main code failed.",
     "spu-lift": "Recompiling the game's SPU code failed.",
@@ -112,6 +112,7 @@ class Ctx:
     game: str
     eboot: str = ""
     disc: str = ""
+    update: str = ""                     # the installed update folder (library.json); checked, not built from
     jobs: int = 1
     config: str = "RelWithDebInfo"
     toolkit: str = ""                    # the patched ps3recomp folder (resolved by the check)
@@ -638,6 +639,13 @@ def default_build(root, pid, env=None, platform=None):
     return os.path.join(root, "build", "firstrun", pid)
 
 
+def library_update(path, game):
+    """The update recorded for the game in library.json, or ''."""
+    lib = catalog.read_library(path) if path else None
+    g = catalog._find_game(lib, game) if lib else None
+    return ((g or {}).get("files") or {}).get("update") or ""
+
+
 def library_files(path, game):
     """(eboot, disc) recorded for the game in library.json (overrides already applied by the engine)."""
     lib = catalog.read_library(path) if path else None
@@ -812,7 +820,7 @@ class Runner:
                     if step.name in BEFORE:
                         BEFORE[step.name](ctx)
                     cmds = step.commands(ctx)
-                except (StepFailed, OSError) as e:
+                except (StepFailed, OSError, catalog.IsoError) as e:
                     self.log.write(f"DETAIL {e}")
                     return self.failed(step.name, str(e) if isinstance(e, StepFailed) else STEP_REASONS.get(step.name, ""))
                 self.progress(i, 0, len(cmds) or 1)
@@ -831,7 +839,7 @@ class Runner:
                         step.after(ctx)
                     except StepFailed as e:
                         return self.failed(step.name, str(e))
-                    except OSError as e:
+                    except (OSError, catalog.IsoError) as e:
                         self.log.write(f"DETAIL {e}")
                         return self.failed(step.name, STEP_REASONS.get(step.name, "A build step failed.") + " " + LOG_HINT)
                 self.progress(i, 1, 1)
@@ -849,7 +857,7 @@ class Runner:
         """The check step in process: firstrun_check.run_checks; sets the context's facts and toolkit."""
         c = self.ctx
         r = fc.run_checks(c.root, c.game, c.eboot, c.disc, c.build, c.toolkit if c.toolkit_kind == "given" else "",
-                          c.allow_stale, extracted=os.path.isdir(c.b("disc", "PS3_GAME")))
+                          c.allow_stale, extracted=os.path.isdir(c.b("disc", "PS3_GAME")), update=c.update)
         for chk in r.checks:
             self.emit(f"{chk['level']} {chk['code']}: {chk['message']}")
         self.log.write("# facts " + json.dumps(r.facts, sort_keys=True))
@@ -888,7 +896,7 @@ def header(ctx, log_path):
 
 def dry_run(ctx, steps, log_path, out=sys.stdout):
     r = fc.run_checks(ctx.root, ctx.game, ctx.eboot, ctx.disc, ctx.build, ctx.toolkit if ctx.toolkit_kind == "given" else "",
-                      ctx.allow_stale)
+                      ctx.allow_stale, update=ctx.update)
     print(f"LOG path={log_path}", file=out)
     for chk in r.checks:
         print(f"{chk['level']} {chk['code']}: {chk['message']}", file=out)
@@ -920,6 +928,7 @@ def main(argv=None, steps=None, out=sys.stdout):
     ap.add_argument("--game", required=True)
     ap.add_argument("--eboot", default="")
     ap.add_argument("--disc", default="")
+    ap.add_argument("--update", default="")
     ap.add_argument("--library", default="")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--build", default="")
@@ -939,6 +948,7 @@ def main(argv=None, steps=None, out=sys.stdout):
     if a.library and not (eboot and disc):
         le, ld = library_files(a.library, a.game)
         eboot, disc = eboot or le, disc or ld
+    update = a.update or (library_update(a.library, a.game) if a.library else "")
     try:
         g = fc.resolve_game(root, a.game)
         pid, cid = g["profile"]["id"], g["catalog_id"]
@@ -956,7 +966,8 @@ def main(argv=None, steps=None, out=sys.stdout):
     stage = os.path.abspath(a.stage or os.path.join(root, "games", cid))
     jobs = a.jobs or jobs_for(available_ram(), clang=bool(lm), cores=os.cpu_count())
     ctx = Ctx(root=root, build=build, stage=stage, game=a.game, eboot=os.path.abspath(eboot) if eboot else "",
-              disc=os.path.abspath(disc) if disc else "", jobs=jobs, config=a.config, toolchain=lm, cmake=cm, ninja=nj,
+              disc=os.path.abspath(disc) if disc else "",
+              update=os.path.abspath(update) if update else "", jobs=jobs, config=a.config, toolchain=lm, cmake=cm, ninja=nj,
               allow_stale=a.allow_stale_toolkit,
               split_debug=a.split_debug and a.config == "RelWithDebInfo")   # Release has no debug info to split
     if a.toolkit:

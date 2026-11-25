@@ -8,6 +8,7 @@ are this port's. Standard library only, Python 3.8+, Windows and Linux. Reads no
 the EBOOT's header and hash.
 
     firstrun_check.py --game ID [--eboot FILE] [--disc DIR|ISO] [--root DIR] [--build DIR] [--json]
+    firstrun_check.py --kit-inputs [--root DIR]     every file a released game's build reads (tools/export-public.sh)
 
   --game   a catalogue id (tods, acit, qfb, a4o, ffa, nexus, rc1, rc2, rc3, dlhd) or a build profile id or alias
            (acit120, nexus101, collection_rc1, ffa105, ...): data/titles/build_profiles.json
@@ -18,6 +19,7 @@ the EBOOT's header and hash.
 
 Checks (code, what fails):
   G1 the game is in the catalogue and has a build profile; G2 this port has the game's glue (port/rc/<profile>/);
+  G3 the tables the lift steps open are there (profile_build_inputs' required list; the paths go to the log);
   K1 the patched toolkit is there (release: <root>/ps3recomp; source tree: work/ps3recomp-patched or the
      submodule plus port/patches to make it);
   E1 the EBOOT: catalog.py check_eboot (encrypted, not a PS3 program, another game, wrong version = FAIL; unknown
@@ -123,6 +125,68 @@ def glue_dir(root, profile):
 
 def has_glue(root, profile):
     return os.path.isfile(os.path.join(glue_dir(root, profile), f"hle_{profile['id']}.cpp"))
+
+
+def released_profiles(root, cat=None):
+    """Profile ids a player's launcher builds: every catalogue game or Collection game marked buildable (`supported` or
+    `builds`, catalog.py's rule) without children, resolved the way --game resolves it (acit -> acit120, rc1 ->
+    collection_rc1). An empty catalogue (a test tree) has none."""
+    if cat is None:
+        p = os.path.join(root, "data", "titles", "catalog.json")
+        if not os.path.isfile(p):
+            return []
+        cat = catalog.load(p)
+    if not cat.get("games"):
+        return []
+    out = []
+    for gid, (entry, _parent) in catalog_entries(cat).items():
+        if entry.get("children") or not (entry.get("supported") or entry.get("builds")):
+            continue
+        pid = resolve_game(root, gid, cat)["profile"]["id"]
+        if pid not in out:
+            out.append(pid)
+    return out
+
+
+def profile_build_inputs(root, pid):
+    """-> (required, optional): the repo-relative paths (forward slashes) firstrun's lift steps and the game's CMake
+    glue read for profile `pid`, besides the EBOOT, the toolkit and the shared tools.
+      required: a build fails without them: port/rc/<pid>/hle_<pid>.cpp (G2), and once <pid>_spu_config.json is there
+                (it turns the spu-lift step on) the other tables tools/spu/spu_lift.py and lift_raw_spu.py open: jobs,
+                code, the config's lift table and tools/spu/<pid>_raw_spu.json (0.4.0: the last one was not
+                exported for four games and their builds stopped at spu-lift).
+      optional: read when present, and without them the build silently differs: the SPU config itself (none = no
+                SPU lift), <pid>_igjobs.json, every file under port/rc/<pid>/ (ppu_overrides.txt and the glue).
+    Only `optional` paths that exist under `root` are listed; `required` ones are listed either way."""
+    t = lambda n: f"data/titles/{n}"
+    req = [f"port/rc/{pid}/hle_{pid}.cpp"]
+    cfg_rel = t(f"{pid}_spu_config.json")
+    cfg_path = os.path.join(root, *cfg_rel.split("/"))
+    if os.path.isfile(cfg_path):
+        req += [cfg_rel, t(f"{pid}_spu_jobs.json"), t(f"{pid}_spu_code.json"), f"tools/spu/{pid}_raw_spu.json"]
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                table = (json.load(f) or {}).get("lift_table")
+        except (OSError, ValueError, AttributeError):
+            table = None
+        if table:
+            req.append(t(table))
+    opt = [t(f"{pid}_igjobs.json")]
+    glue = os.path.join(root, "port", "rc", pid)
+    for d, dirs, files in os.walk(glue):
+        dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+        opt += [os.path.relpath(os.path.join(d, n), root).replace(os.sep, "/") for n in sorted(files)]
+    opt = [p for p in opt if p not in req and os.path.isfile(os.path.join(root, *p.split("/")))]
+    return req, opt
+
+
+def kit_inputs(root, cat=None):
+    """{profile id: sorted required + present optional inputs} over released_profiles (export-public.sh's list)."""
+    out = {}
+    for pid in released_profiles(root, cat):
+        req, opt = profile_build_inputs(root, pid)
+        out[pid] = sorted(set(req) | set(opt))
+    return out
 
 
 def exe_name(profile):
@@ -254,6 +318,10 @@ def disc_info(path):
                 break
         if sfo is None:
             return {"error": "No PS3 game was found in the folder you chose (no PARAM.SFO)."}
+        gap = catalog.folder_gap(os.path.dirname(cand))
+        if gap:
+            return {"error": f"The game folder is incomplete: {gap} is missing. Copy the whole game folder "
+                             "(not only PARAM.SFO)."}
         return {"kind": "folder", "title_id": sfo.get("TITLE_ID"), **sfo_version(sfo), "encrypted": False}
     if os.path.isfile(path):
         sfo, enc = catalog.sfo_from_iso(path)
@@ -292,7 +360,7 @@ def free_bytes(path):
 
 
 def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=False, env=None, cat=None,
-               free=free_bytes, extracted=False):
+               free=free_bytes, extracted=False, update=""):
     r = Report()
     root = os.path.abspath(root)
     try:
@@ -309,7 +377,15 @@ def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=
         r.ok("G2", "This version of the port can build this game.")
     else:
         r.fail("G2", f"{title} cannot be built by this version of the port yet.")
-    tk = toolkit_state(root, toolkit, allow_stale)
+    if has_glue(root, prof):
+        # G3: the tables the lift steps open (0.4.0: a missing tools/spu/<profile>_raw_spu.json stopped four games
+        # at spu-lift with a traceback); the paths go to the log, the player gets one plain line
+        miss = [p for p in profile_build_inputs(root, prof["id"])[0] if not os.path.isfile(os.path.join(root, *p.split("/")))]
+        if miss:
+            r.fail("G3", f"This install is missing {len(miss)} file(s) the build of {title} needs. "
+                         "Installing the port again can help; if it does not, please report it.")
+            r.facts["missing_inputs"] = miss
+    tk =toolkit_state(root, toolkit, allow_stale)
     r.facts["toolkit"] = tk
     if tk["state"] == "ok":
         r.ok("K1", "The port's recompiler is ready.")
@@ -348,6 +424,10 @@ def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=
         elif di.get("encrypted"):
             r.fail("D1", "This disc image is encrypted. The port needs a decrypted disc image or the disc as a folder; "
                          + catalog.DOCS_HINT)
+        elif catalog.untested_reason(entry, di.get("title_id")) or (parent and catalog.untested_reason(parent, di.get("title_id"))):
+            r.fail("D1", catalog.untested_reason(entry, di.get("title_id")) or catalog.untested_reason(parent, di.get("title_id")))
+        elif catalog.digital_reason(entry, di.get("title_id")):      # stage 0: no record for this digital copy yet
+            r.fail("D1", catalog.digital_reason(entry, di.get("title_id")))
         elif di.get("title_id") not in game_ids(entry, parent):
             r.fail("D1", f"These game files are {di.get('title_id') or 'not a known game'}, not {title}.")
         else:
@@ -360,6 +440,13 @@ def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=
                     iso_bytes = 0
     else:
         r.warn("D0", "No game files chosen: the game can be built, but Play needs them.")
+    if update:                  # a PKG, an incomplete or a misnamed update would run the game half-updated
+        up = catalog.update_problem(update)
+        r.facts["update"] = {"path": os.path.abspath(update)}
+        if up:
+            r.fail("U1", up)
+        else:
+            r.ok("U1", "Update: the installed update folder is complete.")
     need = disk_need(entry, iso_bytes)
     have = free(build or root)
     r.facts["disk"] = {"need": need, "free": have}
@@ -373,16 +460,26 @@ def run_checks(root, game, eboot="", disc="", build="", toolkit="", allow_stale=
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--game", required=True)
+    ap.add_argument("--game")
+    ap.add_argument("--kit-inputs", action="store_true",
+                    help="print every file a released game's build reads (profile_build_inputs), one per line, and stop")
     ap.add_argument("--eboot", default="")
     ap.add_argument("--disc", default="")
+    ap.add_argument("--update", default="")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--build", default="")
     ap.add_argument("--toolkit", default="")
     ap.add_argument("--allow-stale-toolkit", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-    r = run_checks(a.root, a.game, a.eboot, a.disc, a.build, a.toolkit, a.allow_stale_toolkit)
+    if a.kit_inputs:
+        for p in sorted({p for v in kit_inputs(os.path.abspath(a.root)).values() for p in v}):
+            print(p)
+        return 0
+    if not a.game:
+        ap.error("--game is required")
+    r = run_checks(a.root, a.game, a.eboot, a.disc, a.build, a.toolkit, a.allow_stale_toolkit,
+                   update=a.update)
     if a.json:
         print(json.dumps({"ok": r.passed(), "checks": r.checks, "facts": r.facts}, indent=1))
     else:

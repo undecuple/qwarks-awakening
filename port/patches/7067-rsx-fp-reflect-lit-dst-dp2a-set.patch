@@ -1,0 +1,58 @@
+R&C patch 7067: the fragment-program decompiler emits STR, SFL, DST, LIT, DP2A and RFL.
+
+libs/video/rsx_fp_decompiler.c named these six NV40 opcodes (rsx_fp_opcode_name) but had no emit case, so they fell into
+the default branch, which writes a "TODO: unhandled FP opcode" comment and no destination: the shader read a stale
+register. A Crack in Time's water uses RFL (the reflection vector); found from RACiT's PR 28 (docs/survey).
+
+Each case builds the float4 result and leaves the destination mask, result scale, saturate, predication and
+condition-code write to the common tail, like MOV/MAD/LIF:
+  STR  (1,1,1,1)                SFL  (0,0,0,0)
+  DST  (1, s0.y*s1.y, s0.z, s1.w)
+  LIT  (1, max(s0.x,0), s0.x > 0 ? max(s0.y,0)^clamp(s0.w,-128,128) : 0, 1), the power as exp2(w*log2(max(y,1e-30)))
+  DP2A dot(s0.xy, s1.xy) + s2.x, replicated
+  RFL  xyz = 2*dot(s0.xyz,s1.xyz)/dot(s0.xyz,s0.xyz)*s0.xyz - s1.xyz, w = 1
+ASSUMPTION (RFL): s0 is the normal, s1 the incident vector, and the sign is the NV_fragment_program one (2*proj - s1);
+the w lane is not defined by that spec. Not checked against hardware or an RPCS3 run (RPCS3 does not implement it).
+LIT and RFL repeat the first source several times in one expression; a source too long for the 640-byte rhs buffer makes
+the decompile fail (return -1) rather than emit a truncated line.
+
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1154,6 +1154,37 @@
+             snprintf(rhs, sizeof(rhs),
+                      "float4(1.0, (%s).y, (%s).y > 0.0 ? exp2((%s).w) : 0.0, 1.0)", a, a, a);
+             break;
++        /* R&C patch 7067: STR/SFL/DST/LIT/DP2A/RFL had names but no emit case, so the default branch wrote a TODO and no
++         * destination (A Crack in Time's water uses RFL). Each builds a float4 and the common tail below applies the
++         * destination mask, scale, saturate and condition-code write like any other op. NV_fragment_program semantics. */
++        case OP_STR: snprintf(rhs, sizeof(rhs), "float4(1.0, 1.0, 1.0, 1.0)"); break;   /* set to true */
++        case OP_SFL: snprintf(rhs, sizeof(rhs), "float4(0.0, 0.0, 0.0, 0.0)"); break;   /* set to false */
++        /* DST, distance vector: (1, s0.y*s1.y, s0.z, s1.w). */
++        case OP_DST:
++            snprintf(rhs, sizeof(rhs), "float4(1.0, (%s).y * (%s).y, (%s).z, (%s).w)", a, b, a, b);
++            break;
++        /* LIT, lighting coefficients: (1, max(x,0), x > 0 ? max(y,0)^clamp(w,-128,128) : 0, 1). The power is exp2(w*log2(y))
++         * with y floored at 1e-30 so y = 0 gives 0 for w > 0 and 1 for w = 0 (0*-inf would be NaN); the floor only
++         * differs from the exact result for 0 < y < 1e-30. (Unlike OP_LIF above, which is the vertex-style form.) */
++        case OP_LIT: {
++            const int len = snprintf(rhs, sizeof(rhs),
++                "float4(1.0, max((%s).x, 0.0), ((%s).x > 0.0) ? exp2(clamp((%s).w, -128.0, 128.0) * "
++                "log2(max((%s).y, 1e-30))) : 0.0, 1.0)", a, a, a, a);
++            if (len < 0 || (size_t)len >= sizeof rhs) return -1;
++            break;
++        }
++        /* DP2A: s0.x*s1.x + s0.y*s1.y + s2.x, replicated. */
++        case OP_DP2A: snprintf(rhs, sizeof(rhs), "(dot((%s).xy, (%s).xy) + (%s).x)", a, b, c); break;
++        /* RFL, reflection vector: s0 is the normal, s1 the incident/eye vector, result.xyz = 2*(s0.s1)/(s0.s0)*s0 - s1
++         * (NV_fragment_program RFL; the 3-component dots). ASSUMPTION: that operand order and sign are the NV spec's, from
++         * memory and not checked against the PS3 hardware or a reference run; w is not defined by the spec, set to 1. */
++        case OP_RFL: {
++            const int len = snprintf(rhs, sizeof(rhs),
++                "float4(2.0 * dot((%s).xyz, (%s).xyz) / dot((%s).xyz, (%s).xyz) * (%s).xyz - (%s).xyz, 1.0)",
++                a, b, a, a, a, b);
++            if (len < 0 || (size_t)len >= sizeof rhs) return -1;
++            break;
++        }
+         /* Texture/branch fences: ordering hints with no result -- no-op. */
+         case OP_FENCT: case OP_FENCB: rhs[0] = '\0'; handled = 0; break;
+         case OP_SLT: snprintf(rhs, sizeof(rhs), "(float4)((%s) <  (%s))", a, b); break;

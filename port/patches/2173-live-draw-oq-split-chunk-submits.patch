@@ -1,0 +1,684 @@
+R&C patch 2173 (a4o-gpuwait, 2026-11-24): chunk submits split an open ZPASS query into host segments.
+
+Patch 2029 submits the walker's command list every LD_SUBMIT_CHUNK (128) draws so the GPU runs behind the walker, but it
+refused while an occlusion query was open (D3D12 needs Begin and End in one list; a split query made patch 2025 count
+two segments, which a GET_REPORT turns into OQ_ALWAYS). A4O Luminopolis fires 25-31 chunks per frame against ~70
+expected and one list holds 31-60 ms of GPU work ([perf-gpu] longest, gpuprof-1124 run): the GPU idles while the walker
+records, then the walker waits for the whole list (design: work/coord/blockers-1124/a4o-gpuwait/design.md).
+
+Now (LD_OQ_SPLIT=1, default) a chunk submit ends the open query, submits, and begins a new query ("host segment") in the
+next list. The title's game segment (2025's segment) is the contiguous run of host segments [first_serial, last_serial];
+segs still counts game segments only, so every report state (NEVER / PENDING / ALWAYS) is decided as before (states
+and counts are the same; the frame a count lands in can be earlier, as each entry carries an earlier chunk fence). A PENDING
+report's count is the sum of its k host segments: the 2027 readback queues k entries (one ResolveQueryData per run
+contiguous in both the query heap and the readback ring) and ld_rb_drain sums them, saturated, into one guest write; a
+predicated draw (SET_RENDER_ENABLE mode 2) of a k > 1 report gets pred[slot] = the sum from a one-thread compute pass
+(ld_oq_prepare_draw, run before the draw's state memo check). k == 1 is the old path line for line. If the sum pass
+cannot be built, such a report draws unconditionally (2025's answer for a split query), logged once and counted.
+LD_OQ_SPLIT=0 keeps the refusal (A/B). LD_OQ_SPLIT=2 (opt-in, a behaviour change: needs its own RPCS3-referenced A/B)
+also continues a game segment across a flush, so reports that fall to ALWAYS today get real counts.
+
+The bookkeeping is in libs/video/rsx_oq_split.h (no D3D12). Counters: one [perf-oq] line per second inside the
+RSX_PERF_PROF window (mode, host splits, chunk submits refused under an open query, flushes that closed a game segment,
+draws per game segment mean/max, reports, split reports, largest k, sum passes and fallbacks, the 2025 counters and the
+2027 readback counters as period deltas). Host test: R&C port/rc/tests/run_oq_split_test.sh (red without this patch,
+two mutants caught). Not yet run in the game: the A/B is plan.json a4o steps save-luminopolis-oqsplit-off/-on.
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2498,6 +2498,25 @@
+                 gcm_perf_flush_line(fl, sizeof fl, tnow, d, tk);
+                 fprintf(stderr, "%s\n", fl);
+             }
++            if (d[RSX_PERF_W_ON]) {   /* R&C patch 2173: occlusion-query splits and report counters, period deltas */
++                extern void rsx_live_draw_debug_oq_split_stats(u64 out[16]);
++                extern void rsx_live_draw_debug_cond_render_stats(u64 out[6]);
++                static u64 po[16], pc[6];
++                u64 o[16], c[6], q[16], e[6];
++                rsx_live_draw_debug_oq_split_stats(o); rsx_live_draw_debug_cond_render_stats(c);
++                for (int k = 0; k < 16; k++) { q[k] = o[k] - po[k]; po[k] = o[k]; }
++                for (int k = 0; k < 6; k++) { e[k] = c[k] - pc[k]; pc[k] = c[k]; }
++                fprintf(stderr,
++                    "[perf-oq] t=%.0fs mode %llu split %llu refused %llu flush-split %llu | spans %llu draws mean %.0f max %llu"
++                    " | reports %llu split-reports %llu nseg-max %llu sum %llu sum-fail %llu too-long %llu"
++                    " | pred %llu skip %llu always %llu resolve %llu segs %llu | rb queued %llu written %llu zero %llu dropped %llu\n",
++                    tnow, (unsigned long long)o[11], (unsigned long long)q[0], (unsigned long long)q[1],
++                    (unsigned long long)q[2], (unsigned long long)q[3], q[3] ? (double)q[4] / (double)q[3] : 0.0,
++                    (unsigned long long)o[5], (unsigned long long)e[4], (unsigned long long)q[6], (unsigned long long)o[7],
++                    (unsigned long long)q[8], (unsigned long long)q[9], (unsigned long long)q[10], (unsigned long long)e[0],
++                    (unsigned long long)e[1], (unsigned long long)e[2], (unsigned long long)e[3], (unsigned long long)e[5],
++                    (unsigned long long)q[12], (unsigned long long)q[13], (unsigned long long)q[14], (unsigned long long)q[15]);
++            }
+             if (d[RSX_PERF_W_ON])   /* patch 2033: the vertex-fetch split, ms in the last period */
+                 fprintf(stderr,
+                     "[perf-vtx] t=%.0fs refs %.1fms remap %.1f fetch %.1f copy %.1f | refs %lld verts %lld payload %.1fMB\n",
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -53,6 +53,7 @@
+ int  rsx_live_draw_host_aa_active(void) { return 0; }
+ u32  rsx_live_draw_debug_host_aa_passes(void) { return 0; }
+ void rsx_live_draw_debug_cond_render_stats(u64 o[6]) { for (int i = 0; i < 6; i++) o[i] = 0; }
++void rsx_live_draw_debug_oq_split_stats(u64 o[16]) { for (int i = 0; i < 16; i++) o[i] = 0; }   /* R&C patch 2173 */
+ void rsx_live_draw_debug_vc_stats(u64 o[6]) { for (int i = 0; i < 6; i++) o[i] = 0; }   /* patch 2047 */
+ u32  rsx_live_draw_report_value(u32 off, u32 dflt) { (void)off; return dflt; }
+ void rsx_live_draw_debug_report_readback_stats(u64 o[6]) { for (int i = 0; i < 6; i++) o[i] = 0; }
+@@ -2483,6 +2484,8 @@
+ }
+ 
+ static void ld_oq_close(void);   /* patch 2025 */
++static void ld_oq_flush_close(void);   /* R&C patch 2173 */
++static void ld_oq_sum_init(void);      /* R&C patch 2173 */
+ static void ld_rb_stamp(u64 v);   /* patch 2027 */
+ static void ld_rb_drain(void);
+ /* Patch 2029: walker split timers (RSX_PERF=1 + RSX_PERF_PROF=A,B window). */
+@@ -3031,7 +3034,7 @@
+ #else
+     (void)reason;
+ #endif
+-    ld_oq_close();   /* patch 2025: a query must end in the list it began in */
++    ld_oq_flush_close();   /* patch 2025: a query must end in the list it began in (R&C 2173: counted, mode 2) */
+     ld_gt_close();   /* patch 2052 */
+     const HRESULT close_hr = g.list->lpVtbl->Close(g.list);
+     if (FAILED(close_hr)) {
+@@ -13634,13 +13637,25 @@
+ #define LD_OQ_N     8192u
+ #define LD_OQ_SLOTS 1024u
+ enum { OQ_FREE = 0, OQ_ALWAYS, OQ_NEVER, OQ_PENDING, OQ_RESOLVED };
++#include "rsx_oq_split.h"   /* R&C patch 2173 */
++enum { LD_PRED_S_PREDICATION = 0, LD_PRED_S_COPY_DEST = 1, LD_PRED_S_UAV = 2 };   /* R&C patch 2173: g_oq.pred_copy_dest */
+ static struct {
+     int on;                       /* -1 = not decided yet */
+     ID3D12QueryHeap* heap;
+     ID3D12Resource* pred;         /* LD_OQ_SLOTS x u64 */
+-    int pred_copy_dest;           /* current state: 1 COPY_DEST, 0 PREDICATION */
++    int pred_copy_dest;           /* current state: 1 COPY_DEST, 0 PREDICATION, 2 UNORDERED_ACCESS (R&C patch 2173) */
+     u64 serial;                   /* queries handed out */
+     int open;                     /* a query is open in the current list */
++    /* R&C patch 2173 (rsx_oq_split.h): a game segment is the run of host segments [first_serial, last_serial];
++     * slot serial = its first, g_oq_nseg[slot] = its length. Mode, the predication sum pass, counters. */
++    u64 first_serial;
++    int reopen_pending;
++    int split;
++    ID3D12Resource* scratch;      /* LD_OQ_N x u64, DEFAULT heap: the k host counts of one report */
++    ID3D12RootSignature* sum_rs;
++    ID3D12PipelineState* sum_pso; /* pred[i] = sum(scratch[0..k)); NULL: a split predicated report is ALWAYS */
++    u64 n_split, n_refused, n_flush_split, n_sum, n_sum_fail, n_too_long, n_split_reports, nseg_max;
++    u64 n_spans, span_draws, span_cur, span_max;   /* draws per game segment (closed ones) */
+     u64 open_serial;
+     u32 segs;                     /* segments since CLEAR_REPORT_VALUE(ZPASS) */
+     u64 last_serial;              /* the newest closed segment */
+@@ -13698,6 +13713,11 @@
+     return 1;
+ }
+ 
++/* R&C patch 2173: a report of a game segment split into k host segments queues k readback entries; g_rb_nseg holds
++ * k on the first and 0 on the others (1 = patch 2027's single entry). g_oq_nseg: k of each PENDING report slot. */
++static u32 g_rb_nseg[LD_RB_N];
++static u32 g_oq_nseg[LD_OQ_SLOTS];
++
+ /* After Signal(v): every entry queued since the last submit completes with fence v. */
+ static void ld_rb_stamp(u64 v)
+ {
+@@ -13714,7 +13734,10 @@
+     while (g_rb.tail < g_rb.unsubmitted) {
+         const u32 k = (u32)(g_rb.tail % LD_RB_N);
+         if (g_rb.e[k].fence > done) break;
+-        const u64 c = g_rb.map[k];
++        /* R&C patch 2173: a report of a split game segment queued nseg entries (one per host segment, all resolved in
++         * one list, so one fence); its count is their sum, written once. nseg 1 = patch 2027's single entry. */
++        const u32 nseg = g_rb_nseg[k] ? g_rb_nseg[k] : 1u;
++        const u64 c = oqs_sum_sat(g_rb.map, LD_RB_N, g_rb.tail, nseg);
+         const u32 v = c > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)c;
+         const int i = ld_oq_slot(g_rb.e[k].off, 0);
+         if (i >= 0) { g_oq.slot[i].val = v; g_oq.slot[i].has_val = 1; }
+@@ -13725,7 +13748,7 @@
+                 g_rb.n_written++; if (!v) g_rb.n_zero++;
+             }
+         }
+-        g_rb.tail++;
++        g_rb.tail += nseg;
+     }
+ }
+ 
+@@ -13756,6 +13779,8 @@
+     const char* e = getenv("LD_COND_RENDER");
+     g_oq.on = !(e && e[0] == '0');
+     if (!g_oq.on) { fprintf(stderr, "[cond-render] off (LD_COND_RENDER=0)\n"); return 0; }
++    { const char* s = getenv("LD_OQ_SPLIT");   /* R&C patch 2173: unset = 1 */
++      g_oq.split = !s || !*s ? OQS_MODE_SPLIT : s[0] == '0' ? OQS_MODE_OFF : s[0] == '2' ? OQS_MODE_SPLIT_FLUSH : OQS_MODE_SPLIT; }
+     D3D12_QUERY_HEAP_DESC qd = {0};
+     qd.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION; qd.Count = LD_OQ_N;
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+@@ -13764,6 +13789,7 @@
+     bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+     bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    if (g_oq.split) bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;   /* R&C patch 2173: the sum pass writes it */
+     if (FAILED(g.dev->lpVtbl->CreateQueryHeap(g.dev, &qd, &IID_ID3D12QueryHeap, (void**)&g_oq.heap)) ||
+         FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
+             D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void**)&g_oq.pred))) {
+@@ -13771,7 +13797,10 @@
+         g_oq.on = 0; return 0;
+     }
+     g_oq.pred_copy_dest = 1;
++    if (g_oq.split) ld_oq_sum_init();   /* R&C patch 2173 */
+     fprintf(stderr, "[cond-render] on: %u occlusion queries, %u report slots\n", LD_OQ_N, LD_OQ_SLOTS);
++    fprintf(stderr, "[cond-render] 2173: oq-split %d (LD_OQ_SPLIT; 0 = chunk submits refused under an open query)%s\n",
++            g_oq.split, g_oq.split && !g_oq.sum_pso ? ", no sum pass: split predicated reports draw always" : "");
+     return 1;
+ }
+ 
+@@ -13789,15 +13818,134 @@
+     return -1;
+ }
+ 
+-static void ld_oq_close(void)
++/* R&C patch 2173: the predication value of a report whose game segment was split into k > 1 host segments is the sum
++ * of k query results. ResolveQueryData writes them to g_oq.scratch, and a one-thread compute pass writes the 64-bit
++ * sum to pred[slot] (root constants: slot, k; root SRV: scratch; root UAV: pred). Built once at init; if any step
++ * fails, such a report draws unconditionally (OQ_ALWAYS, the answer 2025 gave a split query), logged once and counted. */
++static void ld_oq_sum_init(void)
++{
++    D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++    D3D12_RESOURCE_DESC bd = {0};
++    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = (UINT64)LD_OQ_N * 8u;
++    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
++    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
++    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void**)&g_oq.scratch))) {
++        fprintf(stderr, "[cond-render] 2173: scratch buffer failed: split predicated reports draw always\n");
++        g_oq.scratch = NULL; return;
++    }
++    D3D12_ROOT_PARAMETER p[3] = {0};
++    p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++    p[0].Constants.ShaderRegister = 0; p[0].Constants.Num32BitValues = 2;
++    p[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[1].Descriptor.ShaderRegister = 0;
++    p[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV; p[2].Descriptor.ShaderRegister = 0;
++    p[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++    rsd.NumParameters = 3; rsd.pParameters = p;
++    ID3DBlob* sig = NULL; ID3DBlob* err = NULL;
++    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err))) {
++        fprintf(stderr, "[cond-render] 2173: root signature failed: %s\n",
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?");
++        if (err) err->lpVtbl->Release(err);
++        return;
++    }
++    if (err) err->lpVtbl->Release(err);
++    HRESULT hr = g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                     sig->lpVtbl->GetBufferSize(sig), &IID_ID3D12RootSignature, (void**)&g_oq.sum_rs);
++    sig->lpVtbl->Release(sig);
++    if (FAILED(hr)) { fprintf(stderr, "[cond-render] 2173: root signature failed hr=0x%08lX\n", (unsigned long)hr);
++                      g_oq.sum_rs = NULL; return; }
++    static const char source[] =
++        "ByteAddressBuffer counts : register(t0);\n"
++        "RWByteAddressBuffer pred : register(u0);\n"
++        "cbuffer args : register(b0) { uint dst; uint k; };\n"
++        "[numthreads(1, 1, 1)]\n"
++        "void main() {\n"
++        "    uint lo = 0, hi = 0;\n"
++        "    for (uint j = 0; j < k; j++) {\n"
++        "        uint2 c = counts.Load2(j * 8);\n"
++        "        uint n = lo + c.x;\n"
++        "        hi += c.y + (n < lo ? 1u : 0u);\n"
++        "        lo = n;\n"
++        "    }\n"
++        "    pred.Store2(dst * 8, uint2(lo, hi));\n"
++        "}\n";
++    ID3DBlob* cs = NULL; err = NULL;
++    hr = D3DCompile(source, sizeof(source) - 1u, "oq_split_sum", NULL, NULL, "main", "cs_5_0",
++                    D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &cs, &err);
++    if (FAILED(hr)) {
++        fprintf(stderr, "[cond-render] 2173: sum shader compile failed hr=0x%08lX: %s\n", (unsigned long)hr,
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "<no diagnostics>");
++        if (err) err->lpVtbl->Release(err);
++        return;
++    }
++    if (err) err->lpVtbl->Release(err);
++    D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {0};
++    pd.pRootSignature = g_oq.sum_rs;
++    pd.CS.pShaderBytecode = cs->lpVtbl->GetBufferPointer(cs);
++    pd.CS.BytecodeLength = cs->lpVtbl->GetBufferSize(cs);
++    hr = g.dev->lpVtbl->CreateComputePipelineState(g.dev, &pd, &IID_ID3D12PipelineState, (void**)&g_oq.sum_pso);
++    cs->lpVtbl->Release(cs);
++    if (FAILED(hr)) { fprintf(stderr, "[cond-render] 2173: sum pipeline failed hr=0x%08lX\n", (unsigned long)hr);
++                      g_oq.sum_pso = NULL; return; }
++}
++
++/* R&C patch 2173: g_oq's segment fields as rsx_oq_split.h's oqs_seg_t, and back. */
++static oqs_seg_t ld_oqs_get(void)
++{
++    oqs_seg_t s = { g_oq.serial, g_oq.open_serial, g_oq.last_serial, g_oq.first_serial, g_oq.segs, g_oq.open,
++                    g_oq.reopen_pending };
++    return s;
++}
++static void ld_oqs_put(const oqs_seg_t* s)
++{
++    g_oq.serial = s->serial; g_oq.open_serial = s->open_serial; g_oq.last_serial = s->last_serial;
++    g_oq.first_serial = s->first_serial; g_oq.segs = s->segs; g_oq.open = s->open; g_oq.reopen_pending = s->reopen_pending;
++}
++/* R&C patch 2173: one bookkeeping step of rsx_oq_split.h on g_oq (OP works on `s_`); RES receives its result. */
++#define LD_OQS(RES, OP) do { oqs_seg_t s_ = ld_oqs_get(); RES = (OP); ld_oqs_put(&s_); } while (0)
++
++/* R&C patch 2173: end the open query in the current list (the bookkeeping is the caller's, rsx_oq_split.h). */
++static void ld_oq_end_query(void)
+ {
+     if (!g_oq.open) return;
+     g.list->lpVtbl->EndQuery(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION,
+                              (UINT)(g_oq.open_serial % LD_OQ_N));
+-    g_oq.last_serial = g_oq.open_serial;
+-    g_oq.open = 0;
++}
++/* R&C patch 2173: a game segment ended; draws per game segment for [perf-oq]. */
++static void ld_oq_end_span(void)
++{
++    if (!g_oq.span_cur) return;
++    g_oq.n_spans++; g_oq.span_draws += g_oq.span_cur;
++    if (g_oq.span_cur > g_oq.span_max) g_oq.span_max = g_oq.span_cur;
++    g_oq.span_cur = 0;
++}
++static void ld_oq_close(void)
++{
++    int was;
++    ld_oq_end_query();
++    LD_OQS(was, oqs_close(&s_));
++    if (was) ld_oq_end_span();
++}
++/* ld_flush_body: the list ends, so the query does. Mode 2 (LD_OQ_SPLIT=2) lets the next draw continue the game
++ * segment as a host segment; otherwise the next draw starts a new one (segs 2 -> ALWAYS, patch 2025). */
++static void ld_oq_flush_close(void)
++{
++    int was;
++    ld_oq_end_query();
++    LD_OQS(was, oqs_flush_close(&s_, g_oq.split));
++    if (was) { g_oq.n_flush_split++; ld_oq_end_span(); }
+ }
+ 
++/* Predication buffer state: LD_PRED_S_* (0/1 as before patch 2173). */
++static D3D12_RESOURCE_STATES ld_oq_pred_d3d(int s)
++{
++    return s == LD_PRED_S_COPY_DEST ? D3D12_RESOURCE_STATE_COPY_DEST
++         : s == LD_PRED_S_UAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_PREDICATION;
++}
+ static void ld_oq_pred_state(int copy_dest)
+ {
+     if (g_oq.pred_copy_dest == copy_dest) return;
+@@ -13805,8 +13953,8 @@
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     b.Transition.pResource = g_oq.pred;
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+-    b.Transition.StateBefore = copy_dest ? D3D12_RESOURCE_STATE_PREDICATION : D3D12_RESOURCE_STATE_COPY_DEST;
+-    b.Transition.StateAfter  = copy_dest ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_PREDICATION;
++    b.Transition.StateBefore = ld_oq_pred_d3d(g_oq.pred_copy_dest);
++    b.Transition.StateAfter  = ld_oq_pred_d3d(copy_dest);
+     g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
+     g_oq.pred_copy_dest = copy_dest;
+ }
+@@ -13816,29 +13964,101 @@
+ {
+     (void)user; (void)r;
+     if (!g.ready || !ld_oq_enabled()) return;
+-    if (method == 0x17CC) { if (!arg) ld_oq_close(); return; }        /* ZPASS count off */
+-    if (method == 0x17C8) { if (arg == 1) { ld_oq_close(); g_oq.segs = 0; } return; }
++    if (method == 0x17CC) {   /* ZPASS count off */
++        if (!arg) { int was; ld_oq_end_query(); LD_OQS(was, oqs_zpass_off(&s_)); if (was) ld_oq_end_span(); }
++        return;
++    }
++    if (method == 0x17C8) {
++        if (arg == 1) { int was; ld_oq_end_query(); LD_OQS(was, oqs_clear(&s_)); if (was) ld_oq_end_span(); }
++        return;
++    }
+     /* 0x1800 GET_REPORT: (type << 24) | offset */
+     ld_oq_close();
+     g_oq.n_reports++;
++    /* R&C patch 2173: the state as patch 2025 decides it (game segments); PENDING names host segments [first, +k) */
++    oqs_report_t rp;
++    LD_OQS(rp, oqs_report(&s_, arg >> 24, LD_OQ_N));
++    if (rp.too_long) g_oq.n_too_long++;
+     const int i = ld_oq_slot(arg & 0xFFFFFFu, 1);
+     if (i < 0) return;
+-    if ((arg >> 24) != 1u || g_oq.segs > 1) g_oq.slot[i].state = OQ_ALWAYS;
+-    else if (g_oq.segs == 0) g_oq.slot[i].state = OQ_NEVER;
+-    else {
+-        g_oq.slot[i].state = OQ_PENDING; g_oq.slot[i].serial = g_oq.last_serial; g_oq.slot[i].rb = 0;
++    g_oq.slot[i].state = (u8)rp.state;
++    if (rp.state == OQS_R_PENDING) {
++        g_oq.slot[i].serial = rp.first; g_oq_nseg[i] = rp.k; g_oq.slot[i].rb = 0;
++        if (rp.k > 1u) { g_oq.n_split_reports++; if (rp.k > g_oq.nseg_max) g_oq.nseg_max = rp.k; }
+         if (ld_rb_enabled()) {   /* patch 2027: the count for the guest, a frame later */
+-            if (g_rb.head - g_rb.tail >= LD_RB_N) { g_rb.n_dropped++; return; }
+-            const u64 h = g_rb.head++;
+-            g_rb.e[h % LD_RB_N].fence = 0; g_rb.e[h % LD_RB_N].off = arg & 0xFFFFFFu; g_rb.e[h % LD_RB_N].guest = 0;
+-            g.list->lpVtbl->ResolveQueryData(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION,
+-                (UINT)(g_oq.last_serial % LD_OQ_N), 1, g_rb.buf, (UINT64)(h % LD_RB_N) * 8u);
++            if (!oqs_rb_room(g_rb.head, g_rb.tail, LD_RB_N, rp.k)) { g_rb.n_dropped++; return; }
++            const u64 h = g_rb.head;
++            g_rb.head += rp.k;
++            for (u32 j = 0; j < rp.k; j++) {   /* R&C 2173: one entry per host segment, the count on the first */
++                const u32 x = (u32)((h + j) % LD_RB_N);
++                g_rb.e[x].fence = 0; g_rb.e[x].off = arg & 0xFFFFFFu; g_rb.e[x].guest = 0; g_rb_nseg[x] = j ? 0u : rp.k;
++            }
++            oqs_piece_t pc[3];
++            const int np = oqs_pieces(rp.first, rp.k, LD_OQ_N, h, LD_RB_N, pc);
++            for (int p = 0; p < np; p++)
++                g.list->lpVtbl->ResolveQueryData(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION,
++                    pc[p].q, pc[p].n, g_rb.buf, (UINT64)pc[p].r * 8u);
+             g_oq.slot[i].rb = h + 1u;
+             g_rb.n_queued++;
+         }
+     }
+ }
+ 
++/* R&C patch 2173: before the draw records any state (sink_end_impl, ahead of the state memo): a predicated draw whose
++ * report summed k > 1 host segments gets pred[slot] = the sum (resolve into scratch + the sum pass). It binds a
++ * compute PSO, so it runs where the state memo is invalidated and the draw then re-records its own state. A report
++ * with k == 1 is left to ld_oq_before_draw exactly as before. */
++static void ld_oq_prepare_draw(void)
++{
++    if (!ld_oq_enabled()) return;
++    const u32 re = g.rsx.regs[0x1E98u >> 2];
++    if ((re >> 24) != 2u) return;
++    const int i = ld_oq_slot(re & 0xFFFFFFu, 0);
++    if (i < 0 || g_oq.slot[i].state != OQ_PENDING || g_oq_nseg[i] <= 1u) return;
++    const u32 k = g_oq_nseg[i];
++    if (!oqs_range_live(g_oq.slot[i].serial, g_oq.slot[i].serial + k - 1u, g_oq.serial, LD_OQ_N)) {
++        g_oq.slot[i].state = OQ_ALWAYS;   /* query index reused (as ld_oq_before_draw) */
++        return;
++    }
++    if (!g_oq.sum_pso) {
++        static int logged;
++        if (!logged++) fprintf(stderr, "[cond-render] 2173: a split predicated report draws always (no sum pass)\n");
++        g_oq.n_sum_fail++; g_oq.slot[i].state = OQ_ALWAYS;
++        return;
++    }
++    oqs_piece_t pc[3];
++    const int np = oqs_pieces(g_oq.slot[i].serial, k, LD_OQ_N, 0, LD_OQ_N, pc);
++    for (int p = 0; p < np; p++)
++        g.list->lpVtbl->ResolveQueryData(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION,
++            pc[p].q, pc[p].n, g_oq.scratch, (UINT64)pc[p].r * 8u);
++    D3D12_RESOURCE_BARRIER b[2] = {0};
++    b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b[0].Transition.pResource = g_oq.scratch;
++    b[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
++    if (g_oq.pred_copy_dest == LD_PRED_S_UAV) {   /* an earlier sum is still unordered: order the writes */
++        b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
++        b[1].UAV.pResource = g_oq.pred;
++        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    } else {
++        g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++        ld_oq_pred_state(LD_PRED_S_UAV);
++    }
++    g.list->lpVtbl->SetPipelineState(g.list, g_oq.sum_pso); LD_SM_INVALIDATE();
++    g.list->lpVtbl->SetComputeRootSignature(g.list, g_oq.sum_rs);
++    const UINT args[2] = { (UINT)i, k };
++    g.list->lpVtbl->SetComputeRoot32BitConstants(g.list, 0, 2, args, 0);
++    g.list->lpVtbl->SetComputeRootShaderResourceView(g.list, 1, g_oq.scratch->lpVtbl->GetGPUVirtualAddress(g_oq.scratch));
++    g.list->lpVtbl->SetComputeRootUnorderedAccessView(g.list, 2, g_oq.pred->lpVtbl->GetGPUVirtualAddress(g_oq.pred));
++    g.list->lpVtbl->Dispatch(g.list, 1, 1, 1);
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++    g_oq.n_resolve++; g_oq.n_sum++;
++    g_oq.slot[i].state = OQ_RESOLVED;   /* ld_oq_before_draw moves pred to PREDICATION and sets it */
++}
++
+ /* Before a draw: 0 = draw, 1 = draw under predication (clear it after), -1 = skip. */
+ static int ld_oq_before_draw(void)
+ {
+@@ -13848,7 +14068,11 @@
+     if ((re >> 24) == 2u) {
+         const int i = ld_oq_slot(re & 0xFFFFFFu, 0);
+         u8 st = i < 0 ? OQ_ALWAYS : g_oq.slot[i].state;
+-        if (st == OQ_PENDING) {
++        if (st == OQ_PENDING && g_oq_nseg[i] > 1u) {
++            /* R&C patch 2173: only ld_oq_prepare_draw may run the sum pass; it ran for this draw unless the draw
++             * skipped it, so draw unconditionally this once and leave the report for the next draw. */
++            g_oq.n_sum_fail++; st = OQ_ALWAYS;
++        } else if (st == OQ_PENDING) {
+             if (g_oq.slot[i].serial + LD_OQ_N <= g_oq.serial) st = OQ_ALWAYS;   /* query index reused */
+             else {
+                 ld_oq_pred_state(1);
+@@ -13867,10 +14091,12 @@
+         } else g_oq.n_always++;
+     }
+     if (g.rsx.regs[0x17CCu >> 2] && !g_oq.open) {
+-        g.list->lpVtbl->BeginQuery(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION,
+-                                   (UINT)(g_oq.serial % LD_OQ_N));
+-        g_oq.open = 1; g_oq.open_serial = g_oq.serial++; g_oq.segs++; g_oq.n_segments++;
++        int game = 1; u64 q;
++        LD_OQS(q, oqs_open_for_draw(&s_, g_oq.split, &game));   /* R&C patch 2173 */
++        g.list->lpVtbl->BeginQuery(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION, (UINT)(q % LD_OQ_N));
++        if (game) g_oq.n_segments++; else g_oq.n_split++;   /* mode 2: a flush split continued */
+     }
++    if (g_oq.open) g_oq.span_cur++;   /* R&C patch 2173 */
+     return ret;
+ }
+ 
+@@ -13885,6 +14111,16 @@
+     out[0] = g_oq.n_pred; out[1] = g_oq.n_skip; out[2] = g_oq.n_always;
+     out[3] = g_oq.n_resolve; out[4] = g_oq.n_reports; out[5] = g_oq.n_segments;
+ }
++/* R&C patch 2173: the [perf-oq] counters (cellGcmSys prints period deltas inside the RSX_PERF_PROF window). Totals
++ * except out[5]/out[7], the largest span / nseg since the last call (reset here). out[11] = LD_OQ_SPLIT mode. */
++void rsx_live_draw_debug_oq_split_stats(u64 out[16])
++{
++    out[0] = g_oq.n_split; out[1] = g_oq.n_refused; out[2] = g_oq.n_flush_split;
++    out[3] = g_oq.n_spans; out[4] = g_oq.span_draws; out[5] = g_oq.span_max; g_oq.span_max = 0;
++    out[6] = g_oq.n_split_reports; out[7] = g_oq.nseg_max; g_oq.nseg_max = 0;
++    out[8] = g_oq.n_sum; out[9] = g_oq.n_sum_fail; out[10] = g_oq.n_too_long; out[11] = (u64)g_oq.split;
++    out[12] = g_rb.n_queued; out[13] = g_rb.n_written; out[14] = g_rb.n_zero; out[15] = g_rb.n_dropped;
++}
+ 
+ /* KZ3 patch 2029: submit without waiting. The walker records a whole frame
+  * into one command list and, before 2029, handed it to the GPU only at a sync
+@@ -13903,7 +14139,12 @@
+  * root signature, heaps, viewport), so a new list after a submit loses
+  * nothing; the submit happens before a draw records anything. Not while an
+  * occlusion query is open: a split query counts as two segments, which patch
+- * 2025 treats as "always draw". */
++ * 2025 treats as "always draw".
++ * R&C patch 2173: with LD_OQ_SPLIT 1 (default) or 2 an open query no longer
++ * refuses the submit: it ends in this list and a new query (host segment of
++ * the same game segment, rsx_oq_split.h) begins in the next; a report sums
++ * the host segments. LD_OQ_SPLIT=0 keeps the refusal (counted: [perf-oq]
++ * refused). */
+ static int ld_submit_chunk(void)
+ {
+     static int n = -1;
+@@ -13912,8 +14153,12 @@
+ }
+ static void ld_submit_nowait(void)
+ {
+-    if (!g.ready || !g_ld_unsubmitted || g_oq.open) return;
++    const int gate = oqs_gate(g.ready, g_ld_unsubmitted, g_oq.open, g_oq.split);   /* R&C patch 2173 */
++    if (gate == OQS_IDLE) return;
++    if (gate == OQS_REFUSE_OPEN) { g_oq.n_refused++; return; }
++    const int reopen = gate == OQS_SUBMIT_REOPEN;
+     LDW_T0(t0);
++    if (reopen) { int was; ld_oq_end_query(); LD_OQS(was, oqs_close(&s_)); (void)was; }   /* host split: the game segment goes on */
+     ld_gt_close();   /* patch 2052 */
+     const HRESULT close_hr = g.list->lpVtbl->Close(g.list);
+     if (FAILED(close_hr)) {
+@@ -13938,6 +14183,12 @@
+     }
+     ld_rb_stamp(v);   /* patch 2027: queued report copies complete with this fence */
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL); LD_SM_INVALIDATE(); ld_gt_begin();   /* patches 2045, 2052 */
++    if (reopen) {   /* R&C patch 2173: the next host segment, in the new list */
++        u64 q;
++        LD_OQS(q, oqs_host_reopen(&s_));
++        g.list->lpVtbl->BeginQuery(g.list, g_oq.heap, D3D12_QUERY_TYPE_OCCLUSION, (UINT)(q % LD_OQ_N));
++        g_oq.n_split++;
++    }
+     g_ld_unsubmitted = 0;
+     g_ld_chunk_submits++;
+     if (t0) { LDW_ADD(RSX_PERF_W_SUBMIT_T, t0); rsx_perf_add(RSX_PERF_W_CHUNK_N, 1); }
+@@ -15016,6 +15267,7 @@
+         g.list->lpVtbl->ResourceBarrier(g.list, 1, &bar);
+     }
+     if (bar_t0) { LDW_ADD(RSX_PERF_W_D_BAR_T, bar_t0); rsx_perf_add(RSX_PERF_W_D_BAR_N, n_surf_used); }
++    ld_oq_prepare_draw();   /* R&C patch 2173: a split report's predication sum, before the memo check */
+     const int sm_on = ld_state_memo_on();   /* patch 2045: state memo valid for this list? */
+     if (sm_on && g_ld_sm.gen != g_ld_sm_gen) { memset(&g_ld_sm, 0, sizeof g_ld_sm); g_ld_sm.gen = g_ld_sm_gen; }
+     LDW_T0(omrt_t0);
+--- /dev/null
++++ b/libs/video/rsx_oq_split.h
+@@ -0,0 +1,154 @@
++/* R&C patch 2173: chunk submits split an open ZPASS query into host segments (pure bookkeeping, no D3D12).
++ *
++ * Patch 2029 submits the walker's list every LD_SUBMIT_CHUNK draws so the GPU runs behind the walker, but it refused
++ * while an occlusion query was open: D3D12 needs Begin and End in one list, and a query split in two made patch 2025
++ * count two segments, which a GET_REPORT turns into "always draw". A title that leaves ZPASS counting on over its main
++ * pass then records thousands of draws into one list with the GPU idle (A4O Luminopolis: one list holds 31-60 ms of
++ * GPU work, `[perf-gpu] longest`).
++ *
++ * Now a chunk submit closes the open query, submits, and reopens a new query (a "host segment") in the next list. The
++ * title's "game segment" (patch 2025's segment: from the first draw with ZPASS on to ZPASS off, CLEAR_REPORT_VALUE,
++ * GET_REPORT or a flush) is the run of host segments [first, last], contiguous in serial because only one query is
++ * open at a time. Occlusion counts are additive over draws and a split falls between draws, so the game segment's
++ * count is the sum of its host segments. Report outcomes are unchanged: segs counts game segments only, so NEVER /
++ * PENDING / ALWAYS are decided exactly as before; only the count of a PENDING report is now a sum of k >= 1 queries.
++ *
++ * Modes (LD_OQ_SPLIT): 0 = the old refusal (A/B), 1 = default (chunk splits are host splits), 2 = opt-in, a flush
++ * that closes a game segment is a host split too (reports that fall to ALWAYS today get real counts: a behaviour
++ * change, needs its own RPCS3-referenced A/B). Host test: port/rc/tests/run_oq_split_test.sh. */
++#ifndef RSX_OQ_SPLIT_H
++#define RSX_OQ_SPLIT_H
++#include <stdint.h>
++
++enum { OQS_MODE_OFF = 0, OQS_MODE_SPLIT = 1, OQS_MODE_SPLIT_FLUSH = 2 };
++enum { OQS_IDLE = 0, OQS_REFUSE_OPEN, OQS_SUBMIT, OQS_SUBMIT_REOPEN };
++/* Same numbers as rsx_live_draw.c's OQ_ALWAYS / OQ_NEVER / OQ_PENDING. */
++enum { OQS_R_ALWAYS = 1, OQS_R_NEVER = 2, OQS_R_PENDING = 3 };
++
++typedef struct {
++    uint64_t serial;         /* queries handed out */
++    uint64_t open_serial;    /* the open host segment's query */
++    uint64_t last_serial;    /* the newest closed host segment */
++    uint64_t first_serial;   /* the first host segment of the newest game segment */
++    uint32_t segs;           /* game segments since CLEAR_REPORT_VALUE(ZPASS) */
++    int open;                /* a query is open in the current list */
++    int reopen_pending;      /* mode 2: a flush closed a game segment; the next ZPASS draw continues it */
++} oqs_seg_t;
++
++typedef struct { int state; uint64_t first; uint32_t k; int too_long; } oqs_report_t;
++typedef struct { uint32_t q, r, n; } oqs_piece_t;   /* query index, destination entry, count */
++
++/* The chunk-submit gate (ld_submit_nowait). Before 2173: refuse whenever a query is open. */
++static inline int oqs_gate(int ready, uint32_t unsubmitted, int open, int mode)
++{
++    if (!ready || !unsubmitted) return OQS_IDLE;
++    if (!open) return OQS_SUBMIT;
++#ifdef OQS_MUTANT_REFUSE
++    (void)mode; return OQS_REFUSE_OPEN;
++#else
++    return mode >= OQS_MODE_SPLIT ? OQS_SUBMIT_REOPEN : OQS_REFUSE_OPEN;
++#endif
++}
++
++/* A draw with ZPASS counting on and no open query: returns the serial to BeginQuery; *game = 1 when it starts a new
++ * game segment (segs++), 0 when it continues one (mode 2 after a flush). */
++static inline uint64_t oqs_open_for_draw(oqs_seg_t* s, int mode, int* game)
++{
++    const uint64_t q = s->serial++;
++    s->open = 1; s->open_serial = q;
++    if (mode == OQS_MODE_SPLIT_FLUSH && s->reopen_pending) { s->reopen_pending = 0; *game = 0; return q; }
++    s->reopen_pending = 0;
++    s->segs++; s->first_serial = q; *game = 1;
++    return q;
++}
++
++/* Close the open query (the caller ends query open_serial first when s->open). Returns 1 if one was open. */
++static inline int oqs_close(oqs_seg_t* s)
++{
++    if (!s->open) return 0;
++    s->last_serial = s->open_serial;
++    s->open = 0;
++    return 1;
++}
++
++/* A chunk submit with the query open (OQS_SUBMIT_REOPEN): after the close and the new list, a new host segment of the
++ * same game segment. segs and first_serial stay. Returns the serial to BeginQuery. */
++static inline uint64_t oqs_host_reopen(oqs_seg_t* s)
++{
++    const uint64_t q = s->serial++;
++    s->open = 1; s->open_serial = q;
++    return q;
++}
++
++/* A flush (ld_flush_body) closes the query. Mode 2 lets the next ZPASS draw continue the game segment. */
++static inline int oqs_flush_close(oqs_seg_t* s, int mode)
++{
++    const int was = oqs_close(s);
++    if (was && mode == OQS_MODE_SPLIT_FLUSH) s->reopen_pending = 1;
++    return was;
++}
++static inline int oqs_zpass_off(oqs_seg_t* s) { s->reopen_pending = 0; return oqs_close(s); }
++static inline int oqs_clear(oqs_seg_t* s) { const int was = oqs_close(s); s->segs = 0; s->reopen_pending = 0; return was; }
++
++/* GET_REPORT (the caller has closed the query): the slot state and, for PENDING, the host segments [first, first + k).
++ * A game segment longer than the query heap (qn) cannot be resolved: ALWAYS, flagged (it needs more than qn chunk
++ * submits inside one query: about a million draws). */
++static inline oqs_report_t oqs_report(oqs_seg_t* s, uint32_t type, uint32_t qn)
++{
++    oqs_report_t r = { OQS_R_ALWAYS, 0, 0, 0 };
++    s->reopen_pending = 0;
++    if (type != 1u || s->segs > 1) return r;
++    if (s->segs == 0) { r.state = OQS_R_NEVER; return r; }
++    const uint64_t k = s->last_serial - s->first_serial + 1u;
++    if (k >= qn) { r.too_long = 1; return r; }
++    r.state = OQS_R_PENDING; r.first = s->first_serial; r.k = (uint32_t)k;
++    return r;
++}
++
++/* Is the query range [first, last] still in the heap (no index reused since)? first is the oldest, so it is the one
++ * reused first. */
++static inline int oqs_range_live(uint64_t first, uint64_t last, uint64_t serial, uint32_t qn)
++{
++#ifdef OQS_MUTANT_LAST
++    (void)first; return last + qn > serial;
++#else
++    (void)last; return first + qn > serial;
++#endif
++}
++
++/* Split k queries from `first` (heap of qn) into destination entries from h (ring of rn) as runs contiguous in both:
++ * one ResolveQueryData per run. k <= qn and k <= rn give at most 3 runs; -1 if they do not. */
++static inline int oqs_pieces(uint64_t first, uint32_t k, uint32_t qn, uint64_t h, uint32_t rn, oqs_piece_t out[3])
++{
++    int n = 0;
++    uint32_t done = 0;
++    while (done < k && n < 3) {
++        const uint32_t q = (uint32_t)((first + done) % qn), r = (uint32_t)((h + done) % rn);
++        uint32_t run = k - done;
++        if (run > qn - q) run = qn - q;
++        if (run > rn - r) run = rn - r;
++        out[n].q = q; out[n].r = r; out[n].n = run; n++;
++        done += run;
++    }
++    return done == k ? n : -1;
++}
++
++/* Room for a k-entry readback group in a ring of rn entries ([tail, head) in use)? */
++static inline int oqs_rb_room(uint64_t head, uint64_t tail, uint32_t rn, uint32_t k)
++{
++    return k >= 1u && k <= rn && head - tail + k <= rn;
++}
++
++/* The game segment's count: the sum of its k host counts (ring of rn from start), saturated to 32 bits as patch 2027
++ * saturates a single count. */
++static inline uint32_t oqs_sum_sat(const volatile uint64_t* map, uint32_t rn, uint64_t start, uint32_t k)
++{
++    uint64_t sum = 0;
++    for (uint32_t j = 0; j < k; j++) {
++        const uint64_t c = map[(start + j) % rn];
++        if (c > 0xFFFFFFFFull || sum + c > 0xFFFFFFFFull) return 0xFFFFFFFFu;
++        sum += c;
++    }
++    return (uint32_t)sum;
++}
++#endif

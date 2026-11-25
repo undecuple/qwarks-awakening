@@ -35,7 +35,9 @@ author's sister ports. Each patch header names its source.
 
 - **Project Helghast** ([undecuple/project-helghast](https://github.com/undecuple/project-helghast), the author's
   Killzone 3 port, MIT): patches `0xxx`-`5xxx`, `9633` and `9933`, carried from that port's patch series, unchanged
-  or rebased; and the file logger (`kz3_log.c`, `kz3_log.h`, `kz3_log_redact.h`: levels and tags, crash reports, redaction
+  or rebased (2147, 2149 and 2158: render-performance counters and the optional fast GCM method decode); the shader
+  translator identity (`port/rc/rsx_translator_id.cmake`, the same hash rule as that port's CMake file) and the
+  order-independent PSO template merge (the same canonical-record rule as that port's template tool); and the file logger (`kz3_log.c`, `kz3_log.h`, `kz3_log_redact.h`: levels and tags, crash reports, redaction
   of the user's name), copied into `port/common/log/` with the Ratchet & Clank file names and header block added;
   and its keybinds file and mouse settings, which R&C patch 6011 and `port/rc/rc_settings.*` extend to one settings
   folder and one key table per game; and its first-run build pipeline (`tools/release/firstrun.py`,
@@ -102,6 +104,15 @@ author's sister ports. Each patch header names its source.
   MotorStorm: Monument Valley port): the fragment decoder's third-source absolute modifier.
 - **feanor-noldorin:** item E1 of [issue #457](https://github.com/sp00nznet/ps3recomp/issues/457), the report that
   inline-array vertices ignore the frequency divider, which patch 7009 (this port's own) fixes.
+- **Re-TeRo17:** [Re-TeRo17/ratchet-tod-recomp](https://github.com/Re-TeRo17/ratchet-tod-recomp) and its runtime
+  fork [Re-TeRo17/ps3recomp](https://github.com/Re-TeRo17/ps3recomp) (a separate Tools of Destruction port, MIT): the
+  ideas behind patches 7108 (fragment-program WPOS.w as 1/w), 7109 (save list sorted by the game's sort settings),
+  7110 (system cache mount relays or clears), 7111 (a second PPU waiter on a SPURS event flag is refused) and 7112
+  (normalizing a zero vector gives zero). Each is our own rewrite; no code was copied.
+- **Tzeentchnet:** [PR #27](https://github.com/undecuple/qwarks-awakening/pull/27) to this repository, merged
+  through PR #41 with the author's commits kept: the native Windows source build (`tools/build-windows.ps1`, the
+  patch applier `tools/ps3recomp_patched.py` and its host test), the check that recognises disc images that are
+  already decrypted, and the native Windows smoke test in the README's status table.
 
 Ratchet & Clank and the names of its games and characters are trademarks of Sony Interactive Entertainment. This
 project is not affiliated with or endorsed by Sony Interactive Entertainment, Insomniac Games or the studios that

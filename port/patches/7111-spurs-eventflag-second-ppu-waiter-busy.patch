@@ -1,0 +1,86 @@
+SPURS: cellSpursEventFlagWait refuses a second PPU waiter on a flag with CELL_SPURS_TASK_ERROR_BUSY.
+
+Idea from Re-TeRo17/ps3recomp 2200b150f377aed7a4b89c41c2caaa61e40908d2 ("spurs: a second PPU EventFlagWait gets BUSY,
+as on hardware", libs/spurs/cellSpurs.c) (MIT); hand rewrite on our tree, nothing else taken.
+
+Problem: the event flag has one PPU wait slot (ctrl.ppuWaitMask / ppuWaitSlotAndMode / ppuPendingRecv in the 128-byte
+guest struct). Real SPURS answers a PPU wait on a flag another PPU thread is blocked on with CELL_SPURS_TASK_ERROR_BUSY
+at once, before it looks at the bits; a wait whose bits are already there never blocks and never takes the slot. RPCS3's
+_cellSpursEventFlagWait does the same (BUSY when ppuWaitMask or ppuPendingRecv is set; ppuWaitMask is set only on the
+blocking path; read 2026-11-19 for behaviour, nothing copied) [src:rpcs3-cellspurs]. Our HLE wait is poll-based and on
+purpose writes no PPU wait slot in the guest struct (so the lifted SPU Set code takes its "no PPU waiter" path), so it
+had no record of a blocked PPU waiter and a second one blocked too. Two completions landing before either waiter runs
+then set the bit once, one waiter consumes it (AUTO clear) and the other sleeps for good, where the title's own code
+expects the BUSY answer (Re-TeRo17 report it as a Drakengard 3 package-loader stall). Not seen in our titles; ToD and A4O
+both import cellSpursEventFlagWait.
+
+Fix (libs/spurs/cellSpurs.c): EventFlagSync (the host side table keyed by the flag's EA) gets ppu_waiting, guarded by
+the sync lock. cellSpursEventFlagWait returns CELL_SPURS_TASK_ERROR_BUSY when it is set; the wait loop sets it just
+before its first sleep (only a wait that blocks takes the slot) and clears it after the loop with the lock held again.
+ef_sync_alloc zeroes it (a re-Initialize frees and reallocates the slot). cellSpursEventFlagTryWait is unchanged here
+(RPCS3 refuses it too while a PPU waiter holds the slot; follow-up if a title needs it).
+
+Test: port/rc/tests/test_spurs_eventflag_busy.c (port/rc/tests/run_spurs_eventflag_busy_test.sh, unity build of
+cellSpurs.c, real threads): a satisfied wait returns at once; waiter A blocks, waiter B on the same flag gets BUSY within
+500 ms and A is not disturbed; a wait on another flag is accepted; A wakes on its bit with AUTO clear; a new waiter is
+accepted and woken after A left. Negative control (the tree without this patch): FAIL "second PPU waiter blocked on a
+flag that already has one (expected BUSY)".
+
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -104,6 +104,11 @@
+     pthread_cond_t      cond;
+ #endif
+     int                 initialized;
++    /* R&C patch 7111: a PPU thread is blocked in cellSpursEventFlagWait on this
++     * flag (the HLE's stand-in for the kernel's ctrl.ppuWaitMask, which the
++     * poll-based wait deliberately leaves 0 in the guest struct). Guarded by
++     * the sync lock. */
++    int                 ppu_waiting;
+ } EventFlagSync;
+ 
+ static EventFlagSync s_ef_sync[MAX_EVENT_FLAGS];
+@@ -146,6 +151,7 @@
+     for (int i = 0; i < MAX_EVENT_FLAGS; i++) {
+         if (!s_ef_sync[i].initialized) {
+             s_ef_sync[i].ea = ea;
++            s_ef_sync[i].ppu_waiting = 0;   /* R&C patch 7111 */
+             { extern void (*g_spu_line_commit_hook)(uint32_t);
+               g_spu_line_commit_hook = ef_line_committed; }
+ #ifdef _WIN32
+@@ -3133,6 +3139,18 @@
+ 
+     ef_lock(sync);
+ 
++    /* R&C patch 7111: one PPU waiter per flag. Real SPURS answers a PPU wait
++     * on a flag another PPU thread is blocked on (ctrl.ppuWaitMask set) with
++     * CELL_SPURS_TASK_ERROR_BUSY at once, before it looks at the bits; titles
++     * handle that. Letting both block loses a wakeup instead: two completions
++     * landing before either waiter runs set the bit once, one waiter consumes
++     * it (AUTO clear) and the other sleeps for good. A wait whose bits are
++     * already there never blocks, so it never marks the flag. */
++    if (sync->ppu_waiting) {
++        ef_unlock(sync);
++        return CELL_SPURS_TASK_ERROR_BUSY;
++    }
++
+     /* Block until the requested bit pattern is satisfied in the GUEST struct
+      * (BE events word at +0x00) — set by an SPU task (lifted code / taskset
+      * syscall) or another PPU thread. Poll-based: ef_wait_timed ticks re-read
+@@ -3160,6 +3178,7 @@
+                 break;
+         }
+ 
++        sync->ppu_waiting = 1;   /* R&C patch 7111: set under the lock before the first sleep */
+         if (!ef_wait_timed(sync, 2)) {
+             /* Report the stall once per second, naming what would have to run. */
+             if (++waits % 500 == 0) {
+@@ -3182,6 +3201,7 @@
+         }
+     }
+ 
++    sync->ppu_waiting = 0;   /* R&C patch 7111: lock held again; the flag takes a new PPU waiter */
+     __atomic_sub_fetch(&s_ef_ppu_waiters, 1, __ATOMIC_SEQ_CST);
+     ef_wait_stats(ea, ef_t0.QuadPart);
+     /* Hand back the observed bits; consume the received ones on AUTO clear. */

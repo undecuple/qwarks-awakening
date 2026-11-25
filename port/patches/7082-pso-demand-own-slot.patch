@@ -1,0 +1,158 @@
+R&C patch 7082: a PSO miss waits for its own cache slot; the FIFO lookahead decides every stop before reading a packet.
+
+1. get_pso (rsx_live_draw.c) stores a missing pipeline's pending entry at slot n_psos, and since R&C patch 7050 then runs
+the FIFO lookahead, whose nested get_pso calls append pending entries for the upcoming draws. The tail then awaited
+slot n_psos - 1u. When the scan submitted at least one build, that slot is the LAST lookahead entry, so the draw that
+missed was drawn with another draw's pipeline (other vertex/pixel shaders, input layout, possibly the GPU-fetch
+variant) while its root parameters, vertex buffers and constants were its own, and the cache kept that pipeline
+under the draw's key from then on. Nothing rejects it: both pipelines share the root signature, the scan only
+covers draws on the same surface (same RTV/DSV formats), and root SRVs carry no bounds. The failing case is a miss whose
+scan queues builds, e.g. FFA's first 3D frame (ffa-base-1: 9 new pipelines at 412.8-413.6 s, VK_ERROR_DEVICE_LOST
+5 s later, the walker's fence wait never returns, RSX label 0x41 is never released, the main thread polls it in
+func_006F5F38 for ever and the igPm job kernels sit in their normal LR idle wait at pc 0x3F750). A scan that queues
+nothing leaves n_psos - 1u == the draw's slot, which is why the hang was intermittent (ToD with the lookahead on: 6/6
+device lost, off: 0/2). ASSUMPTION: the exact GPU fault a mismatched pipeline causes is not identified; the mismatch
+itself is the defect. Now get_pso keeps the slot it filled and the new header rsx_pso_slot.h
+(rsx_pso_demand_tail) scans and then awaits that slot. Entries are only appended (a full cache returns before the
+store) and the worker merge matches by key, so the index stays valid across the scan.
+RPCS3 finds a draw's pipeline by that draw's own key (vertex program id, fragment program id, pipeline properties) and
+fills the key's own entry when an asynchronous build finishes, never by a position in the cache [src:rpcs3-pso-cache].
+
+2. rsx_fifo_ahead.h read a packet's arguments and handed them to the scan before checking the word budget, and checked
+only the first method of an incrementing packet for the semaphore acquire 0x68. Now, before any argument is read: a
+packet whose arguments reach put stops with RSX_AHEAD_PUT (the guest has not published those words yet), one over the
+budget stops with RSX_AHEAD_LIMIT, and one whose methods include 0x68 on subchannel 0 stops with RSX_AHEAD_ACQUIRE.
+After part 1 such guesses can no longer be bound to a draw, but they built pipelines from words the guest had not
+written. The SPU reservation / LR-event code is not touched: it raises LR for every writer like RPCS3 does.
+
+Default unchanged: the lookahead stays off (7050 0.3.1, LD_PSO_AHEAD=1 turns it on); with it off, and on a miss whose
+scan queues nothing, behaviour is identical. Turning it back on by default is a separate step after a confirming run.
+Host tests: R&C port/rc/tests/run_pso_demand_slot_test.sh (with a negative control: the pre-7082 tail must fail it)
+and port/rc/tests/run_fifo_ahead_test.sh.
+
+diff --git a/libs/video/rsx_fifo_ahead.h b/libs/video/rsx_fifo_ahead.h
+--- a/libs/video/rsx_fifo_ahead.h
++++ b/libs/video/rsx_fifo_ahead.h
+@@ -9,8 +9,9 @@
+  * rsx_fifo_ahead decodes the words from `off` to `put` the way the walker does (NOP, old and new JUMP, CALL / RET,
+  * incrementing and non-incrementing method headers) and hands every method of subchannels 0 and 1 (the 3D object)
+  * to `on_method`, which returns non-zero to stop. It stops at the first flip word (0xFEADxxxx: the frame ends there),
+- * a semaphore acquire (0x68 on subchannel 0: what follows may wait for other producers), a JUMP to itself (a park),
+- * an unreadable word, a RET without a CALL, or after max_words words. Nothing is written. Returns the stop reason. */
++ * a semaphore acquire (0x68 on subchannel 0, also inside an incrementing packet: what follows may wait for other
++ * producers), a JUMP to itself (a park), an unreadable word, a RET without a CALL, a packet whose arguments reach put
++ * (R&C patch 7082) or after max_words words. Nothing is written. Returns the stop reason. */
+ #ifndef RSX_FIFO_AHEAD_H
+ #define RSX_FIFO_AHEAD_H
+ #include <stdint.h>
+@@ -48,7 +49,14 @@
+         }
+         if (type == 0u || type == 2u) {
+             const uint32_t count = (w >> 18) & 0x7FFu, method = w & 0x1FFCu, subch = (w >> 13) & 7u;
+-            if (subch == 0u && method == 0x68u) return RSX_AHEAD_ACQUIRE;
++            /* R&C patch 7082: every check comes before the first argument is read or handed on. The arguments must
++             * all lie before put (the guest has not published the words from put on: they are stale or half
++             * written), within the word budget, and no method of the packet may be the acquire (an incrementing
++             * packet starting below 0x68 reaches it at its (0x68 - method) / 4-th argument). */
++            if (put > off && put - off <= count * 4u) return RSX_AHEAD_PUT;
++            if (max_words < count) return RSX_AHEAD_LIMIT;
++            if (subch == 0u && (method == 0x68u || (type == 0u && method < 0x68u && 0x68u < method + count * 4u)))
++                return RSX_AHEAD_ACQUIRE;
+             if (subch <= 1u) {
+                 for (uint32_t i = 0; i < count; i++) {
+                     uint32_t a;
+@@ -56,7 +64,6 @@
+                     if (fn(fu, (subch << 13) | (type == 0u ? method + i * 4u : method), a)) return RSX_AHEAD_STOPPED;
+                 }
+             }
+-            if (max_words < count) return RSX_AHEAD_LIMIT;
+             max_words -= count;
+             off += 4u + count * 4u;
+             continue;
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -229,6 +229,7 @@
+ }
+ #include "rsx_pso_async.h"
+ #include "rsx_pso_prio.h"   /* R&C patch 7052: demand-first build queue */
++#include "rsx_pso_slot.h"   /* R&C patch 7082: a miss waits for its own slot */
+ /* patch 2048: asynchronous PSO build bookkeeping */
+ #include "rsx_pso_template.h"   /* patch 2071 */
+ #include "rsx_pace.h"           /* patch 2072 */
+@@ -10599,6 +10600,14 @@
+     if (why >= 0 && why < 9) g_ld_ahead.stops[why]++;
+ }
+
++/* R&C patch 7082: the await rsx_pso_demand_tail calls for a real miss (7054's source tag: a miss the lookahead did
++ * not submit; the scan may have set another tag). */
++static void* ld_apso_await_demand(u32 idx)
++{
++    g_ld_await_src = 'M';
++    return ld_apso_await(idx);
++}
++
+ static void ld_ahead_stat_print(void)
+ {
+     if (g_ld_ahead.scans)
+@@ -11092,18 +11101,18 @@
+         g_ld_pstat.tot_miss++; g_ld_pstat.tot_miss_us += us;
+         g_ld_pstat.over4 += us > 4000; g_ld_pstat.over16 += us > 16000; g_ld_pstat.over50 += us > 50000;
+     }
+-    g.psos[g.n_psos].key = key;
+-    g.psos[g.n_psos].pso = pso;
+-    g.psos[g.n_psos].pending = (u8)apso_pending;   /* patch 2048 */
+-    g.psos[g.n_psos].ahead = (u8)(g_ld_ahead_active != 0);   /* R&C patch 7050 */
+-    { LARGE_INTEGER q; QueryPerformanceCounter(&q); g.psos[g.n_psos].t_sub = q.QuadPart; }   /* R&C patch 7054 */
++    const u32 slot = g.n_psos;   /* R&C patch 7082: this draw's own entry (the scan below appends after it) */
++    g.psos[slot].key = key;
++    g.psos[slot].pso = pso;
++    g.psos[slot].pending = (u8)apso_pending;   /* patch 2048 */
++    g.psos[slot].ahead = (u8)(g_ld_ahead_active != 0);   /* R&C patch 7050 */
++    { LARGE_INTEGER q; QueryPerformanceCounter(&q); g.psos[slot].t_sub = q.QuadPart; }   /* R&C patch 7054 */
+     g.n_psos++;
+-    if (apso_pending) {
+-        if (g_ld_ahead_active) return NULL;   /* R&C patch 7050: a lookahead draw only submits */
+-        ld_ahead_scan();                      /* R&C patch 7050: queue the upcoming misses before waiting */
+-        g_ld_await_src = 'M';                 /* R&C patch 7054: a miss the lookahead did not submit */
+-        return ld_apso_await(g.n_psos - 1u);  /* RSX pass 57: the draw waits for its build */
+-    }
++    /* RSX pass 57: the draw waits for its build. R&C patch 7050: a lookahead draw only submits, a real miss first
++     * queues the upcoming misses. R&C patch 7082: then it waits for `slot`, not for g.n_psos - 1u (after a scan that
++     * submitted builds, that was the last lookahead entry: another draw's pipeline). */
++    if (apso_pending)
++        return (ID3D12PipelineState*)rsx_pso_demand_tail(slot, g_ld_ahead_active, ld_ahead_scan, ld_apso_await_demand);
+     return pso;
+ }
+
+diff --git a/libs/video/rsx_pso_slot.h b/libs/video/rsx_pso_slot.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_pso_slot.h
+@@ -0,0 +1,26 @@
++/* R&C patch 7082: a PSO miss waits for its own cache slot, not for the last slot.
++ *
++ * get_pso appends the draw's pending entry at slot n, then (R&C patch 7050, LD_PSO_AHEAD=1) runs the FIFO lookahead,
++ * whose nested get_pso calls append more pending entries for upcoming draws. The old tail then awaited slot
++ * n_psos - 1, which after a scan that submitted builds is the LAST lookahead entry: the draw that missed was drawn
++ * with, and kept, another draw's pipeline (other shaders, input layout, GPU-fetch variant) while its root
++ * parameters, vertex buffers and constants were its own. FFA's first 3D frame (9 misses in a row, ffa-base-1) lost
++ * the device that way, and the walker's fence wait never returned.
++ *
++ * The caller passes the slot it filled. Entries are only ever appended (a full cache returns NULL before the store),
++ * so the index stays valid across the scan and the worker merges (RSX_APSO_MERGE matches by key). Header-only so the
++ * host test (port/rc/tests/test_pso_demand_slot.c) compiles the code that ships. */
++#ifndef RSX_PSO_SLOT_H
++#define RSX_PSO_SLOT_H
++#include <stdint.h>
++
++/* The tail of a miss whose build is pending. ahead_active: called from inside a lookahead scan, which only submits
++ * (NULL, no nested scan). Otherwise the upcoming misses are queued first and the draw then waits for `slot`. */
++static inline void* rsx_pso_demand_tail(uint32_t slot, int ahead_active, void (*scan)(void),
++                                        void* (*await_slot)(uint32_t))
++{
++    if (ahead_active) return NULL;
++    scan();
++    return await_slot(slot);
++}
++#endif

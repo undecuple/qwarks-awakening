@@ -5,7 +5,7 @@
 #   LOCK_EST_MIN=25 "$LOCK_SH" build -- nix develop .#win --command tools/sandbox.sh -- env RC_HELD_LOCKS=build tools/build-rc.sh build/rc-tods-win
 # ($LOCK_SH: the machine's shared lock helper, the Killzone 3 port's tools/agents/lock.sh here.)
 # Inputs: $RC_OUT/ps3recomp-patched (tools/ps3recomp-patched.sh) and $RC_OUT/recomp/<game> (tools/lift.sh); RC_OUT
-# defaults to work.
+# defaults to work. RC_CCACHE_DIR (default $RC_OUT/ccache) moves the compiler cache (the remote build: /work/ccache).
 # Memory (KZ3's measurements, 2026-10-08..11): a cc1plus on a 64-chunk lifted file peaks at 0.7-1.3 GB (up to 5.3 GB on
 # some); -j8/-j20 next to Proton ran the 31 GB machine out of memory three times. So: jobs = (MemAvailable - 8 GB
 # reserve) / RC_BUILD_JOB_MB (default 2048) / build slots in use, 1..RC_BUILD_JOBS_MAX (default 6); oom_score_adj 1000.
@@ -101,7 +101,7 @@ if read -r cap_until cap_jobs < "$LOCKS/build-cap" 2>/dev/null && (( $(date +%s)
 fi
 echo "build-rc: $DIR with -j$jobs ($(( avail_mb / 1024 )) GB available; build slot $SLOT)" >&2
 if command -v ccache >/dev/null && [[ "${RC_CCACHE:-1}" != 0 ]]; then
-  export CCACHE_DIR="$OUT/ccache" CCACHE_BASEDIR="$ROOT" CCACHE_MAXSIZE=20G CCACHE_COMPRESS=1
+  export CCACHE_DIR="${RC_CCACHE_DIR:-$OUT/ccache}" CCACHE_BASEDIR="$ROOT" CCACHE_MAXSIZE=20G CCACHE_COMPRESS=1
   grep -q '^CMAKE_CXX_COMPILER_LAUNCHER:.*=ccache' "$DIR/CMakeCache.txt" 2>/dev/null \
     || cmake -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "$DIR" >/dev/null
 fi
@@ -110,7 +110,8 @@ cmake --build "$DIR" -j"$jobs" "$@" || rc=$?
 echo "build-rc: done in $(( $(date +%s) - t0 )) s (-j$jobs, exit $rc)" >&2
 # Stage the exe alone with SDL3.dll and its zlib licence in work/stage/<game>:
 # proton-test.sh copies the exe's whole directory, and the build dir's read-only CMake files broke that copy (2026-10-19).
-if (( rc == 0 )) && [[ -f "$DIR/$EXE.exe" ]]; then
+# RC_STAGE=0 skips it (the remote build, tools/remote/image/build.sh: the client stages the fetched exe here instead).
+if (( rc == 0 )) && [[ -f "$DIR/$EXE.exe" && "${RC_STAGE:-1}" != 0 ]]; then
   STAGE="$OUT/stage/$GAME"; mkdir -p "$STAGE"
   cp "$DIR/$EXE.exe" "$STAGE/"
   if python3 "$ROOT/tools/release/stage_sdl3.py" --out "$STAGE" >&2; then

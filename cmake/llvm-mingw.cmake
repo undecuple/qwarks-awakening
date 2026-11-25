@@ -50,3 +50,18 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_C_FLAGS_INIT   "-D_WIN32_WINNT=0x0A00")
 set(CMAKE_CXX_FLAGS_INIT "-D_WIN32_WINNT=0x0A00")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-static")
+
+# Issue #44 (2026-11-23): an install folder with an apostrophe ("Qwark's Awakening") failed the link step on Windows.
+# On a Windows host CMake's Ninja generator writes the link response file (@CMakeFiles/<target>.rsp) for Windows
+# command-line rules: the objects on one line, a path in "..." only when it holds a space or '"' (Ninja's Win32
+# escaping), backslashes and apostrophes as they are. The clang driver reads @files with GNU rules unless it is told
+# otherwise, so an apostrophe opened a quoted span: two object paths became one argument and both apostrophes were
+# lost ("no such file or directory" for each pair). --rsp-quoting=windows makes the driver read the file by the rules it
+# was written with. Windows hosts only: a Linux-host CMake writes POSIX-shell-quoted response files ('..'\''..'),
+# which this flag would break (the CI and Linux-kit cross builds use this file on Linux). A directory link option, not
+# CMAKE_EXE_LINKER_FLAGS_INIT: the _INIT value only seeds the cache at the first configure, so a build folder
+# configured by an older release would keep the old flags; this is set again on every configure.
+# tools/release/test_rsp_quoting.py checks both hosts and, with a clang at hand, the driver's reading.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+    add_link_options(--rsp-quoting=windows)
+endif()

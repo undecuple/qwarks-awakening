@@ -25,9 +25,12 @@ The bare launcher zip (names.launcher_zip_name(version), every entry under names
   tools/release/catalog.py, kit.py        the setup engine (offline) and the one module that downloads (on request)
   data/titles/catalog.json                the games list catalog.py reads (../../data/titles from it)
   data/titles/library.example.json        a made-up library to look at the screens
+  data/titles/unofficial.json             the other projects' games the opt-in Unofficial group lists (launch only)
   licenses/                               the port's LICENSE, SDL3 (zlib) with the HIDAPI and yuv2rgb code inside
                                           SDL3.dll (BSD), Dear ImGui (MIT), each font's OFL text,
                                           Python (PSF; the package's LICENSE.txt)
+  recomplauncher.json                     RecompLauncher's description of this port (public/recomplauncher.json, format 1;
+                                          start = the launcher exe; tools/release/test_recomplauncher.py checks it)
   README.txt                              what the download does, what goes online
 
 --symbols FILE also writes names.symbols_zip_name(version) holding that split debug file, for the launcher's
@@ -49,8 +52,10 @@ Refused (nothing written): a missing input, an exe (or the package's python.exe 
 Windows program, a --python folder that is not an unpacked embeddable package, an SDL3.dll that is not a 64-bit DLL or
 a licence that is not SDL's, a symlink, a file with a PS3 game-data header (SELF, PSARC, PARAM.SFO) or a game file
 extension, two entries whose paths differ only by letter case (one file on NTFS), a --version that is not X.Y.Z; with
---kit-manifest also a kit file that differs from the list, a list of another version, and an exe that does not carry
-the list's SHA-256 (built for another kit). Deterministic: entries sorted by path, fixed 1980-01-01 dates, MS-DOS
+--kit-manifest also a kit file that differs from the list, a list of another version, an exe that does not carry
+the list's SHA-256 (built for another kit), and a kit without a file a released game's build needs
+(firstrun_check.profile_build_inputs over released_profiles; 0.4.0 shipped without tools/spu/<profile>_raw_spu.json
+for four games, whose builds then stopped at spu-lift). Deterministic: entries sorted by path, fixed 1980-01-01 dates, MS-DOS
 attributes, Deflate level 9, no extra fields or comment, so the same inputs give the same bytes with the same
 Python/zlib. Each zip's SHA-256 is printed; no per-zip .sha256 file is written (0.3.1: the release's SHA256SUMS lists
 the setup exe and the three zips).
@@ -71,6 +76,7 @@ sys.path.insert(0, HERE)
 import names  # noqa: E402  (tools/release/names.py)
 import stage_sdl3  # noqa: E402  (pe_x64_problem)
 import kit as kitmod  # noqa: E402  (manifest_bytes, check_manifest)
+import firstrun_check  # noqa: E402  (released_profiles, profile_build_inputs)
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
@@ -240,6 +246,8 @@ def gather(exe, sdl3, root, python):
     need("tools/release/kit.py", os.path.join(root, "tools", "release", "kit.py"))
     need("data/titles/catalog.json", os.path.join(root, "data", "titles", "catalog.json"))
     need("data/titles/library.example.json", os.path.join(root, "data", "titles", "library.example.json"))
+    need("data/titles/unofficial.json", os.path.join(root, "data", "titles", "unofficial.json"))
+    need("recomplauncher.json", repo_file(root, "recomplauncher.json"))   # next to the exe, where RecompLauncher reads it
     return problems, files
 
 
@@ -306,6 +314,7 @@ def gather_kit(root, toolkit, trees, toolchain_manifest=None, bare=(), ident=Non
         if not os.path.isfile(src):
             problems.append(f"{rel}: missing ({src})")
         files.append((rel, src))
+    problems += kit_input_problems(root, {r for r, _ in files})
     miss = [n for n in TOOLKIT_NEEDS if not os.path.isfile(os.path.join(toolkit, *n.split("/")))]
     if miss:
         problems.append(f"{toolkit}: not a patched ps3recomp tree (missing {', '.join(miss)})")
@@ -333,6 +342,17 @@ def gather_kit(root, toolkit, trees, toolchain_manifest=None, bare=(), ident=Non
             files.append((f"licenses/{c['kit_license']}", src))
     skip = set(bare)
     return problems, [(r, s) for r, s in files if r not in skip]
+
+
+def kit_input_problems(root, kit_paths):
+    """A released game (firstrun_check.released_profiles: what the launcher offers to build) whose required build
+    inputs (profile_build_inputs: glue, SPU tables, raw SPU table) are not all in the kit -> one problem per file."""
+    try:
+        want = {pid: firstrun_check.profile_build_inputs(root, pid)[0] for pid in firstrun_check.released_profiles(root)}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return [f"data/titles: the released games' build inputs cannot be listed ({e})"]
+    return [f"{p}: the build of {pid} reads it, but it is not in the kit" for pid, req in want.items()
+            for p in req if p not in kit_paths]
 
 
 def sha256_file(path):

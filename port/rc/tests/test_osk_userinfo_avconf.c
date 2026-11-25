@@ -1,5 +1,5 @@
-/* Host test for patches 7022 (cellOskDialogSetKeyLayoutOption), 7023 (cellUserInfoSelectUser_SetList) and 7025
- * (cellVideoOutGetScreenSize): unity build of the three patched sources. Run with tests/run_imports_test.sh. */
+/* Host test for patches 7022 (cellOskDialogSetKeyLayoutOption), 7023 (cellUserInfoSelectUser_SetList), 7025
+ * (cellVideoOutGetScreenSize) and 7083 (cellUserInfoGetStat id 0 = current user): unity build of the three patched sources. Run with tests/run_imports_test.sh. */
 #include "libs/misc/cellOskDialog.c"
 #include "libs/system/cellUserInfo.c"
 #include "libs/misc/cellAvconfExt.c"
@@ -24,6 +24,20 @@ int main(void)
     assert(ps3_userinfo_list_set() == 0x1234);
     assert(cellUserInfoSelectUser_SetList(NULL) == CELL_USERINFO_ERROR_PARAM && ps3_userinfo_list_set() == 0x1234);
 
+    /* 7083: id 0 is the current user (user 1); above 99999999 is PARAM; any other id is NOUSER. */
+    static uint8_t guest_mem[0x1000];
+    vm_base = guest_mem;   /* the stat pointer is a guest address (GUEST_PTR adds vm_base) */
+    CellUserInfoUserStat* g = (CellUserInfoUserStat*)(uintptr_t)0x100;
+    CellUserInfoUserStat* st = (CellUserInfoUserStat*)(guest_mem + 0x100);
+    memset(st, 0xAA, sizeof *st);
+    assert(cellUserInfoGetStat(0, g) == CELL_OK && st->id == BE32(1) && strcmp(st->name, "User") == 0);
+    memset(st, 0xAA, sizeof *st);
+    assert(cellUserInfoGetStat(1, g) == CELL_OK && st->id == BE32(1));
+    memset(st, 0xAA, sizeof *st);
+    assert(cellUserInfoGetStat(2, g) == CELL_USERINFO_ERROR_NOUSER && st->id == 0xAAAAAAAAu);
+    assert(cellUserInfoGetStat(100000000u, g) == CELL_USERINFO_ERROR_PARAM && st->id == 0xAAAAAAAAu);
+    assert(cellUserInfoGetStat(0, NULL) == CELL_USERINFO_ERROR_PARAM);
+
     /* 7025: primary only; no EDID size in a window -> VALUE_IS_NOT_SET, the output stays untouched on every error. */
     float size = 42.0f;
     assert(cellVideoOutGetScreenSize(0, &size) == (s32)0x8002B229 && size == 42.0f);
@@ -31,6 +45,6 @@ int main(void)
     assert(cellVideoOutGetScreenSize(0, NULL) == (s32)0x8002B223);
     assert(cellVideoOutGetScreenSize(1, NULL) == (s32)0x8002B226);   /* the output id is checked first */
 
-    puts("OSK key layout, UserInfo SetList and VideoOutGetScreenSize checks passed");
+    puts("OSK key layout, UserInfo SetList/GetStat and VideoOutGetScreenSize checks passed");
     return 0;
 }

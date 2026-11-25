@@ -82,6 +82,7 @@ import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOG_PATH = os.path.join(HERE, "..", "..", "data", "titles", "catalog.json")
+UNOFFICIAL_PATH = os.path.join(HERE, "..", "..", "data", "titles", "unofficial.json")
 SECTOR = 2048
 DEFAULT_DEPTH = 4
 STATES = ("not_added", "wrong_version", "not_ported", "ready_to_build", "building", "built", "port_updated",
@@ -92,7 +93,8 @@ LOCATION_LISTS = ("library_folders", "excluded", "rpcs3_folders")
 LOCATION_PATHS = ("build", "saves", "logs", "art_cache")
 LOCATION_KEYS = LOCATION_LISTS + ("rpcs3_auto",) + LOCATION_PATHS
 PREFS = {"theme": ("system", "light", "dark"),   # launcher preferences: key -> allowed values (first = default)
-         "debug_info": ("off", "on"), "update_check": ("off", "on")}
+         "debug_info": ("off", "on"), "update_check": ("off", "on"),
+         "unofficial": ("off", "on")}   # ENHANCEMENT: show other projects' recompiled games (launch only)
 PLAYABILITY_KEYS = ("playability", "playability_note", "playability_checked", "badge_name")
 # PARAM.SFO categories a folder may be: disc game (DG), installed game (HG), game update (GD); None = no CATEGORY key.
 FOLDER_CATEGORIES = ("DG", "HG", "GD", None)
@@ -103,8 +105,57 @@ def load(path=None):
         return json.load(f)
 
 
-def _flat_ids(entry):
+def _untested_ids(entry):
+    """Title IDs of releases the port recognises but has never been built or run with: the entry's optional
+    "untested_title_ids" (same shape as "title_ids": {"disc": {region: [ids]}, "digital": {...}})."""
+    return [i for m in (entry.get("untested_title_ids") or {}).values() for v in m.values() for i in v]
+
+
+def _tested_ids(entry):
     return [i for m in entry["title_ids"].values() for v in m.values() for i in v]
+
+
+def _flat_ids(entry):
+    """Every title ID the entry recognises: the tested ones, then the untested ones."""
+    return _tested_ids(entry) + _untested_ids(entry)
+
+
+def validate_untested_ids(cat):
+    """Problems with the catalogue's "untested_title_ids" (empty list = fine): same shape as title_ids, only disc/digital,
+    IDs like BCUS98127 / NPEA00385, none repeated within an entry, none also in the entry's tested title_ids, and
+    no untested ID that another top-level game lists as tested (children share their parent's IDs by design)."""
+    bad, tested_of = [], {}
+    for e in cat["games"]:
+        for g in [e] + list(e.get("children", [])):
+            tested_of[g["id"]] = set(_tested_ids(g))
+    for e in cat["games"]:
+        for g in [e] + list(e.get("children", [])):
+            t = g.get("untested_title_ids")
+            if t is None:
+                continue
+            if not isinstance(t, dict) or set(t) - {"disc", "digital"}:
+                bad.append(f"{g['id']}: untested_title_ids must map disc/digital")
+                continue
+            ids = _untested_ids(g)
+            for i in ids:
+                if not re.fullmatch(r"(BC|NP)[A-Z]{2}\d{5}", i):
+                    bad.append(f"{g['id']}: {i} is not a title ID")
+                if i in tested_of[g["id"]]:
+                    bad.append(f"{g['id']}: {i} is both tested and untested")
+                if ids.count(i) > 1:
+                    bad.append(f"{g['id']}: {i} is listed twice")
+                for o, tids in tested_of.items():
+                    if o != g["id"] and i in tids and o not in {c["id"] for c in e.get("children", [])} | {e["id"]}:
+                        bad.append(f"{g['id']}: {i} is a tested ID of {o}")
+    return sorted(set(bad))
+
+
+def untested_reason(entry, title_id):
+    """The plain reason for a copy whose title ID is only recognised (None for a tested or unknown ID)."""
+    if title_id not in _untested_ids(entry) or title_id in _tested_ids(entry):
+        return None
+    return (f"Recognised, not tested: {title_id} is a known release of {entry['title']}, but the port has not been "
+            "built or run with it, so Build is not offered for it.")
 
 
 # ------------------------------------------------------------------------------------------------ PARAM.SFO
@@ -143,6 +194,47 @@ def sfo_from_folder(path):
                     return kind, _pick(read_param_sfo(f.read(1 << 20))), p
             except (OSError, ValueError):
                 return None
+    return None
+
+
+def folder_gap(root):
+    """What a game or update folder lacks to be usable -> text or None. A folder holding only PARAM.SFO (a copy that
+    stopped early, or only the metadata) must not pass: the game's files are USRDIR/EBOOT.BIN and what sits beside it.
+    ASSUMPTION: every installed game and update folder carries USRDIR/EBOOT.BIN (RPCS3 installs and discs do)."""
+    usr = _ci_path(root, ("USRDIR",))
+    if not usr or not os.path.isdir(usr):
+        return "USRDIR"
+    if not (_ci_path(usr, ("EBOOT.BIN",)) and os.path.isfile(_ci_path(usr, ("EBOOT.BIN",)))):
+        return "USRDIR/EBOOT.BIN"
+    return None
+
+
+def game_folder_problem(it):
+    """A discovered disc / installed-game folder item -> the player's reason when it is incomplete, else None."""
+    gap = it.get("gap")
+    if not gap:
+        return None
+    where = "its PS3_GAME folder" if it.get("kind") == "disc" else "the folder"
+    return (f"The game folder is incomplete: {gap} is missing from {where}. Copy the whole game folder "
+            "(not only PARAM.SFO).")
+
+
+def update_problem(path):
+    """The update the player gave (an installed update folder or a PKG) -> the reason it cannot be used, else None.
+    A usable one is a complete folder named <...>/game/<TITLE_ID> (update_lower): any other would run the game
+    half-updated, so it is refused with a reason instead of a log line."""
+    if not path or not os.path.exists(path):
+        return "The update is not there any more. Choose it again in Game files."
+    if not os.path.isdir(path):
+        return ("The update is a PKG file, which is encrypted and cannot be used. Give the installed update folder "
+                "(game/<title ID> from RPCS3's dev_hdd0) instead.")
+    gap = folder_gap(path)
+    if gap:
+        return (f"The update folder is incomplete: {gap} is missing. Copy the whole installed update folder "
+                "(game/<title ID>), not only PARAM.SFO.")
+    if update_lower({"files": {"update": path}}) is None:
+        return ("The update folder must be named after the title ID inside a folder named game (as in RPCS3's "
+                "dev_hdd0/game/<title ID>); anywhere else the game would run half-updated.")
     return None
 
 
@@ -451,9 +543,28 @@ def _where(rec):
     if media == "update":
         return f"update {rec.get('app_ver') or '?'} ({tid})"
     if media == "digital":
-        return f"PSN game {tid}"
+        return f"PSN game {tid}" + (f", version {rec['app_ver']}" if rec.get("app_ver") else "")
+    if media == "digital-patched":
+        return f"PSN game {tid} with update {rec.get('app_ver') or '?'}"
     v = rec.get("disc_version")
     return f"disc {tid}" + (f", disc version {v}" if v else "")
+
+
+DIGITAL_MEDIA = ("digital", "digital-patched")     # eboots[].media of a PSN (digital) copy's program
+
+
+def digital_reason(entry, title_id):
+    """stage 0: a digital (NP..) copy is supported only once the catalogue has an EBOOT record for its title ID
+    (the program compared with disc + update, an RPCS3 reference boot and a port run, one game at a time). Until then
+    -> the player's reason; None for a disc ID, an unknown ID or a digital ID with a record."""
+    if not title_id or not title_id.startswith("NP") or title_id not in _flat_ids(entry):
+        return None
+    if any(r.get("title_id") == title_id for r in entry.get("eboots", [])):
+        return None
+    need = (entry.get("update") or {}).get("version")
+    use = f"the disc with update {need}" if need else "the disc"
+    return (f"Digital copy ({title_id}): not yet supported. Use {use} for now; digital copies are added one game at "
+            "a time, once each has been checked.")
 
 
 def check_eboot(entry, path, known=(), title_id=None, sha=None):
@@ -527,8 +638,12 @@ def check_eboot(entry, path, known=(), title_id=None, sha=None):
         ok = ", ".join(sorted({x["title_id"] for x in sup})) or "another version"
         return res("fail", "Not supported yet", f"This EBOOT.elf is {title}, {_where(r)}: a different program from "
                    f"the one the port is built from ({ok}), so the port cannot use it yet.", **kw)
+    # the version rule reads the record that matched (the player's title ID first, above): a disc program never
+    # has the update; an update record, a PSN game with the update installed over it ('digital-patched') or a PSN game
+    # released at that version ('digital') passes when its own version is at least the one needed. A record without a
+    # version fails (it cannot show it has the update).
     need = (entry.get("update") or {}).get("version")
-    if need and (r.get("media") != "update" or _vkey(r.get("app_ver") or "") < _vkey(need)):
+    if need and (r.get("media") not in DIGITAL_MEDIA + ("update",) or _vkey(r.get("app_ver") or "") < _vkey(need)):
         frm = "the disc" if r.get("media") == "disc" else _where(r) if r.get("media") == "update" else "the PSN game"
         return res("fail", "Wrong version", f"This EBOOT.elf comes from {frm}; {title} needs the one from update "
                    f"{need}. Choose the EBOOT.elf made from that update's EBOOT.BIN.", **kw)
@@ -605,6 +720,7 @@ def _item_from_folder(path, source=None):
     it = {"kind": kind, "path": path, "title_id": sfo.get("TITLE_ID"), "version": sfo.get("APP_VER"),
           "sfo": sfo, "category": sfo.get("CATEGORY")}
     base = os.path.dirname(sfo_path)
+    it["gap"] = folder_gap(base)
     for key, nm in (("icon", "ICON0.PNG"), ("background", "PIC1.PNG")):
         p = _ci_path(base, (nm,))
         it[key] = p if p and os.path.isfile(p) else None
@@ -707,13 +823,16 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
     ids = set(_flat_ids(entry))
     base_items = [i for i in items if _is_base(i)]
     mine = [i for i in base_items if i.get("title_id") in ids]
+    # a copy the port can build from before a recognised-only one (untested, or a digital copy without a record)
+    mine.sort(key=lambda i: bool(untested_reason(entry, i["title_id"]) or digital_reason(entry, i["title_id"])))
     base = mine[0] if mine else None
     r = _empty(entry, "not_added", "Game files not found")
     pb = (prior or {}).get("build")
     if base is None and not pb:
         gp = [i for i in items if i["kind"] == "game_pkg" and i.get("title_id") in ids]
         if gp:
-            r.update(state="needs_attention", reason="Game package is encrypted; give the installed game folder",
+            r.update(state="needs_attention", reason="This is the game's package. Install your digital copy in RPCS3 "
+                                                      "first; the launcher finds games RPCS3 installed.",
                      files=dict(r["files"], disc=gp[0]["path"]), title_id=gp[0]["title_id"])
         return r
     if base is not None:
@@ -730,8 +849,9 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
             continue
         if i["kind"] in ("update_pkg", "update_folder") or (i["kind"] == "psn" and i["title_id"].startswith("BC")):
             # the highest version wins; at equal versions an RPCS3-installed one (real APP_VER) beats a PKG file name
-            if upd_item is None or (_vkey(i["version"]), i.get("source") == "rpcs3") > \
-                    (_vkey(upd_item["version"]), upd_item.get("source") == "rpcs3"):
+            # a usable one (complete folder, named game/<title ID>) beats an unusable one of any version
+            if upd_item is None or (update_problem(i["path"]) is None, _vkey(i["version"]), i.get("source") == "rpcs3") > \
+                    (update_problem(upd_item["path"]) is None, _vkey(upd_item["version"]), upd_item.get("source") == "rpcs3"):
                 upd_item = i
     if upd_item:
         r["files"]["update"] = upd_item["path"]
@@ -740,8 +860,8 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
             r["update_check"] = {"level": "warn", "tag": "Newer than tested",
                                  "message": f"Update {upd_item['version']} is newer than the tested {need}; it may "
                                             "still work."}
-    elif prior and (prior.get("files") or {}).get("update"):
-        r["files"]["update"] = prior["files"]["update"]
+    elif prior and (prior.get("files") or {}).get("update") and os.path.exists(prior["files"]["update"]):
+        r["files"]["update"] = prior["files"]["update"]     # kept only while it is there (a cleared override's path is not)
     src = {}
     if base is not None:
         src["disc"] = base.get("source") or ("iso" if base["kind"] == "iso" else "folder")
@@ -767,8 +887,21 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
     if prior and prior.get("state") == "building":
         r.update(state="building", reason="Build in progress")
         return r
+    uprob = update_problem(r["files"]["update"]) if r["files"]["update"] else None
+    if uprob:                     # never run or build half-updated: say why
+        r.update(state="needs_attention", reason=uprob)
+        return r
+    if base is not None and game_folder_problem(base):
+        r.update(state="needs_attention", reason=game_folder_problem(base))
+        return r
     if pb:
         exe = pb.get("exe")
+        disc_rec = pb.get("disc") or r["files"]["disc"]
+        if exe and os.path.isfile(exe) and disc_rec and not os.path.exists(disc_rec):
+            r["build"] = pb       # Play would start without the game's files
+            r.update(state="needs_attention", reason="The game files are not there any more. Choose them again in "
+                                                      "Game files (Play needs them).")
+            return r
         if exe and os.path.isfile(exe):
             r["build"] = pb
             changed = inputs_changed(pb, (r.get("eboot_check") or {}).get("sha256"))
@@ -783,6 +916,14 @@ def _resolve_found(entry, items, prior, port_version, saves=(), known=()):
         return r
     if base.get("encrypted"):
         r.update(state="needs_attention", reason="Disc image is encrypted; use a decrypted dump")
+        return r
+    why = untested_reason(entry, base["title_id"])
+    if why:                       # a recognised release the port was never built or run with: no Build offered
+        r.update(state="not_ported", reason=why, untested=True)
+        return r
+    why = digital_reason(entry, base["title_id"])
+    if why:                       # stage 0: found and named, no Build until its catalogue record exists
+        r.update(state="not_ported", reason=why, digital=True)
         return r
     need = (entry.get("update") or {}).get("version")
     if need:
@@ -978,6 +1119,8 @@ def scan(paths, library=None, catalog=None, depth=DEFAULT_DEPTH, rpcs3=None, fin
                 f0 = found[0]
                 r.update(state="not_ported", reason="Not ported yet", title_id=f0["title_id"], version=f0["version"],
                          files=dict(f0["files"]), art=dict(f0["art"]))
+                if all(k.get("untested") for k in found):
+                    r.update(reason=found[0]["reason"], untested=True)
                 if all(k["state"] in ("built", "port_updated") for k in kids):
                     r.update(state="built", reason="Built")
                 elif any(k["state"] in ("ready_to_build", "built", "port_updated") for k in kids):
@@ -1247,6 +1390,7 @@ def scan_rpcs3(folder, catalog=None):
             it = {"kind": kind, "path": p, "title_id": sfo.get("TITLE_ID"), "version": sfo.get("APP_VER"), "sfo": sfo,
                   "category": sfo.get("CATEGORY"), "source": "rpcs3"}
             sfo_dir = os.path.dirname(sfo_path)
+            it["gap"] = folder_gap(sfo_dir)
             for key, nm in (("icon", "ICON0.PNG"), ("background", "PIC1.PNG")):
                 q = _ci_path(sfo_dir, (nm,))
                 it[key] = q if q and _isfile(q) else None
@@ -1267,9 +1411,15 @@ def scan_rpcs3(folder, catalog=None):
             cat_ = sfo.get("CATEGORY")
             if cat_ not in ("HG", "GD"):
                 continue
-            out["items"].append({"kind": "psn" if cat_ == "HG" else "update_folder", "path": p,
+            # a PSN (NP..) game's update installs over the game in the same game/<ID> folder; if its PARAM.SFO
+            # says GD there (UNVERIFIED which one RPCS3 leaves), the folder is still the game itself, now updated.
+            # A disc (BC..) game's GD folder is only its update.
+            tid_ = (sfo.get("TITLE_ID") or name).upper()
+            kind_ = "psn" if cat_ == "HG" or not tid_.startswith("BC") else "update_folder"
+            out["items"].append({"kind": kind_, "path": p,
                                  "title_id": sfo.get("TITLE_ID") or name, "version": sfo.get("APP_VER"), "sfo": sfo,
-                                 "category": cat_, "source": "rpcs3", "icon": None, "background": None})
+                                 "category": cat_, "source": "rpcs3", "icon": None, "background": None,
+                                 "gap": folder_gap(p)})
             add_eboot(p)
         for user, up in _ls(os.path.join(hdd, "home"), folder):
             # fixed name: the user folder itself is never listed (it holds exdata)
@@ -1705,6 +1855,9 @@ def make_library(games, catalog=None, prior=None):
         lib["locations"] = dict(prior["locations"])
     if isinstance((prior or {}).get("prefs"), dict) and prior["prefs"]:
         lib["prefs"] = dict(prior["prefs"])
+    if isinstance((prior or {}).get("unofficial_exes"), dict) and prior["unofficial_exes"]:
+        lib["unofficial_exes"] = dict(prior["unofficial_exes"])
+    refresh_unofficial(lib)
     return lib
 
 
@@ -1723,6 +1876,79 @@ def write_library(path, lib):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+# ------------------------------------------------------------------------------------------------ unofficial recomps
+# ENHANCEMENT (launch only): other projects' recompiled games the player already has. Off by default
+# (pref "unofficial"); when on, library.json carries an "unofficial" list (the known entries of data/titles/unofficial.json
+# plus the exe the player chose, kept in "unofficial_exes"). Nothing is downloaded, built, patched or written in their
+# folder: the launcher only starts the chosen exe from its own folder, as it starts the port's games.
+def unofficial_known(path=None):
+    try:
+        with open(path or UNOFFICIAL_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        return [e for e in d.get("entries", []) if isinstance(e, dict) and isinstance(e.get("id"), str)]
+    except (OSError, ValueError):
+        return []
+
+
+def unofficial_entry(known, exe):
+    """One list entry: the data file's fields plus the chosen exe, its state (not_set_up | ready | missing) and, when
+    the file's name differs from the README's, a warning (the pick is still allowed)."""
+    e = {k: v for k, v in known.items()}
+    e["unofficial"] = True
+    e["exe"] = exe or None
+    warn = None
+    if not exe:
+        e["state"], e["reason"] = "not_set_up", "Not set up: choose the game's .exe"
+    elif not os.path.isfile(exe):
+        e["state"], e["reason"] = "missing", "The chosen program is not there any more. Choose it again."
+    else:
+        e["state"], e["reason"] = "ready", "Ready to start"
+        want = known.get("exe_name")
+        if want and os.path.basename(exe).lower() != want.lower():
+            warn = f"The README of {known.get('project', 'that project')} names {want}; you chose {os.path.basename(exe)}."
+    e["warning"] = warn
+    return e
+
+
+def refresh_unofficial(lib, path=None):
+    """Make lib['unofficial'] match the pref: absent when off (library.json is then as it always was)."""
+    if (lib.get("prefs") or {}).get("unofficial") != "on":
+        lib.pop("unofficial", None)
+        return
+    chosen = lib.get("unofficial_exes") or {}
+    lib["unofficial"] = [unofficial_entry(k, chosen.get(k["id"])) for k in unofficial_known(path)]
+
+
+def set_unofficial_exe(lib, uid, path, known=None):
+    """-> (error text or None, warning or None). Validates only that the file exists, is not a never-read file and
+    ends in .exe; an unexpected name is a warning."""
+    kn = next((k for k in (known if known is not None else unofficial_known()) if k["id"] == uid), None)
+    if kn is None:
+        return f"Unknown unofficial game id: {uid}", None
+    p = os.path.abspath(os.path.expanduser(path))
+    if _forbidden(p):
+        return "That place is never read or written (licence or firmware files)", None
+    if not os.path.isfile(p):
+        return f"Not a file: {p}", None
+    if not p.lower().endswith(".exe"):
+        return f"Choose the game's .exe (the README names {kn.get('exe_name', 'its exe')}).", None
+    ex = dict(lib.get("unofficial_exes") or {})
+    ex[uid] = p
+    lib["unofficial_exes"] = ex
+    refresh_unofficial(lib)
+    return None, unofficial_entry(kn, p)["warning"]
+
+
+def clear_unofficial_exe(lib, uid):
+    ex = dict(lib.get("unofficial_exes") or {})
+    ex.pop(uid, None)
+    if ex:
+        lib["unofficial_exes"] = ex
+    else:
+        lib.pop("unofficial_exes", None)
+    refresh_unofficial(lib)
 
 
 # ------------------------------------------------------------------------------------------------ CLI
@@ -2184,6 +2410,12 @@ def run_build(library, gid, extra=(), out=sys.stdout, python=None, firstrun=FIRS
 
 def play_command(lib, gid):
     """-> (argv, env additions, cwd) to start a built game, or raises ValueError(player message)."""
+    u = next((x for x in lib.get("unofficial") or [] if x.get("id") == gid), None)
+    if u is not None:   # ENHANCEMENT: another project's build: just its exe, in its own folder, nothing added
+        exe = u.get("exe")
+        if not exe or not os.path.isfile(exe):
+            raise ValueError("Choose this game's .exe first (it is not set up, or the program was removed).")
+        return [exe], {}, os.path.dirname(exe)
     g = _find_game(lib, gid)
     if g is None:
         raise ValueError(f"Unknown game id: {gid}")
@@ -2198,9 +2430,14 @@ def play_command(lib, gid):
         raise ValueError("The game's EBOOT is not there any more. Choose it again in Game files.")
     env = {}
     disc = b.get("disc") or (g.get("files") or {}).get("disc")
+    if disc and not os.path.exists(disc):
+        raise ValueError("The game files are not there any more. Choose them again in Game files (Play needs them).")
     if disc and os.path.isdir(disc):
         # the folder that holds PS3_GAME (main.cpp derive_vfs_root); a PSN game folder holds PARAM.SFO + USRDIR itself
         env["PS3_VFS_ROOT"] = disc
+    uprob = update_problem((g.get("files") or {}).get("update")) if (g.get("files") or {}).get("update") else None
+    if uprob:
+        raise ValueError(uprob)
     # saves: the game's own saves override is its dev_hdd0; the global saves folder gets one dev_hdd0 per game;
     # neither = the game's default (gamedata/dev_hdd0 under its working folder, main.cpp)
     own, glob_saves = (g.get("files") or {}).get("saves"), (lib.get("locations") or {}).get("saves")
@@ -2219,7 +2456,7 @@ def update_lower(g):
     console reads it (the update's files win over the disc because the game reads them there; the game's writes still
     go to its own PS3_HDD0_ROOT, patch 7014). Only an installed update folder named <...>/game/<TITLE_ID> can be
     layered without copying: its grandparent is the lower dev_hdd0. A PKG (its files are encrypted) or a folder with
-    another name -> None (the game runs with the update's EBOOT only)."""
+    another name -> None (update_problem refuses both before Play or Build)."""
     upd = (g.get("files") or {}).get("update")
     if not upd or not os.path.isdir(upd):
         return None
@@ -2254,10 +2491,6 @@ def run_play(library, gid, out=sys.stdout, dry_run=False, popen=subprocess.Popen
     except ValueError as e:
         print(f"REASON {e}", file=out, flush=True)
         return 2
-    upd = ((_find_game(lib, gid) or {}).get("files") or {}).get("update")
-    if upd and "PS3_HDD0_LOWER" not in env:
-        print("WARN The update's own files are not layered over the game (only an installed update folder named "
-              "game/<title ID> can be); the game runs with the update's EBOOT.", file=out, flush=True)
     if dry_run:
         print(json.dumps({"argv": argv, "env": env, "cwd": cwd}, indent=1, ensure_ascii=False), file=out)
         return 0
@@ -2343,6 +2576,12 @@ def main(argv=None):
     sp.add_argument("key", choices=sorted(PREFS))
     sp.add_argument("value", nargs="?")
     sp.add_argument("--reset", action="store_true", help="back to the default (drops the key)")
+    us = sub.add_parser("unofficial-set", help="point an unofficial card at the player's own built exe (nothing is started)")
+    uc = sub.add_parser("unofficial-clear", help="forget the exe chosen for an unofficial card")
+    for x in (us, uc):
+        x.add_argument("--library", required=True)
+        x.add_argument("--game", required=True)
+    us.add_argument("path")
     gs = sub.add_parser("get-settings", help="print the shared and per-game display and control settings (JSON)")
     ss = sub.add_parser("set-setting", help="set one display or control key, shared or for one game; --unset to fall back")
     for x in (gs, ss):
@@ -2489,8 +2728,30 @@ def main(argv=None):
             lib["prefs"] = prefs
         else:
             lib.pop("prefs", None)
+        if a.key == "unofficial":
+            refresh_unofficial(lib)
         write_library(a.library, lib)
         print(json.dumps(prefs, ensure_ascii=False))
+        return 0
+
+    if a.cmd in ("unofficial-set", "unofficial-clear"):
+        lib = read_library(a.library)
+        if lib is None:
+            lib = make_library(scan([], None, load()))
+        if a.cmd == "unofficial-set":
+            err, warn = set_unofficial_exe(lib, a.game, a.path)
+            if err:
+                print(err, file=sys.stderr)
+                return 2
+            if warn:
+                print("WARN " + warn)
+        else:
+            if not any(k["id"] == a.game for k in unofficial_known()):
+                print(f"Unknown unofficial game id: {a.game}", file=sys.stderr)
+                return 2
+            clear_unofficial_exe(lib, a.game)
+        write_library(a.library, lib)
+        print(json.dumps(lib.get("unofficial_exes") or {}, ensure_ascii=False))
         return 0
 
     if a.cmd in ("override", "clear-override"):

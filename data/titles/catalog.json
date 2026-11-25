@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "port_version": "0.4.0",
+ "port_version": "0.4.1",
  "note": "Numbers, ids and versions only. Known executables: see eboots_format.",
  "games": [
   {
@@ -8,7 +8,7 @@
    "title": "Ratchet & Clank Future: Tools of Destruction",
    "year": 2007,
    "order": 1,
-   "readme_state": "first target: played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet",
+   "readme_state": "earlier focus, work continues in another port effort; played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet",
    "playability": "in_game",
    "playability_checked": "2026-11-10",
    "playability_note": "about 11 minutes in Metropolis with scripted input",
@@ -25,6 +25,27 @@
      ]
     },
     "digital": {}
+   },
+   "untested_title_ids": {
+    "disc": {
+     "Asia": [
+      "BCAS20023"
+     ],
+     "JP": [
+      "BCJS30014"
+     ],
+     "KR": [
+      "BCKS10016"
+     ]
+    },
+    "digital": {
+     "EU": [
+      "NPEA00452"
+     ],
+     "US": [
+      "NPUA80965"
+     ]
+    }
    },
    "update": null,
    "exe": "tods.exe",
@@ -107,6 +128,25 @@
      ]
     }
    },
+   "untested_title_ids": {
+    "disc": {
+     "Asia": [
+      "BCAS20052"
+     ]
+    },
+    "digital": {
+     "EU": [
+      "NPEA00088",
+      "NPEA00106"
+     ],
+     "JP": [
+      "NPJA00033"
+     ],
+     "HK": [
+      "NPHA80046"
+     ]
+    }
+   },
    "update": null,
    "exe": "qfb.exe",
    "estimate": null,
@@ -173,6 +213,24 @@
     },
     "digital": {}
    },
+   "untested_title_ids": {
+    "disc": {
+     "Asia": [
+      "BCAS20098"
+     ],
+     "KR": [
+      "BCKS10087"
+     ]
+    },
+    "digital": {
+     "EU": [
+      "NPEA00453"
+     ],
+     "US": [
+      "NPUA80966"
+     ]
+    }
+   },
    "update": {
     "version": "01.20",
     "title_ids": [
@@ -182,7 +240,7 @@
      "BCES00748",
      "BCJS30038"
     ],
-    "what": "title update 01.20 as a PKG file or an installed folder"
+    "what": "title update 01.20, the installed update folder (game/<title ID>)"
    },
    "exe": "acit.exe",
    "estimate": {
@@ -204,7 +262,7 @@
       "BCES00748",
       "BCJS30038"
      ],
-     "what": "title update 01.20 as a PKG file or an installed folder"
+     "what": "title update 01.20, the installed update folder (game/<title ID>)"
     },
     {
      "key": "eboot",
@@ -315,7 +373,7 @@
    "title": "Ratchet & Clank: All 4 One",
    "year": 2011,
    "order": 4,
-   "readme_state": "builds (1.03 update); reaches its first fight in colour, then the characters fall through the floor; not playable",
+   "readme_state": "first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, and runs there to the end of a 600-second run (scripted runs, 2026-11-19 and 2026-11-20); not in control yet; not playable",
    "playability": "boots",
    "playability_checked": "2026-11-14",
    "playability_note": "reaches its first level in colour; the characters fall through the floor (hand play)",
@@ -358,7 +416,7 @@
      "NPUA80695",
      "NPEA00356"
     ],
-    "what": "title update 01.03 as a PKG file or an installed folder"
+    "what": "title update 01.03, the installed update folder (game/<title ID>)"
    },
    "exe": "a4o.exe",
    "estimate": null,
@@ -378,7 +436,7 @@
       "NPUA80695",
       "NPEA00356"
      ],
-     "what": "title update 01.03 as a PKG file or an installed folder"
+     "what": "title update 01.03, the installed update folder (game/<title ID>)"
     },
     {
      "key": "eboot",
@@ -475,10 +533,10 @@
    "title": "Ratchet & Clank: Full Frontal Assault",
    "year": 2012,
    "order": 5,
-   "readme_state": "builds and installs its data (1.05 update); the screen stays black; not playable",
+   "readme_state": "builds and installs its data (1.05 update); a scripted new game passes the title screen and reaches the level phoenix_ph1, and keeps drawing there to the end of a 420-second run, as does a run from a campaign save (scripted runs, 2026-11-24); not playable",
    "playability": "boots",
-   "playability_checked": "2026-11-10",
-   "playability_note": "a black frame",
+   "playability_checked": "2026-11-24",
+   "playability_note": "reaches the level phoenix_ph1 and keeps drawing there (scripted input)",
    "badge_name": "FFA",
    "supported": false,
    "builds": true,
@@ -514,7 +572,7 @@
      "NPEA00378",
      "NPJA00089"
     ],
-    "what": "title update 01.05 as a PKG file or an installed folder"
+    "what": "title update 01.05, the installed update folder (game/<title ID>)"
    },
    "exe": "ffa.exe",
    "estimate": null,
@@ -533,7 +591,7 @@
       "NPEA00378",
       "NPJA00089"
      ],
-     "what": "title update 01.05 as a PKG file or an installed folder"
+     "what": "title update 01.05, the installed update folder (game/<title ID>)"
     },
     {
      "key": "eboot",
@@ -645,10 +703,10 @@
    "title": "Ratchet & Clank: Into the Nexus",
    "year": 2013,
    "order": 6,
-   "readme_state": "builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable",
+   "readme_state": "builds (1.01 update); a scripted new game reaches its first level, prison_transport, where Ratchet stands to the end of a 600-second run (scripted run, 2026-11-20); the script does not leave the first room yet; not playable",
    "playability": "boots",
-   "playability_checked": "2026-11-10",
-   "playability_note": "the lobby stays black",
+   "playability_checked": "2026-11-20",
+   "playability_note": "reaches its first level; Ratchet stands in it (scripted input)",
    "badge_name": "Nexus",
    "supported": false,
    "builds": true,
@@ -684,7 +742,7 @@
      "NPEA00457",
      "NPJA00101"
     ],
-    "what": "title update 01.01 as a PKG file or an installed folder"
+    "what": "title update 01.01, the installed update folder (game/<title ID>)"
    },
    "exe": "nexus.exe",
    "estimate": null,
@@ -703,7 +761,7 @@
       "NPEA00457",
       "NPJA00101"
      ],
-     "what": "title update 01.01 as a PKG file or an installed folder"
+     "what": "title update 01.01, the installed update folder (game/<title ID>)"
     },
     {
      "key": "eboot",
@@ -808,6 +866,19 @@
      ]
     }
    },
+   "untested_title_ids": {
+    "disc": {
+     "EU": [
+      "BCES01503"
+     ]
+    },
+    "digital": {
+     "US": [
+      "NPUA80644",
+      "NPUA80645"
+     ]
+    }
+   },
    "update": null,
    "exe": "collection.exe",
    "estimate": null,
@@ -853,6 +924,14 @@
         "NPEA00385"
        ]
       }
+     },
+     "untested_title_ids": {
+      "disc": {
+       "EU": [
+        "BCES01503"
+       ]
+      },
+      "digital": {}
      },
      "update": null,
      "exe": "rc1.exe",
@@ -915,6 +994,18 @@
        ]
       }
      },
+     "untested_title_ids": {
+      "disc": {
+       "EU": [
+        "BCES01503"
+       ]
+      },
+      "digital": {
+       "US": [
+        "NPUA80644"
+       ]
+      }
+     },
      "update": null,
      "exe": "rc2.exe",
      "estimate": null,
@@ -973,6 +1064,18 @@
       "digital": {
        "EU": [
         "NPEA00387"
+       ]
+      }
+     },
+     "untested_title_ids": {
+      "disc": {
+       "EU": [
+        "BCES01503"
+       ]
+      },
+      "digital": {
+       "US": [
+        "NPUA80645"
        ]
       }
      },
@@ -1049,6 +1152,14 @@
     "digital": {
      "US": [
       "NPUA80646"
+     ]
+    }
+   },
+   "untested_title_ids": {
+    "disc": {},
+    "digital": {
+     "EU": [
+      "NPEA00423"
      ]
     }
    },

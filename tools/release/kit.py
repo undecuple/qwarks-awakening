@@ -37,6 +37,7 @@ Output lines (the launcher parses them; every other line is plain text):
 Exit 0 = ok, 1 = refused or failed, 2 = usage, 130 = cancelled.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -46,6 +47,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -72,6 +74,42 @@ class Refused(Exception):
 
 class Cancelled(Exception):
     pass
+
+
+# errors of writing to the player's disk (not of the network): a full disk, no permission, a read-only drive
+LOCAL_WRITE_ERRNO = {errno.ENOSPC, errno.EACCES, errno.EPERM, errno.EROFS, getattr(errno, "EDQUOT", errno.ENOSPC),
+                     errno.ENAMETOOLONG, errno.EMFILE, errno.ENOTDIR, errno.EISDIR}
+
+
+def local_write_error(e):
+    return isinstance(e, OSError) and not isinstance(e, urllib.error.URLError) and e.errno in LOCAL_WRITE_ERRNO
+
+
+def free_text(path):
+    """'N MB free' for the drive holding `path` (its nearest existing folder), or '' when it cannot be read."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        up = os.path.dirname(p)
+        if up == p:
+            break
+        p = up
+    try:
+        return f"{shutil.disk_usage(p).free // (1 << 20)} MB free"
+    except OSError:
+        return ""
+
+
+def disk_reason(e, path):
+    """The player's message for an OSError while saving the kit: names the error and the free space, no path."""
+    if e.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+        what = "this folder cannot be written to (permission denied)"
+    elif e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
+        what = "the disk is full"
+    else:
+        what = f"{type(e).__name__}: {e.strerror or e}"
+    free = free_text(path)
+    return (f"The build kit could not be saved: {what}" + (f" ({free})" if free else "") +
+            ". Free some space or move the folder, then try again.")
 
 
 # ------------------------------------------------------------------------------------------------------ manifest
@@ -241,6 +279,8 @@ def download(url, dest, cap, allow_local, prog=None, lo=0.0, hi=0.0, opener=open
                         prog.emit(1, "download", n, total or n, lo, hi)
         os.replace(part, dest)
     except (OSError, ValueError) as e:
+        if local_write_error(e):
+            raise Refused(disk_reason(e, dest))
         raise Refused(f"The download did not finish ({type(e).__name__}). Check the connection and try again.")
     finally:
         if os.path.exists(part):
@@ -259,7 +299,26 @@ def _zip_top(z):
 
 def install(zip_path, root, expect, out=sys.stdout, prog=None, lo=0.0, hi=100.0):
     """Check and install the kit from a full build zip -> number of files installed. Raises Refused / Cancelled;
-    on any of them nothing outside <root>/.kit-staging was changed (and that folder is removed)."""
+    on a refusal before the move nothing outside <root>/.kit-staging was changed (and that folder is removed). A disk
+    error (full, permission) or a damaged zip member is a Refused with its reason; the staging folder and a half-written
+    kit list are removed. A disk error during the move can leave some new kit files in <root> (and replace old ones):
+    kit.json is written last, so such a kit is not reported as installed and the next fetch installs it again."""
+    try:
+        return _install(zip_path, root, expect, out, prog, lo, hi)
+    except (OSError, zipfile.BadZipFile, zlib.error) as e:
+        shutil.rmtree(os.path.join(root, STAGING), ignore_errors=True)
+        try:
+            os.remove(os.path.join(root, MANIFEST + ".part"))
+        except OSError:
+            pass
+        if local_write_error(e):
+            raise Refused(disk_reason(e, root))
+        if isinstance(e, OSError):
+            raise Refused(f"The build kit could not be installed ({type(e).__name__}). Try downloading it again.")
+        raise Refused("The download is damaged (a file inside it cannot be read); nothing was installed.")
+
+
+def _install(zip_path, root, expect, out, prog, lo, hi):
     if not HEX64.fullmatch(expect or ""):
         raise Refused("This launcher carries no build kit list, so it cannot check a download.")
     try:
@@ -354,6 +413,10 @@ def fetch(root, url, expect, out=sys.stdout, stop_file=None, allow_local=False, 
     except Cancelled:
         print("RESULT ok=0 step=cancelled elapsed=%d" % int(time.time() - prog.t0), file=out, flush=True)
         return 130
+    except OSError as e:          # e.g. the download folder cannot be made
+        print(f"REASON {disk_reason(e, root)}", file=out, flush=True)
+        print(f"RESULT ok=0 step={step} elapsed={int(time.time() - prog.t0)}", file=out, flush=True)
+        return 1
     except Refused as e:
         print(f"REASON {e}", file=out, flush=True)
         print(f"RESULT ok=0 step={step} elapsed={int(time.time() - prog.t0)}", file=out, flush=True)

@@ -1,0 +1,453 @@
+cellSysCacheMount: OK_RELAYED keeps the cache for the same id after a session that ended; anything else clears it (OK_CLEARED).
+
+Idea from Re-TeRo17/ps3recomp 8acdefdae7ede7ccecd4db4285985661ea2faf0b "cellSysCacheMount clears the cache it says it
+cleared" (MIT); a hand rewrite with a different rule (they clear at every mount), nothing copied.
+
+Problem: Mount always answered CELL_OK (= CELL_SYSCACHE_RET_OK_CLEARED, "the system wiped the cache, start it anew") and
+kept every file under PS3_HDD1_ROOT/cache/<id>, and it never removed the cache of another id. A title then trusts a
+"fresh" cache that holds whatever an earlier run left, often a run that was killed mid-write (every Proton test run ends
+that way). Their report: Drakengard 3's FIOS index left without its header by a killed run made every later start re-read
+it 512 bytes at a time (312,000 opens, never reaching the hub). ToD and A4O import cellSysCacheMount; ToD's FIOS keeps
+its disc cache there (/dev_hdd1/cache/BCUS98127/cache.idx, the RE notes s.FIOS, port/rc/tests/fios_index_check.py).
+Also: an id with '/' or ".." made a host directory outside the cache (cache/../x).
+
+Fix (libs/system/cellSysutil.c, cellSysutil.h):
+- One cache: PS3_HDD1_ROOT/cache holds at most the last mounted cache directory.
+- Same non-empty id, its directory present, and the last session that mounted a cache ended: OK_RELAYED (1), files kept.
+  Otherwise (another id, empty id, no cache yet, or an unfinished session): every entry under PS3_HDD1_ROOT/cache is
+  deleted, the new directory created, OK_CLEARED (0).
+- "Unfinished session": a mount writes PS3_HDD1_ROOT + ".syscache-open" (outside the guest-visible tree); an atexit
+  handler removes it at a normal end of the process (return from main, exit(); the host quit path ends with exit(0)).
+  A killed run leaves it and the next mount clears.
+- Cache ids are checked against the sysutil name-string rule (A-Z 0-9 '-' '_', not starting with '_'):
+  otherwise CELL_SYSCACHE_ERROR_PARAM (0x8002bc03), nothing created.
+- No PS3_HDD1_ROOT: unchanged, OK_CLEARED, nothing on the host.
+- getCachePath is unchanged (/dev_hdd1/cache/<id>; RPCS3 returns /dev_hdd1 and mounts the cache there: a separate change).
+- cellSysCacheClear is unchanged (it still only forgets the mount; RPCS3 empties the cache, keeps it mounted and answers
+  OK_CLEARED; ToD calls it from its StageCore boot function after the mount thread, 0x392298): a separate change.
+
+Semantics: RPCS3 cellSysCache.cpp (read 2026-11-19 for behaviour, nothing copied) [src:rpcs3-cellsyscache]: a mount with
+a non-empty id equal to the current cache id answers OK_RELAYED; otherwise the previous cache is removed, the new one
+created (emptied if it was there) and OK_CLEARED; a mounted cache is marked incomplete and a marked cache is never
+reused; ids are checked with sysutil_check_name_string. RPCS3 also deletes the cache at a normal stop unless it saves
+state, so on RPCS3 the first mount of a boot is always OK_CLEARED; here a cache from a session that ended is relayed.
+ASSUMPTION: the console keeps the system cache across boots of the same title (what OK_RELAYED and the XMB's
+"delete system cache" boot option are for).
+
+Tests: libs/system/tests/test_syscache_mount.c (tools/test_syscache_mount.py; R&C runner
+port/rc/tests/run_syscache_mount_test.sh): seven sessions as forked children (_exit = killed): first mount CLEARED +
+path + dir; same id same session RELAYED, file kept; same id next session RELAYED, file kept; another id CLEARED, old
+cache gone; back CLEARED, other gone; after a killed session CLEARED and empty; empty id CLEARED twice; '../x' and '_LEAD'
+PARAM, nothing outside the cache; no root CLEARED. 22 checks PASS. Negative control (cellSysutil.c without this patch):
+FAIL, 10 of 22 (no RELAYED, old caches kept, files of a killed session kept, '../x' accepted and cache/../x created).
+diff --git a/libs/system/cellSysutil.c b/libs/system/cellSysutil.c
+--- a/libs/system/cellSysutil.c
++++ b/libs/system/cellSysutil.c
+@@ -16,11 +16,20 @@
+ #endif
+ #include <errno.h>
+ #include <sys/stat.h>   /* mkdir -- preparing the /dev_hdd1 cache directory */
++#include "../../runtime/platform/win32_dirent.h"   /* <dirent.h> or its Win32 stand-in (RC 7110) */
+ #ifdef _WIN32
+ #  include <direct.h>
+ #  ifndef mkdir
+ #    define mkdir(p, m) _mkdir(p)
+ #  endif
++#  ifndef rmdir
++#    define rmdir(p) _rmdir(p)
++#  endif
++#  ifndef S_ISDIR
++#    define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
++#  endif
++#else
++#  include <unistd.h>   /* rmdir */
+ #endif
+ 
+ /* Guest-memory stores — out-params from the recompiled title are guest VM
+@@ -568,6 +577,78 @@
+  * System cache
+  * -----------------------------------------------------------------------*/
+ 
++/* RC patch 7110: the host side of the one system cache. PS3_HDD1_ROOT/cache holds
++ * at most one cache directory, the one last mounted. A mount with that same
++ * non-empty id gets it back with its files (CELL_SYSCACHE_RET_OK_RELAYED); any
++ * other mount (another id, an empty id, no cache yet, or a cache whose session
++ * did not end) empties PS3_HDD1_ROOT/cache, creates the new directory and
++ * answers CELL_SYSCACHE_RET_OK_CLEARED. The old code answered CLEARED and kept
++ * every file, so a title trusted a "fresh" cache that held whatever an earlier
++ * run (often one killed mid-write) had left in it.
++ *
++ * "Session did not end": while a cache is mounted, the file PS3_HDD1_ROOT +
++ * ".syscache-open" (next to the root, so the guest never sees it) names it; a
++ * normal end of the process (exit or a return from main; the host quit path
++ * ends with exit(0)) removes it. A run that was killed leaves it, and the next
++ * mount clears the cache instead of relaying half-written files. RPCS3 marks a
++ * mounted cache incomplete the same way and reuses only an unmarked one, keeps
++ * the cache when the id is the same and non-empty, clears it otherwise
++ * (cellSysCache.cpp, syscache_info / cellSysCacheMount; read for behaviour,
++ * nothing copied) [src:rpcs3-cellsyscache].
++ * ASSUMPTION: the console keeps the cache across boots of the same title (what
++ * RELAYED and the XMB's "delete system cache" boot option are for); RPCS3 itself
++ * deletes it at a normal stop unless it saves state. */
++static char s_cache_state[1100];   /* host path of the ".syscache-open" file */
++static int  s_cache_state_atexit;
++
++static void syscache_state_end(void)
++{
++    if (s_cache_state[0]) remove(s_cache_state);
++}
++
++/* Delete everything inside host directory `dir`; the directory itself stays.
++ * Returns the number of entries that could not be removed. */
++static int syscache_empty_dir(const char* dir)
++{
++    int failed = 0;
++    DIR* d = opendir(dir);
++    if (!d) return 0;
++    struct dirent* e;
++    while ((e = readdir(d)) != NULL) {
++        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
++        char path[1100];
++        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
++        struct stat st;
++        if (stat(path, &st) != 0) { failed++; continue; }
++        if (S_ISDIR(st.st_mode)) {
++            failed += syscache_empty_dir(path);
++            if (rmdir(path) != 0) failed++;
++        } else if (remove(path) != 0) {
++            failed++;
++        }
++    }
++    closedir(d);
++    return failed;
++}
++
++static int syscache_is_dir(const char* path)
++{
++    struct stat st;
++    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
++/* A cache id is A-Z, 0-9, '-' and '_', not starting with '_' (the sysutil
++ * name-string rule; RPCS3 sysutil_check_name_string, read for behaviour). It is
++ * also a host directory name here, so this keeps '/', '.' and '\\' out of it. */
++static int syscache_id_valid(const char* id)
++{
++    if (id[0] == '_') return 0;
++    for (const char* c = id; *c; ++c)
++        if (!((*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_'))
++            return 0;
++    return 1;
++}
++
+ s32 cellSysCacheMount(char* param)
+ {
+     /* The argument is a GUEST EA of CellSysCacheParam:
+@@ -584,6 +665,8 @@
+     memcpy(cache_id, vm_base + ea, 32);
+     cache_id[32] = '\0';
+     printf("[cellSysutil] SysCacheMount(id='%s')\n", cache_id);
++    if (!syscache_id_valid(cache_id))
++        return (s32)CELL_SYSCACHE_ERROR_PARAM;
+ 
+     snprintf(s_cache_path, CELL_SYSCACHE_PATH_MAX, "/dev_hdd1/cache/%s", cache_id);
+     size_t n = strlen(s_cache_path);
+@@ -594,23 +677,50 @@
+ 
+     /* The guest path above is only half the mount: /dev_hdd1 must also exist as
+      * a WRITABLE host directory, or a title's first cache open fails against the
+-     * read-only disc root and it never creates its media threads. Create the
+-     * cache directory under the same host root ppu_fs.cpp maps /dev_hdd1 to
+-     * (PS3_HDD1_ROOT); without that root /dev_hdd1 is not remapped, so there is
+-     * nothing to prepare. */
+-    { const char* root = getenv("PS3_HDD1_ROOT");
+-      if (root && *root) {
+-          char hpath[512];
+-          snprintf(hpath, sizeof hpath, "%s/cache", root);
+-          mkdir(hpath, 0777);
+-          snprintf(hpath, sizeof hpath, "%s/cache/%s", root, cache_id);
+-          if (mkdir(hpath, 0777) == 0 || errno == EEXIST)
+-              printf("[cellSysutil] SysCacheMount: host cache dir %s ready\n", hpath);
+-          else
+-              printf("[cellSysutil] SysCacheMount: host cache dir %s NOT created (errno=%d)\n",
+-                     hpath, errno); } }
+-
+-    return CELL_OK;   /* CELL_SYSCACHE_RET_OK_CLEARED */
++     * read-only disc root and it never creates its media threads. The cache
++     * lives under the host root ppu_fs.cpp maps /dev_hdd1 to (PS3_HDD1_ROOT);
++     * without that root /dev_hdd1 is not remapped, nothing is kept, and every
++     * mount is a cleared one. */
++    const char* root = getenv("PS3_HDD1_ROOT");
++    if (!root || !*root)
++        return CELL_SYSCACHE_RET_OK_CLEARED;
++
++    char cdir[1100], hpath[1100], state[1100];
++    snprintf(cdir, sizeof cdir, "%s/cache", root);
++    snprintf(hpath, sizeof hpath, "%s/cache/%s", root, cache_id);
++    snprintf(state, sizeof state, "%s.syscache-open", root);
++    mkdir(cdir, 0777);
++
++    /* A state file left by an earlier process: that session never ended. The
++     * one this process wrote (s_cache_state) only marks the current mount. */
++    int unfinished = 0;
++    if (strcmp(s_cache_state, state) != 0) {
++        FILE* f = fopen(state, "rb");
++        if (f) { unfinished = 1; fclose(f); }
++    }
++
++    s32 ret;
++    if (cache_id[0] && !unfinished && syscache_is_dir(hpath)) {
++        printf("[cellSysutil] SysCacheMount: host cache dir %s kept -> OK_RELAYED\n", hpath);
++        ret = CELL_SYSCACHE_RET_OK_RELAYED;
++    } else {
++        int failed = syscache_empty_dir(cdir);
++        if (cache_id[0]) mkdir(hpath, 0777);
++        if (syscache_is_dir(hpath))
++            printf("[cellSysutil] SysCacheMount: host cache dir %s cleared%s, %d entr%s not removed"
++                   " -> OK_CLEARED\n", hpath, unfinished ? " (the last session did not end)" : "",
++                   failed, failed == 1 ? "y" : "ies");
++        else
++            printf("[cellSysutil] SysCacheMount: host cache dir %s NOT created (errno=%d)\n",
++                   hpath, errno);
++        ret = CELL_SYSCACHE_RET_OK_CLEARED;
++    }
++
++    FILE* f = fopen(state, "wb");
++    if (f) { fputs(cache_id, f); fclose(f); }
++    snprintf(s_cache_state, sizeof s_cache_state, "%s", state);
++    if (!s_cache_state_atexit) { s_cache_state_atexit = 1; atexit(syscache_state_end); }
++    return ret;
+ }
+ 
+ s32 cellSysCacheClear(void)
+diff --git a/libs/system/cellSysutil.h b/libs/system/cellSysutil.h
+--- a/libs/system/cellSysutil.h
++++ b/libs/system/cellSysutil.h
+@@ -97,6 +97,11 @@
+ /* System cache path size */
+ #define CELL_SYSCACHE_PATH_MAX  1055
+ 
++/* cellSysCacheMount results (RC 7110) */
++#define CELL_SYSCACHE_RET_OK_CLEARED    0
++#define CELL_SYSCACHE_RET_OK_RELAYED    1
++#define CELL_SYSCACHE_ERROR_PARAM       0x8002bc03
++
+ /* Disc game types */
+ #define CELL_DISCGAME_TYPE_DISC    1
+ #define CELL_DISCGAME_TYPE_HDD     2
+diff --git a/libs/system/tests/test_syscache_mount.c b/libs/system/tests/test_syscache_mount.c
+new file mode 100644
+--- /dev/null
++++ b/libs/system/tests/test_syscache_mount.c
+@@ -0,0 +1,173 @@
++/* cc -std=gnu17 -I include libs/system/tests/test_syscache_mount.c libs/system/cellSysutil.c
++ *    -pthread -Wl,--gc-sections -o /tmp/test_syscache_mount && /tmp/test_syscache_mount
++ * (tools/test_syscache_mount.py runs it on Linux and macOS.)
++ *
++ * RC patch 7110: cellSysCacheMount keeps the one system cache only for a mount
++ * with the same non-empty id after a session that ended (CELL_SYSCACHE_RET_OK_RELAYED)
++ * and otherwise empties PS3_HDD1_ROOT/cache before it answers
++ * CELL_SYSCACHE_RET_OK_CLEARED. Each "session" is a child process: a normal
++ * exit ends the session, _exit stands for a run that was killed. */
++#include "../cellSysutil.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#ifndef CELL_SYSCACHE_RET_OK_CLEARED
++#define CELL_SYSCACHE_RET_OK_CLEARED 0
++#endif
++#ifndef CELL_SYSCACHE_RET_OK_RELAYED
++#define CELL_SYSCACHE_RET_OK_RELAYED 1
++#endif
++#ifndef CELL_SYSCACHE_ERROR_PARAM
++#define CELL_SYSCACHE_ERROR_PARAM 0x8002bc03
++#endif
++
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++void np_psnr_pump(void) {}
++void cellMsgDialog_tick(void) {}
++void ps3_np_eula_tick(void) {}
++int ps3_savedata_busy(void) { return 0; }
++
++static char s_root[512];
++static const uint32_t PARAM_EA = 0x1000;   /* CellSysCacheParam in the fake guest memory */
++
++static s32 mount(const char* id)
++{
++    memset(vm_base + PARAM_EA, 0, 0x20 + 1055);
++    strncpy((char*)vm_base + PARAM_EA, id, 32);
++    return cellSysCacheMount((char*)(uintptr_t)PARAM_EA);
++}
++
++static void put_file(const char* rel)
++{
++    char p[700];
++    snprintf(p, sizeof p, "%s/%s", s_root, rel);
++    FILE* f = fopen(p, "wb");
++    if (!f) { printf("[FAIL] cannot write %s\n", p); _exit(2); }
++    fputs("data", f);
++    fclose(f);
++}
++
++static int exists(const char* rel)
++{
++    char p[700];
++    struct stat st;
++    snprintf(p, sizeof p, "%s/%s", s_root, rel);
++    return stat(p, &st) == 0;
++}
++
++static int s_fail;
++static void check(int ok, const char* what)
++{
++    printf("[%s] %s\n", ok ? "PASS" : "FAIL", what);
++    fflush(stdout);
++    if (!ok) s_fail++;
++}
++
++/* Run one session in a child; killed = end it with _exit (no atexit). */
++static void session(void (*body)(void), int killed)
++{
++    fflush(stdout);
++    pid_t pid = fork();
++    if (pid == 0) {
++        s_fail = 0;
++        body();
++        fflush(stdout);
++        if (killed) _exit(s_fail ? 1 : 0);
++        exit(s_fail ? 1 : 0);
++    }
++    int status = 0;
++    waitpid(pid, &status, 0);
++    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) s_fail++;
++}
++
++static void s1_first_mount(void)
++{
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_CLEARED, "first mount of BCUS98127: OK_CLEARED");
++    check(!strcmp((char*)vm_base + PARAM_EA + 0x20, "/dev_hdd1/cache/BCUS98127"),
++          "getCachePath = /dev_hdd1/cache/BCUS98127");
++    check(exists("cache/BCUS98127"), "host cache dir created");
++    put_file("cache/BCUS98127/cache.idx");
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_RELAYED, "same id again in the same session: OK_RELAYED");
++    check(exists("cache/BCUS98127/cache.idx"), "...and its file is kept");
++}
++
++static void s2_same_id_next_session(void)
++{
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_RELAYED,
++          "same id after a session that ended: OK_RELAYED");
++    check(exists("cache/BCUS98127/cache.idx"), "...and its file is kept");
++}
++
++static void s3_other_id(void)
++{
++    check(mount("OTHER-ID") == CELL_SYSCACHE_RET_OK_CLEARED, "another id: OK_CLEARED");
++    check(!exists("cache/BCUS98127"), "...the previous cache is gone");
++    check(exists("cache/OTHER-ID"), "...the new cache dir exists");
++    put_file("cache/OTHER-ID/f");
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_CLEARED, "back to BCUS98127: OK_CLEARED");
++    check(!exists("cache/OTHER-ID") && exists("cache/BCUS98127") && !exists("cache/BCUS98127/cache.idx"),
++          "...OTHER-ID gone, BCUS98127 empty");
++    put_file("cache/BCUS98127/cache.idx");
++}
++
++static void s4_killed(void)
++{
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_RELAYED, "same id after s3 ended: OK_RELAYED");
++    put_file("cache/BCUS98127/half-written");
++    /* killed: no normal end */
++}
++
++static void s5_after_kill(void)
++{
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_CLEARED,
++          "same id after a killed session: OK_CLEARED");
++    check(exists("cache/BCUS98127") && !exists("cache/BCUS98127/half-written")
++          && !exists("cache/BCUS98127/cache.idx"), "...and the cache is empty");
++    put_file("cache/BCUS98127/cache.idx");
++}
++
++static void s6_empty_and_bad_ids(void)
++{
++    check(mount("") == CELL_SYSCACHE_RET_OK_CLEARED, "empty id: OK_CLEARED");
++    check(!exists("cache/BCUS98127"), "...the previous cache is gone");
++    check(mount("") == CELL_SYSCACHE_RET_OK_CLEARED, "empty id again: still OK_CLEARED (never relayed)");
++    check((uint32_t)mount("../x") == CELL_SYSCACHE_ERROR_PARAM, "id '../x': CELL_SYSCACHE_ERROR_PARAM");
++    check((uint32_t)mount("_LEAD") == CELL_SYSCACHE_ERROR_PARAM, "id '_LEAD': CELL_SYSCACHE_ERROR_PARAM");
++    check(!exists("x"), "...nothing created outside the cache");
++}
++
++static void s7_no_root(void)
++{
++    unsetenv("PS3_HDD1_ROOT");
++    check(mount("BCUS98127") == CELL_SYSCACHE_RET_OK_CLEARED, "no PS3_HDD1_ROOT: OK_CLEARED");
++}
++
++int main(void)
++{
++    setvbuf(stdout, NULL, _IONBF, 0);
++    vm_base = (uint8_t*)calloc(1, 0x4000);
++    const char* tmp = getenv("TMPDIR");
++    snprintf(s_root, sizeof s_root, "%s/syscache-XXXXXX", tmp && *tmp ? tmp : "/tmp");
++    if (!mkdtemp(s_root)) { puts("[FAIL] mkdtemp"); return 1; }
++    setenv("PS3_HDD1_ROOT", s_root, 1);
++
++    session(s1_first_mount, 0);
++    session(s2_same_id_next_session, 0);
++    session(s3_other_id, 0);
++    session(s4_killed, 1);
++    session(s5_after_kill, 0);
++    session(s6_empty_and_bad_ids, 0);
++    session(s7_no_root, 0);
++
++    char cmd[1200];
++    snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s.syscache-open'", s_root, s_root);
++    if (system(cmd) != 0) puts("(could not remove the temp dir)");
++    printf("%s: cellSysCacheMount relay/clear rule\n", s_fail ? "FAIL" : "PASS");
++    return s_fail ? 1 : 0;
++}
+diff --git a/tools/test_syscache_mount.py b/tools/test_syscache_mount.py
+new file mode 100644
+--- /dev/null
++++ b/tools/test_syscache_mount.py
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++"""cellSysCacheMount (cellSysutil.c, RC patch 7110): OK_RELAYED keeps the cache
++for the same id after a session that ended; anything else empties it and
++answers OK_CLEARED. Host only, no game or GPU."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++
++if sys.platform == "win32":
++    print("SKIP: syscache fixture requires a POSIX C toolchain (fork)")
++    raise SystemExit(0)
++
++root = Path(__file__).resolve().parents[1]
++gc_flag = "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections"
++with tempfile.TemporaryDirectory(prefix="syscache-") as temporary:
++    binary = Path(temporary) / "test_syscache_mount"
++    subprocess.run([
++        os.environ.get("CC", "cc"), "-std=gnu17", "-O1", "-UNDEBUG",
++        "-ffunction-sections", "-fdata-sections", "-I" + str(root / "include"),
++        str(root / "libs/system/tests/test_syscache_mount.c"),
++        str(root / "libs/system/cellSysutil.c"),
++        "-pthread", gc_flag, "-o", str(binary),
++    ], check=True, timeout=60, cwd=temporary)
++    env = dict(os.environ, TMPDIR=temporary)
++    env.pop("PS3_HDD1_ROOT", None)
++    result = subprocess.run([str(binary)], timeout=30, env=env, cwd=temporary,
++                            capture_output=True, text=True)
++    print(result.stdout.strip())
++    if result.returncode != 0 or "PASS: cellSysCacheMount" not in result.stdout:
++        raise SystemExit("test_syscache_mount failed (exit %d)" % result.returncode)

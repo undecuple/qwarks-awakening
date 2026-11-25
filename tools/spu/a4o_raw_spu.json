@@ -1,0 +1,5 @@
+{
+ "title": "Ratchet & Clank: All 4 One",
+ "note": "No raw SPU programs: no sys_raw_spu_create call in this executable's lifted PPU code (the RE notes section 24).",
+ "programs": []
+}

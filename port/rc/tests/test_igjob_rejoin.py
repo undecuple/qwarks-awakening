@@ -209,6 +209,15 @@ with tempfile.TemporaryDirectory(prefix="igjob-rejoin-") as tmp:
     v = run("nokernel")
     check(v is not None and v[0] == 2 and v[1] == 0x113 and v[6] == 1 and v[7] == 1,
           "nokernel: without a resident kernel everything runs interpreted as before")
+    env["RC_IGJOBS_INTERP"] = "0x%08X" % J_EA
+    v = run("lifted")
+    check(v is not None and v[0] == 2 and v[1] == 0x113 and v[4] == 1 and v[6] == 0 and v[7] == 0,
+          "RC_IGJOBS_INTERP=job EA: that job runs interpreted, the kernel stays lifted, same result")
+    env["RC_IGJOBS_INTERP"] = "foo,0x%X 0x%08X" % (J_EA + 0x40, K_EA)
+    v = run("lifted")
+    check(v is not None and v[0] == 2 and v[1] == 0x113 and v[4] == 0 and v[6] == 1 and v[7] == 1,
+          "RC_IGJOBS_INTERP=junk, other EA, kernel EA: only the kernel runs interpreted, the job stays lifted")
+    del env["RC_IGJOBS_INTERP"]
     env["RC_IGJOBS"] = "0"
     v = run("lifted")
     check(v is not None and v[0] == 2 and v[1] == 0x113 and v[4] == 1 and v[6] == 1 and v[7] == 1,

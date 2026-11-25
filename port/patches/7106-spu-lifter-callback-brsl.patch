@@ -1,0 +1,158 @@
+SPU lifter: a brsl whose link register is a continuation the callee calls back is a branch, not a call (--callback-brsl).
+
+Nexus 1.01 newgame-level halts at ~350 s: ig lane 0, img -1, pc 0x04D10, host_depth 2000 (nexus-7105, nexus-wwatch2 and
+nexus-level all identical; the lane idled at depth 0 one second before). The depth grows inside ONE run of job 0x00C21400,
+not per job, so 7099's framed job call cannot help. Cause: the job's packer idiom. F at 0x6818 does
+`brsl $r77, 0x5E40` (0x68A4; also 0x5ED8 0x5FD8 0x6184 0x64D0 0x65F0 0x6718 0x69B4); the packer calls the continuation
+back per batch (`bisl $r78, $r77` at 0x5E54/0x5E78, the producer at 0x68A8 returns with `bi $r78` at 0x6934) and leaves
+with `bi $r0` (0x5E8C) to F's CALLER (0x5728). On hardware the brsl only loads r77. Lifted as a host call bracket it waits
+for 0x68A8, receives 0x5728, and the drain interprets on from there inside it ([pm-end] `N:05728/204 J:070AC/204`): two
+host frames per packer call never close. The same job is in A4O 1.03 (0x00D3C580, packer 0x6190), FFA 1.05 and ACiT 1.20
+(0x00B9B100, packer 0x6450): A4O's luminopolis leak (~386 per burst, closed at the job's exit by 7099) is this idiom too.
+ToD and QfB igcollbroadspu carry it as well (8 sites each); they are only changed when lifted with the flag.
+
+compute_callback_brsls: a `brsl/brasl $rN` (N != 0) is a callback brsl when every path from its target (fallthrough,
+direct and conditional branches, calls stepped over) ends in a `bi $r0` return, rN is never written there and is the
+target of a bisl. Anything else (a `bi $rN` link return, a computed branch, iret/stop, a target outside the image, more
+than 4096 steps) keeps the bracket. --callback-brsl lifts those sites as `rN = link; branch` (goto or SPU_HOP); without
+the flag the output is byte-identical (checked on Nexus 0x00C21400). tools/spu/lift_igjobs.py passes it for the kernel
+and every job (table key "callback_brsl": false opts out). Static scan of all 126 lifted R&C SPU images: 8 sites each in
+nexus101 igjob_00c21400, a4o igjob_00d3c580, ffa igjob_00dac680, acit120 igjob_00b9b100, tods/qfb igcollbroadspu; none
+elsewhere.
+Host test port/rc/tests/run_igjob_callback_brsl_test.sh: a synthetic kernel + job with the idiom lifted by lift_igjobs.py
+and run on the real runtime (image -1 policy context): with 7106 n = 1/10/1500/6000 calls end at the stop with r3 = 5n,
+depth 0, no halt, no 7099 unwind; the control (callback_brsl false) needs a 7099 unwind at n = 10 and halts with
+[spu-depth] host_depth 2000 at n = 1500. Source: SPU notes, 2026-11-19.
+
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+index d132dab..9ba759e 100644
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -442,6 +442,83 @@ def compute_ib_guesses(insns, func_starts, sites, window=512, max_guesses=2) ->
+     return guesses
+ 
+ 
++def compute_callback_brsls(insns, bi_r0_jump=frozenset(), max_steps=4096) -> set:
++    """R&C patch 7106: `brsl $rN, T` (N != 0) whose callee never returns through rN but calls it back.
++
++    Sony's SPU compiler passes a CONTINUATION in a non-r0 link register: the ig skinning/packing job does
++    `brsl $r77, packer` and the packer (`bisl $r78, $r77` per batch: the producer loop after the brsl runs and
++    comes back with `bi $r78`) finally leaves with `bi $r0`, i.e. to the brsl's CALLER (Nexus 1.01 job 0x00C21400:
++    0x68A4/0x69B4 -> 0x5E40, `bi $r0` at 0x5E8C; A4O 1.03 0x00D3C580, FFA, ACiT 1.20: the same job, packer 0x6190
++    or 0x6450). On hardware that brsl is a branch that loads rN; nothing returns to brsl+4. Lifted as a host call
++    bracket, the bracket waits for brsl+4, gets the caller's return pc instead, and keeps running the rest of the job
++    inside it (patch 7039 interpreter fallback): host frames per packer call that never close. Nexus
++    prison_transport runs the packer often enough in one job that the SPU halts at host_depth 2000 (pc 0x4D10).
++
++    Classified as a callback brsl (lifted as `rN = link; branch T`, no bracket) only when, from T, every path the
++    callee can take (fallthrough, direct and conditional branches; calls are stepped over as returning) ends in a
++    `bi/biz/... $r0` that is a return (not a compute_bi_r0_jumps jump), rN is never written there and is the target
++    of at least one `bisl`. Anything else -- a `bi $rN` (the ordinary link-register return of
++    compute_link_returns), another indirect branch, iret/stop, a target outside the image or a walk longer than
++    max_steps -- keeps the call bracket. Returns the set of brsl/brasl addresses."""
++    by_addr = {i.addr: i for i in insns}
++    out = set()
++    for insn in insns:
++        if insn.mnemonic not in ("brsl", "brasl"):
++            continue
++        rn = insn.raw & 0x7F
++        if rn == 0:
++            continue
++        tgt = SPULifter._branch_target(insn)
++        if tgt is None or tgt in (insn.addr, insn.addr + 4):
++            continue
++        seen, work = set(), [tgt]
++        r0_return = calls_back = False
++        ok = True
++        while work and ok:
++            a = work.pop()
++            if a in seen:
++                continue
++            seen.add(a)
++            w = by_addr.get(a)
++            if w is None or len(seen) > max_steps:
++                ok = False
++                break
++            mn = w.mnemonic
++            if mn not in _NO_RT_WRITE and _dest_reg(w) == rn:
++                ok = False          # rN recomputed: not the caller's continuation any more
++                break
++            if mn in ("br", "bra") or mn in _COND_BR:
++                t = SPULifter._branch_target(w)
++                if t is None:
++                    ok = False
++                    break
++                work.append(t)
++                if mn in _COND_BR:
++                    work.append(a + 4)
++                continue
++            tr = _bi_target_reg(w)
++            if tr is not None:
++                if tr == "0" and a not in bi_r0_jump:
++                    r0_return = True
++                    if mn != "bi":
++                        work.append(a + 4)   # conditional return: the not-taken path goes on
++                    continue
++                ok = False                   # bi $rN (a real return through the link) or a computed jump
++                break
++            if mn in ("bisl", "bisled"):
++                if _reg(_ops(w.operands)[-1]) == str(rn):
++                    calls_back = True
++                work.append(a + 4)           # the callee comes back (its own bracket)
++                continue
++            if mn in ("iret", "stop", "stopd"):
++                ok = False
++                break
++            work.append(a + 4)               # straight-line code, brsl $r0 calls included
++        if ok and r0_return and calls_back:
++            out.add(insn.addr)
++    return out
++
++
+ def compute_link_returns(insns, bounds) -> set:
+     """A `bi $rN` / conditional `bi{z,nz,hz,hnz} $rC,$rN` with N != 0 is emitted
+     as a generic indirect branch, but Sony's SPU compiler also uses a NON-r0
+@@ -593,6 +670,9 @@ class SPULifter:
+         # compute_link_returns(). Emitted as `return;` so they compose with the
+         # brsl->C-call nesting instead of branching to an unregistered PC.
+         self.link_return: set = set()
++        # R&C patch 7106: brsl/brasl addresses whose link register carries a continuation the callee calls back
++        # (compute_callback_brsls, --callback-brsl): lifted as `rN = link; branch`, no host call bracket.
++        self.callback_brsl: set = set()
+ 
+     # ------------------------------------------------------------------ #
+     def lift_function(self, insns: list[SPUInstruction],
+@@ -974,6 +1054,11 @@ class SPULifter:
+             # Treat it as: set the link, then fall through to addr+4.
+             if tgt == addr + 4:
+                 return f"{link} {self._uncond_branch(addr + 4, func)}"
++            # R&C patch 7106 (compute_callback_brsls): rN is a continuation the callee calls back with `bisl`, and
++            # the callee leaves through `bi $r0` to THIS function's caller -- a branch that loads rN, not a call.
++            # A bracket would wait for addr+4, which no path returns to, and keep the rest of the job inside it.
++            if tgt is not None and addr in self.callback_brsl:
++                return f"{link} {self._uncond_branch(tgt, func)}"
+             if tgt is not None:
+                 self.call_targets.add(tgt)
+                 # Nested host call bracketed by host_depth (so the callee's
+@@ -1267,6 +1352,10 @@ def main() -> None:
+                         "dispatch table at 0x1BD8, `br` into a fallthrough chain, "
+                         "dispatched blocks later -- classified as a return, which "
+                         "silently skipped every job-command handler).")
++    p.add_argument("--callback-brsl", action="store_true",
++                   help="R&C patch 7106: lift a `brsl $rN` (N != 0) whose callee calls rN back with bisl and leaves "
++                        "through `bi $r0` (compute_callback_brsls) as a branch that loads rN, not as a host call "
++                        "bracket. For the ig jobs' packer idiom (Nexus prison_transport host_depth 2000 halt).")
+     p.add_argument("--framed-bisl", action="store_true",
+                    help="R&C patch 7099: lift every bisl as spu_bisl_framed (an unwindable call frame, "
+                         "runtime/spu/spu_call_frame.h). For job kernels whose jobs can leave through the kernel's "
+@@ -1387,6 +1476,10 @@ def main() -> None:
+               f"(r0 set by lqa/lqr/il/ila, not a link): "
+               f"{', '.join(f'0x{a:X}' for a in sorted(lifter.bi_r0_jump))}")
+     lifter.link_return = compute_link_returns(insns, bounds)
++    if args.callback_brsl:   # R&C patch 7106
++        lifter.callback_brsl = compute_callback_brsls(insns, lifter.bi_r0_jump)
++        print(f"  {len(lifter.callback_brsl)} callback brsl site(s) (link reg called back, callee leaves by `bi $r0`; "
++              f"lifted as branches): {', '.join(f'0x{a:X}' for a in sorted(lifter.callback_brsl))}")
+     if args.force_indirect:
+         forced = {int(x, 0) for x in args.force_indirect.split(",") if x.strip()}
+         dropped = lifter.link_return & forced

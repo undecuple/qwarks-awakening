@@ -16,7 +16,18 @@ export STEAM_COMPAT_DATA_PATH="$RUN/compat"
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$RUN/steam"
 export WINEDLLOVERRIDES="winepulse.drv,winealsa.drv,wineoss.drv=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
 export PROTON_LOG=1 PROTON_LOG_DIR="$RUN"
-export VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json
+export VK_ICD_FILENAMES="${RC_VK_ICD:-/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json}"
+# Hosts other than NixOS (peach, tools/peach/peach-remote.sh, 2026-11-17): RC_VK_ICD names the distribution's ICD and
+# RC_NO_STEAM_RUN=1 starts Proton directly with the host's libraries (steam-run's FHS tree hides /usr/lib's driver).
+SR=(steam-run); [[ "${RC_NO_STEAM_RUN:-0}" == 1 ]] && SR=()
+# Proton's script (#!/usr/bin/env python3) loads libvulkan.so.1 through ctypes: without steam-run it must run on the
+# host's Python, which searches /usr/lib; nix's python3, first on PATH in the .#peach shell, does not (peach 2026-11-18).
+PY=()
+if [[ "${RC_NO_STEAM_RUN:-0}" == 1 ]]; then
+  PY=(/usr/bin/python3)
+  [[ -x /usr/bin/python3 ]] || { echo "proton-inner: RC_NO_STEAM_RUN=1 needs the host's /usr/bin/python3" >&2
+                                 [[ -n "$XVFB" ]] && kill "$XVFB" 2>/dev/null; exit 1; }
+fi
 # rc.exe with the logger (patch 2030) writes only errors to stdout unless this is set; checks parse stdout.
 export RC_LOG_STDOUT="${RC_LOG_STDOUT:-1}" RC_NO_ERROR_BOX="${RC_NO_ERROR_BOX:-1}"
 # The flip log ("[flip] N at T ms") is what shot_overlay.py and make_clip.py take the fps from (shared-docs/overlay.md).
@@ -40,7 +51,7 @@ PRE=""
 printf '@echo off\r\n%s%s%s > app_stdout.txt 2>&1\r\nset RC_EXIT=%%errorlevel%%\r\necho [exit code %%RC_EXIT%%]>> app_stdout.txt\r\nexit /b %%RC_EXIT%%\r\n' \
   "$PRE" "$EXE" "$ARGQ" > run.bat
 rm -f app_stdout.txt
-steam-run "$PROTON_DIR/proton" run cmd /c run.bat >"$RUN/proton.log" 2>&1 &
+"${SR[@]}" "${PY[@]}" "$PROTON_DIR/proton" run cmd /c run.bat >"$RUN/proton.log" 2>&1 &
 APP=$!
 # SECONDS count from the program's start, not from Proton's launch (2026-11-11): a fresh prefix is built first and that
 # can take minutes under load (351 s in tods-int-flips, whose game then got 249 of its 600 s and was killed mid-load,
@@ -113,7 +124,7 @@ else
   STATUS="${STATUS:-255}"; echo "program exited with status $STATUS"
 fi
 # Stop Proton/wine for this prefix and Xvfb; everything is inside this sandbox's PID namespace.
-STEAM_COMPAT_DATA_PATH="$RUN/compat" steam-run "$PROTON_DIR/files/bin/wineserver" -k >/dev/null 2>&1 || true
+STEAM_COMPAT_DATA_PATH="$RUN/compat" "${SR[@]}" "$PROTON_DIR/files/bin/wineserver" -k >/dev/null 2>&1 || true
 kill "$APP" "$XVFB" 2>/dev/null || true
 echo "--- program output (tail) ---"; tail -n 30 "$RUN/app/app_stdout.txt" 2>/dev/null || echo "(no output file)"
 [[ "$STATUS" =~ ^[0-9]+$ ]] || STATUS=1

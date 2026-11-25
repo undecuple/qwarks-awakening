@@ -1,0 +1,608 @@
+cellSaveData: dirList follows CellSaveDataSetList sortType / sortOrder (newest first for MODIFIEDTIME/DESCENT); sortType or sortOrder above 1 is CELL_SAVEDATA_ERROR_PARAM.
+
+Idea from Re-TeRo17/ps3recomp 480eb2ee libs/system/cellSaveData.c (MIT): their "gp101" change picks the newest save
+(savedata_dir_mtime / savedata_newest_fixed) because with several saves the load followed name order. Hand rewrite,
+nothing copied; this patch fixes the listing order the firmware gives instead of adding a pick heuristic.
+
+Problem: ListSave2 / ListLoad2 and savedata_fixed (FixedSave2/FixedLoad2, ListAutoSave/ListAutoLoad and the User*
+forms) never read sortType (+0) or sortOrder (+4) of the guest CellSaveDataSetList; enumerate_save_dirs filled dirList
+in readdir / FindFirstFile order and cut it to dirListMax while reading. A title that takes its first dirList entry,
+copies the list into its fixedList, or lets funcList pick nothing (ListLoad2 then falls back to dirList[0]) loaded the
+first save by name, not the newest (tod-recomp fixes.md row 13). With dirListMax below the save count the newest save
+could be left out of the list altogether.
+
+Fix (libs/system/cellSaveData.c):
+- enumerate_save_dirs(prefix, dirList, max, sort_type, sort_order) collects every matching directory, sorts it
+  (savedata_sort_dirs) and then copies the first max entries; the return value is still the total (dirNum).
+- Keys: MODIFIEDTIME = time, then SUB_TITLE (PARAM.SFO, read_param_sfo); SUBTITLE = SUB_TITLE, then time; the
+  directory name last, so the order never depends on the host. DESCENT reverses the whole order. SUB_TITLE compares
+  as bytes (unsigned char). One log line per sorted listing: "[cellSaveData] dirList sorted by mtime descent (N dirs):
+  first='...'".
+- savedata_setlist_sort_ok: sortType > 1 or sortOrder > 1 returns CELL_SAVEDATA_ERROR_PARAM before any callback, in
+  ListSave2, ListLoad2 and savedata_fixed.
+Behaviour reference: RPCS3 cellSaveData.cpp savedata_op (read 2026-11-19 from GitHub raw, nothing copied): parameter
+errors 12/13 for sortType/sortOrder above SUBTITLE/ASCENT; MODIFIEDTIME ties fall back to SUB_TITLE, SUBTITLE ties to
+the mtime; ASCENT sorts up, DESCENT is the reverse.
+
+ASSUMPTION: the firmware sorts every matching directory before it cuts the list to dirListMax (RPCS3 cuts first, in
+host directory order, then sorts the kept entries).
+ASSUMPTION: the time key is the newest of the directory's own mtime, its PARAM.SFO and its files' mtimes. On the PS3
+(and in RPCS3, which writes a save into a fresh directory and renames it) the directory mtime is the last save; this
+backend rewrites the files in place, so the directory mtime stays at the save's creation. statGet.dir.st_mtime is
+unchanged (still the directory's own mtime). Windows reads the file times with FindFirstFile (enumerate_save_files
+leaves st_mtime 0 there).
+Not changed: the '|'-separated dirNamePrefix list RPCS3 accepts; listParam in dirList stays empty.
+
+Tests: libs/system/tests/test_savedata_sort.c (tools/test_savedata_sort.py; R&C runner with the negative control:
+port/rc/tests/run_savedata_sort_test.sh): five saves BCUS00000A..E whose name,
+time and SUB_TITLE orders all differ (C and D share a time; E has an old directory and PARAM.SFO but the newest data
+file) plus one outside the prefix: dirList for MODIFIEDTIME DESCENT [E B C D A], ASCENT [A D C B E], SUBTITLE ASCENT
+[B D E A C], DESCENT [C A E D B]; dirListMax 2 keeps [E B] with dirNum 5; ListLoad2 whose funcList picks nothing loads
+E; sortType 2 / sortOrder 2 are CELL_SAVEDATA_ERROR_PARAM. PASS. Negative control (--against a tree without this
+patch): FAIL, 8 failures (every listing [A B C D E], the fallback loads A, both bad values return CELL_OK).
+test_savedata_root.c calls enumerate_save_dirs with the new arguments (0, 0); it, test_savedata_io,
+test_savedata_param_sfo and test_savedata_user_autosave pass before and after; test_savedata_fixed.c fails the same way
+before and after (its assert vm_read32(cb) == 0 predates the 7102 sentinel).
+
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -446,10 +446,33 @@
+     return result;
+ }
+ 
+-/* Enumerate save directories matching a prefix. Returns count, fills dirList up to max. */
+-static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList, u32 max)
++/* RC patch 7109: dirList comes back in the order the title's CellSaveDataSetList asks for (defined after
++ * read_param_sfo, which it uses for SUB_TITLE). */
++static void savedata_sort_dirs(CellSaveDataDirList* all, u32 count, u32 sort_type, u32 sort_order);
++
++/* Append one name to the growable list of every matching directory (all of them are sorted before dirList is cut
++ * to max). Returns 0 when out of memory. */
++static int savedata_dirs_push(CellSaveDataDirList** all, u32* cap, u32 count, const char* name)
++{
++    if (count >= *cap) {
++        u32 ncap = *cap ? *cap * 2 : 16;
++        CellSaveDataDirList* grown = (CellSaveDataDirList*)realloc(*all, (size_t)ncap * sizeof(**all));
++        if (!grown) return 0;
++        *all = grown; *cap = ncap;
++    }
++    memset(&(*all)[count], 0, sizeof(CellSaveDataDirList));
++    strncpy((*all)[count].dirName, name, CELL_SAVEDATA_DIRNAME_SIZE - 1);
++    return 1;
++}
++
++/* Enumerate save directories matching a prefix. Returns count, fills dirList up to max.
++ * RC patch 7109: every match is collected first, sorted by sort_type/sort_order (CellSaveDataSetList), and only then
++ * cut to max, so dirList[0] is the newest save for MODIFIEDTIME/DESCENT instead of the first in host directory order. */
++static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList, u32 max,
++                               u32 sort_type, u32 sort_order)
+ {
+-    u32 count = 0;
++    u32 count = 0, cap = 0;
++    CellSaveDataDirList* all = NULL;
+ 
+     adopt_gamedata_root();
+     ensure_dirs(s_save_root);
+@@ -474,12 +497,8 @@
+                 continue;
+             if (prefix && prefix[0] && strncmp(fd.cFileName, prefix, strlen(prefix)) != 0)
+                 continue;
+-            if (count < max && dirList) {
+-                memset(&dirList[count], 0, sizeof(CellSaveDataDirList));
+-                strncpy(dirList[count].dirName, fd.cFileName,
+-                        CELL_SAVEDATA_DIRNAME_SIZE - 1);
+-            }
+-            count++;
++            if (savedata_dirs_push(&all, &cap, count, fd.cFileName))
++                count++;
+         } while (FindNextFileA(hFind, &fd));
+ 
+         FindClose(hFind);
+@@ -501,17 +520,18 @@
+                 continue;
+             if (prefix && prefix[0] && strncmp(de->d_name, prefix, strlen(prefix)) != 0)
+                 continue;
+-            if (count < max && dirList) {
+-                memset(&dirList[count], 0, sizeof(CellSaveDataDirList));
+-                strncpy(dirList[count].dirName, de->d_name,
+-                        CELL_SAVEDATA_DIRNAME_SIZE - 1);
+-            }
+-            count++;
++            if (savedata_dirs_push(&all, &cap, count, de->d_name))
++                count++;
+         }
+         closedir(dp);
+     }
+ #endif
+ 
++    savedata_sort_dirs(all, count, sort_type, sort_order);
++    if (dirList)
++        for (u32 i = 0; i < count && i < max; i++)
++            dirList[i] = all[i];
++    free(all);
+     return count;
+ }
+ 
+@@ -870,6 +890,136 @@
+     }
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * RC patch 7109: dirList order (CellSaveDataSetList sortType / sortOrder)
++ *
++ * The firmware hands funcList / funcFixed the matching save directories sorted by the title's SetList:
++ * CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME (0) or SUBTITLE (1), CELL_SAVEDATA_SORTORDER_DESCENT (0) or ASCENT (1); a
++ * value above 1 is a parameter error. Ties: MODIFIEDTIME falls back to SUB_TITLE and SUBTITLE to the time (RPCS3
++ * cellSaveData.cpp savedata_op, read for behaviour only, nothing copied). The directory name is the last key so the
++ * order never depends on the host's directory order. Before this patch dirList came in readdir / FindFirstFile order,
++ * so a title that loads its first entry (or the fallback below when funcList picks nothing) took the first save by
++ * name, not the newest.
++ *
++ * ASSUMPTION: the firmware sorts every matching directory before it cuts the list to dirListMax (RPCS3 cuts first,
++ * in host directory order, then sorts).
++ * ASSUMPTION: the time key is the newest of the directory's own mtime, PARAM.SFO and its files' mtimes. On the PS3
++ * (and in RPCS3, which writes a save into a fresh directory and renames it) the directory's mtime is the last save;
++ * this backend rewrites the files in place, which leaves the directory's mtime at its creation.
++ * -----------------------------------------------------------------------*/
++static int savedata_host_mtime(const char* path, s64* out)
++{
++    HOST_STAT_T st;
++    if (HOST_STAT(path, &st) != 0) return 0;
++#ifdef _WIN32
++    *out = (s64)st.st_mtime;
++#elif defined(__APPLE__)
++    *out = (s64)st.st_mtimespec.tv_sec;
++#else
++    *out = (s64)st.st_mtim.tv_sec;
++#endif
++    return 1;
++}
++
++static s64 savedata_dir_sort_time(const char* save_path)
++{
++    s64 newest = 0, t;
++    if (savedata_host_mtime(save_path, &t) && t > newest) newest = t;
++    char sfo[1024];
++    snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", save_path);
++#ifdef _WIN32
++    for (char* p = sfo; *p; p++) if (*p == '/') *p = '\\';
++#endif
++    if (savedata_host_mtime(sfo, &t) && t > newest) newest = t;
++    /* Every file in it (enumerate_save_files leaves st_mtime 0 on Windows, so this reads the times itself). */
++#ifdef _WIN32
++    char search[1024];
++    snprintf(search, sizeof(search), "%s\\*", save_path);
++    for (char* p = search; *p; p++) if (*p == '/') *p = '\\';
++    WIN32_FIND_DATAA fd;
++    HANDLE h = FindFirstFileA(search, &fd);
++    if (h != INVALID_HANDLE_VALUE) {
++        do {
++            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++            ULARGE_INTEGER ft;   /* 100 ns ticks since 1601-01-01 -> Unix seconds */
++            ft.LowPart = fd.ftLastWriteTime.dwLowDateTime;
++            ft.HighPart = fd.ftLastWriteTime.dwHighDateTime;
++            if (ft.QuadPart < 116444736000000000ull) continue;
++            t = (s64)((ft.QuadPart - 116444736000000000ull) / 10000000ull);
++            if (t > newest) newest = t;
++        } while (FindNextFileA(h, &fd));
++        FindClose(h);
++    }
++#else
++    DIR* dp = opendir(save_path);
++    if (dp) {
++        struct dirent* de;
++        while ((de = readdir(dp)) != NULL) {
++            if (de->d_name[0] == '.') continue;
++            char full[1024];
++            snprintf(full, sizeof(full), "%s/%s", save_path, de->d_name);
++            if (!dir_exists(full) && savedata_host_mtime(full, &t) && t > newest) newest = t;
++        }
++        closedir(dp);
++    }
++#endif
++    return newest;
++}
++
++typedef struct SaveDataSortEntry {
++    CellSaveDataDirList dir;
++    s64  mtime;
++    char subtitle[CELL_SAVEDATA_SYSP_SUBTITLE_SIZE];
++    u32  type;   /* the sortType, so the qsort comparator needs no global */
++    int  sign;   /* +1 ASCENT, -1 DESCENT */
++} SaveDataSortEntry;
++
++static int savedata_sort_cmp(const void* pa, const void* pb)
++{
++    const SaveDataSortEntry* a = (const SaveDataSortEntry*)pa;
++    const SaveDataSortEntry* b = (const SaveDataSortEntry*)pb;
++    int t = a->mtime < b->mtime ? -1 : a->mtime > b->mtime ? 1 : 0;
++    int s = strcmp(a->subtitle, b->subtitle);   /* bytes as unsigned char, as std::string's operator< */
++    int c = a->type == CELL_SAVEDATA_SORTTYPE_SUBTITLE ? (s ? s : t) : (t ? t : s);
++    if (!c) c = strncmp(a->dir.dirName, b->dir.dirName, CELL_SAVEDATA_DIRNAME_SIZE);
++    return a->sign * c;
++}
++
++static void savedata_sort_dirs(CellSaveDataDirList* all, u32 count, u32 sort_type, u32 sort_order)
++{
++    if (!all || count < 2) return;
++    SaveDataSortEntry* e = (SaveDataSortEntry*)calloc(count, sizeof(*e));
++    if (!e) return;
++    CellSaveDataSystemFileParam* sfo = (CellSaveDataSystemFileParam*)malloc(sizeof(*sfo));
++    if (!sfo) { free(e); return; }
++    for (u32 i = 0; i < count; i++) {
++        char path[1024];
++        e[i].dir = all[i];
++        build_save_path(path, sizeof(path), all[i].dirName);
++        e[i].mtime = savedata_dir_sort_time(path);
++        read_param_sfo(path, sfo);
++        snprintf(e[i].subtitle, sizeof(e[i].subtitle), "%.*s", (int)sizeof(sfo->subTitle) - 1, sfo->subTitle);
++        e[i].type = sort_type;
++        e[i].sign = sort_order == CELL_SAVEDATA_SORTORDER_ASCENT ? 1 : -1;
++    }
++    free(sfo);
++    qsort(e, count, sizeof(*e), savedata_sort_cmp);
++    for (u32 i = 0; i < count; i++) all[i] = e[i].dir;
++    printf("[cellSaveData] dirList sorted by %s %s (%u dirs): first='%s'\n",
++           sort_type == CELL_SAVEDATA_SORTTYPE_SUBTITLE ? "subtitle" : "mtime",
++           sort_order == CELL_SAVEDATA_SORTORDER_ASCENT ? "ascent" : "descent", count, all[0].dirName);
++    free(e);
++}
++
++/* The SetList words the firmware checks before it lists anything (RPCS3: "sysutil savedata parameter error" 12 and
++ * 13). Guest layout: sortType +0, sortOrder +4, dirNamePrefix* +8. */
++static int savedata_setlist_sort_ok(u32 setList_ea, u32* sort_type, u32* sort_order)
++{
++    *sort_type = vm_read32(setList_ea + 0);
++    *sort_order = vm_read32(setList_ea + 4);
++    return *sort_type <= CELL_SAVEDATA_SORTTYPE_SUBTITLE && *sort_order <= CELL_SAVEDATA_SORTORDER_ASCENT;
++}
++
+ /* Core save/load implementation shared by List/Fixed/Auto variants */
+ /* Saves in flight, for a host-side quit (cellSysutil.c ps3_host_quit): it
+  * waits for this to reach 0 so it never cuts a save file short. */
+@@ -1113,6 +1263,9 @@
+      * prefix EA is the word at +8 and needs translating before it is used as a
+      * host string. The host structs put dirNamePrefix at +8 as an 8-byte
+      * pointer, so a cast would have read half of it plus padding. */
++    u32 sort_type, sort_order;   /* patch 7109 */
++    if (!savedata_setlist_sort_ok((u32)(uintptr_t)setList, &sort_type, &sort_order))
++        return CELL_SAVEDATA_ERROR_PARAM;
+     u32 dir_max = vm_read32((u32)(uintptr_t)setBuf + 0);
+     if (dir_max == 0) dir_max = CELL_SAVEDATA_DIRLIST_MAX;
+     CellSaveDataDirList* dirList = (CellSaveDataDirList*)calloc(dir_max, sizeof(CellSaveDataDirList));
+@@ -1120,7 +1273,7 @@
+     u32 dirCount = enumerate_save_dirs(
+         savedata_host_str((const char*)(uintptr_t)vm_read32((u32)(uintptr_t)setList + 8)) ?
+             savedata_host_str((const char*)(uintptr_t)vm_read32((u32)(uintptr_t)setList + 8)) : "",
+-        dirList, dir_max);
++        dirList, dir_max, sort_type, sort_order);
+ 
+     /* Call list callback */
+     CellSaveDataCBResult cbResult;
+@@ -1174,6 +1327,9 @@
+      * prefix EA is the word at +8 and needs translating before it is used as a
+      * host string. The host structs put dirNamePrefix at +8 as an 8-byte
+      * pointer, so a cast would have read half of it plus padding. */
++    u32 sort_type, sort_order;   /* patch 7109 */
++    if (!savedata_setlist_sort_ok((u32)(uintptr_t)setList, &sort_type, &sort_order))
++        return CELL_SAVEDATA_ERROR_PARAM;
+     u32 dir_max = vm_read32((u32)(uintptr_t)setBuf + 0);
+     if (dir_max == 0) dir_max = CELL_SAVEDATA_DIRLIST_MAX;
+     CellSaveDataDirList* dirList = (CellSaveDataDirList*)calloc(dir_max, sizeof(CellSaveDataDirList));
+@@ -1181,7 +1337,7 @@
+     u32 dirCount = enumerate_save_dirs(
+         savedata_host_str((const char*)(uintptr_t)vm_read32((u32)(uintptr_t)setList + 8)) ?
+             savedata_host_str((const char*)(uintptr_t)vm_read32((u32)(uintptr_t)setList + 8)) : "",
+-        dirList, dir_max);
++        dirList, dir_max, sort_type, sort_order);
+ 
+     CellSaveDataCBResult cbResult;
+     memset(&cbResult, 0, sizeof(cbResult));
+@@ -1242,13 +1398,16 @@
+         SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_PARAM, "setList/setBuf/funcFixed is NULL");
+     if (!g_ps3_guest_caller)
+         SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_INTERNAL, "no guest caller installed");
++    u32 sort_type, sort_order;   /* patch 7109 */
++    if (!savedata_setlist_sort_ok((u32)(uintptr_t)setList, &sort_type, &sort_order))
++        SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_PARAM, "setList sortType or sortOrder above 1");
+     u32 dir_max = vm_read32((u32)(uintptr_t)setBuf);
+     if (dir_max > CELL_SAVEDATA_DIRLIST_MAX)
+         SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_PARAM, "dirListMax over CELL_SAVEDATA_DIRLIST_MAX");
+     CellSaveDataDirList* dirs = dir_max ? calloc(dir_max, sizeof(*dirs)) : NULL;
+     if (dir_max && !dirs) return CELL_SAVEDATA_ERROR_INTERNAL;
+     u32 prefix = vm_read32((u32)(uintptr_t)setList + 8);
+-    u32 count = enumerate_save_dirs(prefix ? (char*)vm_base + prefix : "", dirs, dir_max);
++    u32 count = enumerate_save_dirs(prefix ? (char*)vm_base + prefix : "", dirs, dir_max, sort_type, sort_order);
+     u32 listed = count < dir_max ? count : dir_max;
+     printf("[cellSaveData] savedata_fixed(%s): root='%s' prefix='%s' dirListMax=%u count=%u listed=%u first='%s'\n",
+            is_save ? "save" : "load", s_save_root, prefix ? (const char*)(vm_base + prefix) : "", dir_max, count,
+diff --git a/libs/system/tests/test_savedata_root.c b/libs/system/tests/test_savedata_root.c
+--- a/libs/system/tests/test_savedata_root.c
++++ b/libs/system/tests/test_savedata_root.c
+@@ -29,17 +29,17 @@
+ 
+     /* ...and for the listing, which creates the tree and finds saves in it. */
+     snprintf(want, sizeof(want), "%s/dev_hdd0/home/00000001/savedata", root);
+-    assert(enumerate_save_dirs("TEST", NULL, 0) == 0);
++    assert(enumerate_save_dirs("TEST", NULL, 0, 0, 0) == 0);
+     assert(dir_exists(want));
+     snprintf(path, sizeof(path), "%s/TEST00000", want);
+     assert(HOST_MKDIR(path) == 0);
+     CellSaveDataDirList list[2];
+-    assert(enumerate_save_dirs("TEST", list, 2) == 1);
++    assert(enumerate_save_dirs("TEST", list, 2, 0, 0) == 1);
+     assert(strcmp(list[0].dirName, "TEST00000") == 0);
+ 
+     /* Adopted once: a later change of the env does not move the saves. */
+     setenv("PS3_GAMEDATA_ROOT", "/nonexistent", 1);
+-    assert(enumerate_save_dirs("TEST", list, 2) == 1);
++    assert(enumerate_save_dirs("TEST", list, 2, 0, 0) == 1);
+ 
+     char cmd[1100];
+     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
+diff --git a/libs/system/tests/test_savedata_sort.c b/libs/system/tests/test_savedata_sort.c
+new file mode 100644
+--- /dev/null
++++ b/libs/system/tests/test_savedata_sort.c
+@@ -0,0 +1,183 @@
++/*
++ * RC patch 7109: dirList follows CellSaveDataSetList sortType / sortOrder.
++ *
++ * Five save directories whose name order, time order and SUB_TITLE order all differ (plus one whose directory is
++ * old but whose data file was rewritten last, and two with the same time so the SUB_TITLE tie-break shows), one
++ * directory outside the prefix. Checks the dirList funcFixed receives for the four sort modes, the cut to dirListMax
++ * after the sort, the dirName a ListLoad2 falls back to when funcList picks nothing (the newest save), and the
++ * parameter error for sortType / sortOrder above 1.
++ *
++ * Built and run by tools/test_savedata_sort.py, which passes a scratch directory (the save root) as argv[1].
++ * -DSAVEDATA_SRC="path/cellSaveData.c" builds the same checks against another tree (negative control).
++ */
++#ifdef SAVEDATA_SRC
++#include SAVEDATA_SRC
++#else
++#include "../cellSaveData.c"
++#endif
++#include <sys/time.h>
++
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++void ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*))
++{
++    (void)nid; (void)name; (void)fn;
++}
++ps3_guest_caller_fn g_ps3_guest_caller;
++
++#define SETLIST 0x100u
++#define SETBUF  0x200u
++#define PREFIX  0x300u
++#define LISTBUF 0x1000u
++#define FIXED_OPD 0x800u
++#define LIST_OPD  0x880u
++#define STAT_OPD  0x900u
++
++static int s_fail;
++#define CHECK(c, ...) do { if (!(c)) { s_fail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
++
++static char s_seen[8][32];
++static u32 s_seen_num, s_seen_dirnum, s_fixed_calls;
++static char s_stat_dir[32];
++
++static void guest_callback(u32 opd, u64 cb, u64 get, u64 set, u64 a, u64 b, u64 c, u64 d, u64 e)
++{
++    (void)set; (void)a; (void)b; (void)c; (void)d; (void)e;
++    if (opd == FIXED_OPD || opd == LIST_OPD) {
++        s_fixed_calls += opd == FIXED_OPD;
++        s_seen_dirnum = vm_read32((u32)get);
++        s_seen_num = vm_read32((u32)get + 4);
++        u32 list = vm_read32((u32)get + 8);
++        for (u32 i = 0; i < s_seen_num && i < 8; i++)
++            snprintf(s_seen[i], sizeof s_seen[i], "%.31s", (const char*)vm_base + list + i * 48);
++        /* funcFixed: OK_LAST (listing only). funcList: OK_NEXT with nothing chosen. */
++        vm_write32((u32)cb, opd == FIXED_OPD ? 1u : 0u);
++    } else if (opd == STAT_OPD) {
++        snprintf(s_stat_dir, sizeof s_stat_dir, "%.31s", (const char*)vm_base + get + 32);
++        vm_write32((u32)cb, 1); /* OK_LAST: no file operation */
++    }
++}
++
++static void set_time(const char* path, long t)
++{
++    struct timeval tv[2] = { { t, 0 }, { t, 0 } };
++    if (utimes(path, tv) != 0) { s_fail++; printf("FAIL: utimes %s\n", path); }
++}
++
++/* name, SUB_TITLE, directory mtime, PARAM.SFO mtime, data file mtime */
++static const struct { const char* name; const char* sub; long dir_t, sfo_t, data_t; } k_saves[] = {
++    { "BCUS00000A", "m", 1000000, 1000000, 1000000 },
++    { "BCUS00000B", "a", 4000000, 4000000, 4000000 },
++    { "BCUS00000C", "z", 3000000, 3000000, 3000000 },
++    { "BCUS00000D", "b", 3000000, 3000000, 3000000 },
++    { "BCUS00000E", "k",     500,     500, 5000000 },  /* saved in place last: only SAVE.DAT is new */
++    { "OTHER00000", "0", 9000000, 9000000, 9000000 },  /* outside the prefix */
++};
++
++static void make_fixture(const char* root)
++{
++    char path[1024];
++    for (size_t i = 0; i < sizeof k_saves / sizeof k_saves[0]; i++) {
++        snprintf(path, sizeof path, "%s/%s", root, k_saves[i].name);
++        if (mkdir(path, 0700) != 0) { s_fail++; printf("FAIL: mkdir %s\n", path); continue; }
++        uint8_t sfo[4096];
++        size_t n = ps3_psf_build(sfo, sizeof sfo, k_saves[i].name, "Title", k_saves[i].sub, "Detail", 0, "");
++        snprintf(path, sizeof path, "%s/%s/PARAM.SFO", root, k_saves[i].name);
++        FILE* f = fopen(path, "wb");
++        if (!f || fwrite(sfo, 1, n, f) != n) { s_fail++; printf("FAIL: write %s\n", path); }
++        if (f) fclose(f);
++        set_time(path, k_saves[i].sfo_t);
++        snprintf(path, sizeof path, "%s/%s/SAVE.DAT", root, k_saves[i].name);
++        f = fopen(path, "wb");
++        if (!f || fwrite("data", 1, 4, f) != 4) { s_fail++; printf("FAIL: write %s\n", path); }
++        if (f) fclose(f);
++        set_time(path, k_saves[i].data_t);
++        snprintf(path, sizeof path, "%s/%s", root, k_saves[i].name);
++        set_time(path, k_saves[i].dir_t);
++    }
++}
++
++static void set_list(u32 type, u32 order, u32 dir_max)
++{
++    vm_write32(SETLIST + 0, type);
++    vm_write32(SETLIST + 4, order);
++    vm_write32(SETLIST + 8, PREFIX);
++    vm_write32(SETBUF + 0, dir_max);
++    vm_write32(SETBUF + 32, 8 * 48);
++    vm_write32(SETBUF + 36, LISTBUF);
++}
++
++static void expect_fixed(const char* what, u32 type, u32 order, u32 dir_max, const char* const* want, u32 want_n)
++{
++    set_list(type, order, dir_max);
++    memset(s_seen, 0, sizeof s_seen); s_seen_num = s_seen_dirnum = 0;
++    u32 calls = s_fixed_calls;
++    s32 rc = cellSaveDataFixedLoad2(0, (void*)(uintptr_t)SETLIST, (void*)(uintptr_t)SETBUF,
++                                    (void*)(uintptr_t)FIXED_OPD, (void*)(uintptr_t)STAT_OPD, NULL, 0, NULL);
++    CHECK(rc == CELL_OK && s_fixed_calls == calls + 1, "%s: FixedLoad2 rc=0x%08X calls=%u", what, (unsigned)rc,
++          s_fixed_calls - calls);
++    CHECK(s_seen_dirnum == 5, "%s: dirNum %u, want 5", what, s_seen_dirnum);
++    CHECK(s_seen_num == want_n, "%s: dirListNum %u, want %u", what, s_seen_num, want_n);
++    char got[160] = "", exp[160] = "";
++    /* the last letter names the save (BCUS00000A..E) */
++    for (u32 i = 0; i < s_seen_num && i < 8; i++) { strcat(got, s_seen[i][0] ? s_seen[i] + 9 : "?"); strcat(got, " "); }
++    for (u32 i = 0; i < want_n; i++) { strcat(exp, want[i] + 9); strcat(exp, " "); }
++    CHECK(!strcmp(got, exp), "%s: dirList order [%s], want [%s]", what, got, exp);
++    if (!strcmp(got, exp)) printf("ok   %s: [%s]\n", what, got);
++}
++
++int main(int argc, char** argv)
++{
++    if (argc != 2) { printf("usage: test_savedata_sort SAVE_ROOT\n"); return 2; }
++    snprintf(s_save_root, sizeof s_save_root, "%s", argv[1]);
++    make_fixture(argv[1]);
++    vm_base = calloc(1, 0x200000);
++    if (!vm_base) return 2;
++    if (cellSaveData_set_scratch_region(0x100000, 0x20000) != CELL_OK) { printf("FAIL: scratch region\n"); return 1; }
++    strcpy((char*)vm_base + PREFIX, "BCUS");
++    g_ps3_guest_caller = guest_callback;
++
++    static const char* const time_desc[] = { "BCUS00000E", "BCUS00000B", "BCUS00000C", "BCUS00000D", "BCUS00000A" };
++    static const char* const time_asc[]  = { "BCUS00000A", "BCUS00000D", "BCUS00000C", "BCUS00000B", "BCUS00000E" };
++    static const char* const sub_asc[]   = { "BCUS00000B", "BCUS00000D", "BCUS00000E", "BCUS00000A", "BCUS00000C" };
++    static const char* const sub_desc[]  = { "BCUS00000C", "BCUS00000A", "BCUS00000E", "BCUS00000D", "BCUS00000B" };
++    expect_fixed("MODIFIEDTIME DESCENT", CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME, CELL_SAVEDATA_SORTORDER_DESCENT, 8, time_desc, 5);
++    expect_fixed("MODIFIEDTIME ASCENT",  CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME, CELL_SAVEDATA_SORTORDER_ASCENT,  8, time_asc, 5);
++    expect_fixed("SUBTITLE ASCENT",      CELL_SAVEDATA_SORTTYPE_SUBTITLE,     CELL_SAVEDATA_SORTORDER_ASCENT,  8, sub_asc, 5);
++    expect_fixed("SUBTITLE DESCENT",     CELL_SAVEDATA_SORTTYPE_SUBTITLE,     CELL_SAVEDATA_SORTORDER_DESCENT, 8, sub_desc, 5);
++    expect_fixed("MODIFIEDTIME DESCENT dirListMax=2", CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME,
++                 CELL_SAVEDATA_SORTORDER_DESCENT, 2, time_desc, 2);
++
++    /* ListLoad2 whose funcList chooses nothing loads dirList[0]: the newest save. */
++    set_list(CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME, CELL_SAVEDATA_SORTORDER_DESCENT, 8);
++    s_stat_dir[0] = 0;
++    s32 rc = cellSaveDataListLoad2(0, (void*)(uintptr_t)SETLIST, (void*)(uintptr_t)SETBUF,
++                                   (void*)(uintptr_t)LIST_OPD, (void*)(uintptr_t)STAT_OPD, NULL, 0, NULL);
++    CHECK(rc == CELL_OK && !strcmp(s_stat_dir, "BCUS00000E"),
++          "ListLoad2 fallback loads '%s' (rc=0x%08X), want the newest BCUS00000E", s_stat_dir, (unsigned)rc);
++    if (rc == CELL_OK && !strcmp(s_stat_dir, "BCUS00000E")) printf("ok   ListLoad2 fallback loads the newest save\n");
++
++    /* sortType / sortOrder above 1: parameter error before any callback. */
++    u32 calls = s_fixed_calls;
++    set_list(2, CELL_SAVEDATA_SORTORDER_DESCENT, 8);
++    rc = cellSaveDataFixedLoad2(0, (void*)(uintptr_t)SETLIST, (void*)(uintptr_t)SETBUF,
++                                (void*)(uintptr_t)FIXED_OPD, (void*)(uintptr_t)STAT_OPD, NULL, 0, NULL);
++    CHECK(rc == CELL_SAVEDATA_ERROR_PARAM && s_fixed_calls == calls, "sortType 2: rc=0x%08X, want PARAM", (unsigned)rc);
++    set_list(CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME, 2, 8);
++    rc = cellSaveDataListLoad2(0, (void*)(uintptr_t)SETLIST, (void*)(uintptr_t)SETBUF,
++                               (void*)(uintptr_t)LIST_OPD, (void*)(uintptr_t)STAT_OPD, NULL, 0, NULL);
++    CHECK(rc == CELL_SAVEDATA_ERROR_PARAM, "sortOrder 2: rc=0x%08X, want PARAM", (unsigned)rc);
++    if (s_fail == 0) printf("ok   sortType/sortOrder above 1 are CELL_SAVEDATA_ERROR_PARAM\n");
++
++    free(vm_base);
++    printf("%s (%d failures)\n", s_fail ? "FAIL" : "PASS", s_fail);
++    return s_fail ? 1 : 0;
++}
+diff --git a/tools/test_savedata_sort.py b/tools/test_savedata_sort.py
+new file mode 100755
+--- /dev/null
++++ b/tools/test_savedata_sort.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python3
++"""cellSaveData hands the title its save directories in the SetList's order.
++
++libs/system/tests/test_savedata_sort.c builds five saves whose name, time and
++SUB_TITLE orders all differ and checks the dirList funcFixed receives for
++CELL_SAVEDATA_SORTTYPE_MODIFIEDTIME / SUBTITLE x SORTORDER_DESCENT / ASCENT,
++the cut to dirListMax after the sort, the save a ListLoad2 falls back to when
++funcList picks none (the newest), and CELL_SAVEDATA_ERROR_PARAM for a
++sortType or sortOrder above 1 (RC patch 7109).
++
++It needs a host C compiler (under CI=1 a missing one fails instead of
++skipping).
++
++Usage:
++    python3 tools/test_savedata_sort.py [--against TREE]
++
++--against TREE builds the same checks against TREE/libs/system/cellSaveData.c
++(the negative control: a tree without patch 7109 must FAIL).
++"""
++
++import argparse
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++SOURCE = os.path.join(ROOT, "libs", "system", "tests", "test_savedata_sort.c")
++
++
++def _cc():
++    return (shutil.which(os.environ.get("CC", "cc")) or shutil.which("clang")
++            or shutil.which("gcc"))
++
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--against", help="tree whose libs/system/cellSaveData.c is tested (default: this one)")
++    args = ap.parse_args()
++    tree = os.path.abspath(args.against) if args.against else ROOT
++
++    cc = _cc()
++    if cc is None:
++        if os.environ.get("CI"):
++            print("FAIL: no C compiler found")
++            return 1
++        print("skip test_savedata_sort.c: no C compiler")
++        return 0
++    with tempfile.TemporaryDirectory() as td:
++        exe = os.path.join(td, "test_savedata_sort")
++        cmd = [cc, "-std=gnu17", "-w", "-I" + os.path.join(tree, "include"), "-o", exe, SOURCE]
++        if args.against:
++            cmd.insert(3, '-DSAVEDATA_SRC="%s"' % os.path.join(tree, "libs", "system", "cellSaveData.c"))
++        r = subprocess.run(cmd, capture_output=True, text=True)
++        if r.returncode != 0:
++            print("FAIL: fixture did not build")
++            print((r.stdout + r.stderr)[-4000:])
++            return 1
++        saves = os.path.join(td, "saves")
++        os.mkdir(saves)
++        r = subprocess.run([exe, saves], capture_output=True, text=True)
++        lines = [l for l in r.stdout.splitlines() if not l.startswith("[cellSaveData]")]
++        print("\n".join(lines))
++        if r.returncode != 0 and not lines[-1:] == ["FAIL"]:
++            print(r.stderr[-2000:])
++        return 1 if r.returncode != 0 else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

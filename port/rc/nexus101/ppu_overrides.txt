@@ -1,5 +1,5 @@
 # port/rc/nexus101/ppu_overrides.txt (ps3recomp ppu_lifter.py --overrides, patch 1018; setjmp/longjmp rows: patch 1116).
-# Into the Nexus 1.01 (BCUS99245). No host-replaced functions yet (a bare 8-digit address line would be one).
+# Into the Nexus 1.01 (BCUS99245). Host-replaced functions: the two probe lines at the end (nexus101_ppu_overrides.cpp).
 #
 # Guest setjmp/longjmp host frames, as A Crack in Time 1.20 (port/rc/acit120/ppu_overrides.txt): without them a caught
 # Lua 5.1 error returns from longjmp into luaD_throw and ends the process (exit(1)). 2026-11-03.
@@ -8,3 +8,8 @@
 # checked yet. The first boot's "[ljmp] caught" lines confirm them.
 setjmp 00A0A0FC status=0x220   # libc setjmp
 longjmp 00A0A220               # libc longjmp
+#
+# Collision-query probe (DIAGNOSTIC, default off: RC_COLLPROBE; nexus101_collprobe.inc), 2026-11-19. The lift must be
+# redone (tools/lift.sh) before build-rc accepts these two lines.
+00591B88  # sync collision query finaliser: the probe reads the record 0xF51700 around it
+007660E0  # player ground probe: the probe logs its arguments, result buffer and hit

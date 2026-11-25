@@ -1,0 +1,335 @@
+SPU: rdch SPU_RdMachStat bit 31 (value 1) returns the context's tracked interrupt-enable state by default (was the constant 1 while running).
+
+Problem: All 4 One (Luminopolis, ~468-499 s) and Into the Nexus stop flipping with the "ig" SPURS lanes parked at
+0x890/0xF8A0 on lock line 0x00F92D80/0x00F51680. Those lanes are idle (no queued work, no end marker; analysis of the
+2026-11-19 write-watch runs); the first abnormal event is earlier, in the audio job list (SPURS wid 4, Wws_Job, policy
+module A4O 0xDAE900 / Nexus 0xD3F400, image 2). Its job-API entries assert that interrupts are off:
+`rdch SPU_RdMachStat; andi 1; brnz 0x1714`, and 0x1714 is `stop 0` (8 of the 9 MachStat reads in each PM branch there).
+Jobs enter them through bisld (D bit), so on hardware the read is 0; KZ3 patch 1061's default returns 1 whenever the SPU
+runs, so the list stops in its trap and never runs again.
+
+Evidence: a4o-wwatch2.app_stdout.txt l.34511/34516: '"" kernel thread 0 wid=4 PM run not returned for 4538 ms', lane 0
+img=2 pc=0x01714 status=0x2 (STOPPED_BY_STOP) lr=0x09248, at t~187 s, the same at every report to the end (l.40319,
+407 s later). The PPU's sound command ring 0x00FF3B40 (24-byte records, func_005E8738) then fills: the main thread's
+first usleep at lr 0x75A160 (func_0075A0B8, allocation loop on that ring) is l.60951, the freeze second, and it is the
+only usleep site from there to the end (a4o-7099: lr 0x759428 from t=468). nexus-wwatch2 l.21954/21958: the same trap
+(pc 0x01714 status 0x2 lr 0x0BE68) from t~139 s. Earlier: a4o-scr-y2 (2026-11-10) the same trap at 186 s, and runs
+a4o-ie-1 (KZ3_SPU_MACHSTAT_IE=1) and a4o-6508-1 had no wid 4 stuck report (porting-status 2026-11-10 04:58-06:17).
+The unmerged R&C 6508 (same semantics) was held back by tods-6508-1 "6 restarts, 7 Lua pairs"; since 2026-11-11 the ToD
+gate counts those as respawns (pairs = restarts + 1, fps dependent: base runs pass with 7 and 9), so that run is not
+evidence against it.
+
+Fix: the read returns ctx->int_enable (spu_machstat.h, spu_machstat_value). That state is already kept where the hardware
+changes it: the E (0x40000, set) and D (0x80000, clear) bits of a taken bi/bisl/bisled/iret/biz/binz/bihz/bihnz in the
+lift and the interpreter, cleared by interrupt entry, clear at context start. KZ3_SPU_MACHSTAT_IE=0 restores the old
+value for A/B runs only. KZ3_SPU_MACHSTAT_TRACE=1: first read per (image, pc), reads with ie=0, and "[machstat] differs"
+for every read whose value the old rule would have changed (tools/tod-regression.sh fails on that line).
+
+Semantics: CBEA v1.02 s.9.8 (SPU_RdMachStat: bit 31 interrupt-enable status, bit 30 isolation, rest 0; the bi-family
+E/D bits set/clear the interrupt enable, interrupt entry disables) [src:cbea]; RPCS3's SPU thread returns its
+interrupts-enabled flag in bit 0 and the isolation state in bit 1 (read 2026-11-10 for 6508, nothing copied) [src:rpcs3-sputhread].
+Host tests (port/rc/tests/run_spu_machstat_test.sh, exits 0 only when both negative controls fail): (1) the real runtime,
+port/rc/tests/test_spu_machstat_channel.c linked with this tree's spu_channels.c/spu_interp.c/spu_drain.c (spu_rdch over
+every run state, the interpreter running the WWS assert behind a bisld and the AddJob save/restore, interrupt entry and
+irete): 47 pass; KZ3_SPU_MACHSTAT_IE=0: 11 fail. (2) the model runtime/spu/tests/test_spu_machstat.c: 84 pass, -DNO_7105:
+7 fail. Upstream's runtime/spu/tests/test_spu_machine_status.c tests the same channel but does not build on this tree
+(KZ3 patch 1017 made g_spu_trampoline_fn a ctx-> field; its global `ctx` is a struct). RPCS3 reference runs a4o-rpcs3-lumi and nexus-rpcs3-newgame pass these points. Source: SPU notes,
+2026-11-19. Supersedes the unmerged 6508.
+
+KZ3 counter-evidence (Killzone 3 the RE notes "Patch 1061" item 2 and the upstream fix list
+#289): with this same default KZ3's level load hangs (SPU pass 47, runs spu-47-a1/a2/x2/x3): its WWS AddJob (job_0100d800
+0x11640: `rdch RdMachStat; andi 1; bid; ...; bihze`) reads int_enable 0 where hardware has 1, so it stops re-enabling
+interrupts and the lane's SN handler never runs again; KZ3 placed the loss between its host-side policy-module entry
+(spu_run_policy_module, spurs_policy.c:332, which sets no int_enable) and the job. Why R&C differs (static, 2026-11-19,
+SPU images of all 12 R&C titles from work/spu/*/policy,jobmods,images):
+- Hardware IE on entry: an LV2 SPU thread starts at its image entry with NPC bit 0 = 0, so IE 0 (CBEA SPU_NPC bit 31 =
+  interrupt enable at start; RPCS3's SPU thread init clears its interrupts flag and takes IE from npc bit 0 at start, its
+  sys_spu group start stores the entry unmodified, read via raw URL, nothing copied [src:rpcs3-sputhread]); the port's
+  spu_context_init gives 0: same. The SPURS kernel that enters a policy module is firmware code (libsre) we cannot read
+  here, and RPCS3's HLE kernel (cellSpursSpu.cpp) never touches IE, so the PM-entry IE is not recovered: ASSUMPTION 0
+  (the port: 0 on a fresh PM context, else the state the PM left at its exit, which is after a bid at A4O 0x2FFC).
+- That PM-entry value reaches no R&C read. Every R&C WWS policy module (ToD, QfB, ACiT, the collection, DLHD, A4O, FFA,
+  Nexus) sets IE itself: `bra 0xA2C` vector at LS 0, irete at 0xAEC, bie/bid windows (A4O 0x2594/0x259C, 0x2FDC/0x2FE4),
+  and it enters every job by `bisle $0,$5` (A4O 0x35EC, ToD 0x30A4, ACiT 0x3254, rc1 0x32AC: E bit, IE 1, as on
+  hardware). The lift applies the E/D bits on that bisl before the call (spu_lifter.py `_ied`), the interpreter too
+  (case 2 of the host test). The A4O-family PMs' 9 MachStat reads all assert IE 0 (8 job-API entries behind bisld ->
+  0x1714, the interrupt handler at 0x25D4 -> 0x1790); the older PMs read it nowhere.
+- KZ3-shape save/restore reads in R&C WWS jobs run with IE 1 from the bisle, so the old rule and this one agree there:
+  ToD/QfB jobmods (`rdch; andi 1; ...; bid`, 6 sites) and the collection/DLHD/ToD/QfB jobmods' unoptimised helper (`rdch;
+  ori; ... andi 1`, 24 sites). No host path in this tree enters a WWS job without the PM's bisle (spurs_job.c's HLE job
+  chain and spu_run_lifted_job*/spu_run_interp_job are SPU-thread/HLE entries that start at IE 0).
+What still risks it: (a) the ACiT/Nexus/FFA/A4O EDGE inflate ELF (A4O elf_00d7ad80: 0x3874, 0x3FDC, `rdch; ...; bid;
+...; bihze/binze`) is not a WWS job; the port enters it with IE 0, and the IE its real entry path gives it is not
+recovered (ASSUMPTION 0). If it is 1 on hardware, its exit no longer re-enables interrupts here; it plants no LS-0
+vector or iret, so no handler depends on it, but it is the KZ3 shape. (b) The unrecovered SPURS-kernel IE at PM entry,
+if a title reads it before its own bie/bid (no R&C PM does). Both show as "[machstat] differs" with
+KZ3_SPU_MACHSTAT_TRACE=1 (the old rule answers 1 where this one answers 0); the sweep gates on that line.
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 439e9ef..4e929f2 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -21,6 +21,7 @@
+ #include "spu_interp.h"    /* spu_lifted_fn / spu_lifted_lookup -- defined below */
+ #include "ps3emu/ps3_ftrace.h"
+ #include "spu_overlay_residency.h"
++#include "spu_machstat.h"   /* R&C patch 7105 */
+ 
+ #if defined(_WIN32) && !defined(_MSC_VER)
+ SPU_READ_MOSTLY uint32_t g_spu_wws_code_buf_slot[SPU_WWS_SLOT_IMAGES];   /* R&C patch 6505: the one definition on MinGW */
+@@ -689,21 +690,64 @@ static void kz3_curcont_check(spu_context* ctx, uint32_t ea, const uint8_t* mem,
+  *   KZ3_SPU_EVSTAT_UNMASKED=1  rdch SPU_RdEventStat returns the raw pending register. Spec: the
+  *       read returns pending AND the write event mask [CBEA s.9.11, s.9.11.1]; KZ3's readers ack
+  *       exactly what they read, so the raw value erased pending-but-masked SN/Tg bits.
+- *   KZ3_SPU_MACHSTAT_IE=1      rdch SPU_RdMachStat bit 31 = the interrupt-enable latch [CBEA s.9.8]
+- *       (upstream #289, tekulvw). OFF by default: KZ3's WWS AddJob saves it with `rdch RdMachStat;
+- *       andi 1` and re-enables interrupts on exit only when it was set, and in this port the job
+- *       sees int_enable == 0 there (SPU pass 47: the level load hangs, runs spu-47-a1/a2/x2/x3;
+- *       x1 with the old value loads), so the port's contexts lose IE somewhere hardware keeps it.
+- *       Default = the old "1 while running". KZ3_SPU_MACHSTAT_TRACE=1 prints the first reads
+- *       that see int_enable == 0 (image, pc) to find that spot.
++ *   KZ3_SPU_MACHSTAT_IE=0      rdch SPU_RdMachStat returns the old "1 while running" instead of bit 31 =
++ *       the interrupt-enable state [CBEA s.9.8] (upstream #289, tekulvw). R&C patch 7105 made the
++ *       interrupt-enable state the DEFAULT (A/B runs only with =0; spu_machstat.h): Insomniac's WWS
++ *       policy module (A4O 0xDAE900, FFA, Nexus 0xD3F400) asserts interrupts-off at its job-API
++ *       entries and stops at `stop 0` (0x1714) when the read says 1.
++ *       History (KZ3 patch 1061, SPU pass 47): the switch was opt-in (=1), default the old value,
++ *       because KZ3's WWS AddJob saves the bit with `rdch RdMachStat; andi 1` and re-enables
++ *       interrupts on exit only when it was set, and in KZ3's port the job saw int_enable == 0 there
++ *       (the level load hangs, runs spu-47-a1/a2/x2/x3; x1 with the old value loads): KZ3's contexts
++ *       lose IE somewhere hardware keeps it. R&C's jobs are entered by the policy module's own
++ *       lifted `bisle` (IE 1, as on hardware); see the 7105 patch header. KZ3_SPU_MACHSTAT_TRACE=1
++ *       prints the first read per (image, pc), reads with int_enable == 0, and every read the old
++ *       rule would have answered differently ("[machstat] differs").
+  *   KZ3_SPU_PUTLLUC_SELF_LR=1  PUTLLUC/PUTQLLUC raise Lr on the issuing SPU too. Spec: Lr is not
+  *       set for a reservation lost to a local action [CBEA s.9.11.1 bit 21]. */
+ static inline int kz3_evstat_unmasked(void)
+ { static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_EVSTAT_UNMASKED"); s = (e && *e == '1') ? 1 : 0; } return s; }
++/* R&C patch 7105: 1 = the tracked interrupt-enable state (default), 0 = the old rule (KZ3_SPU_MACHSTAT_IE=0, above). */
+ static inline int kz3_machstat_ie(void)
+-{ static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_MACHSTAT_IE"); s = (e && *e == '1') ? 1 : 0; } return s; }
++{ static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_MACHSTAT_IE"); s = (e && *e == '0') ? 0 : 1; } return s; }
+ static inline int kz3_machstat_trace(void)
+ { static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_MACHSTAT_TRACE"); s = (e && *e == '1') ? 1 : 0; } return s; }
++/* R&C patch 7105, KZ3_SPU_MACHSTAT_TRACE=1 (diagnostic): the first read at each (image, pc) with the state it sees, the
++ * first 24 reads with ie=0, and every read whose value differs from the old rule (per site at 1, 2, 4, 8, ...; the
++ * ToD regression gate, tools/tod-regression.sh, fails on any "[machstat] differs" line). A spin lock: SPU threads race. */
++static void kz3_machstat_note(const spu_context* ctx, uint32_t v_new, uint32_t v_old)
++{
++    enum { NSITE = 128 };
++    static struct { int32_t img; uint32_t pc; uint32_t n, ndiff; } site[NSITE];
++    static int nsite, lock, full;
++    static long n0, n1, nd;
++    const uint32_t pc = ctx->pc & SPU_LS_MASK;
++    while (__atomic_exchange_n(&lock, 1, __ATOMIC_ACQUIRE)) { }
++    if (v_new & SPU_MACHSTAT_IE) n1++; else n0++;
++    if (v_new != v_old) nd++;
++    int i;
++    for (i = 0; i < nsite; i++)
++        if (site[i].img == ctx->image_id && site[i].pc == pc) break;
++    int first = 0;
++    if (i == nsite) {
++        if (nsite < NSITE) { site[i].img = ctx->image_id; site[i].pc = pc; nsite++; first = 1; }
++        else { i = -1; if (!full) { full = 1; fprintf(stderr, "[machstat] site table full (%d)\n", NSITE); } }
++    }
++    uint32_t n = 0, ndiff = 0;
++    if (i >= 0) { n = ++site[i].n; if (v_new != v_old) ndiff = ++site[i].ndiff; }
++    const long c0 = n0, c1 = n1, cd = nd;
++    __atomic_store_n(&lock, 0, __ATOMIC_RELEASE);
++    if (first)
++        fprintf(stderr, "[machstat] first img=%d pc=0x%05X ie=%u status=0x%X lr=0x%05X srr0=0x%05X read=%u old=%u\n",
++                ctx->image_id, pc, ctx->int_enable, ctx->status, ctx->gpr[0]._u32[0] & SPU_LS_MASK,
++                ctx->srr0 & SPU_LS_MASK, v_new, v_old);
++    if (ndiff && !(ndiff & (ndiff - 1)))
++        fprintf(stderr, "[machstat] differs img=%d pc=0x%05X ie=%u status=0x%X read=%u old=%u site_reads=%u site_diffs=%u"
++                " (all: ie0=%ld ie1=%ld diff=%ld)\n", ctx->image_id, pc, ctx->int_enable, ctx->status, v_new, v_old,
++                n, ndiff, c0, c1, cd);
++    else if (!(v_new & SPU_MACHSTAT_IE) && c0 <= 24)
++        fprintf(stderr, "[machstat] img=%d pc=0x%05X ie=0 (reads ie0=%ld ie1=%ld)\n", ctx->image_id, pc, c0, c1);
++}
+ static inline int kz3_putlluc_self_lr(void)
+ { static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_PUTLLUC_SELF_LR"); s = (e && *e == '1') ? 1 : 0; } return s; }
+ 
+@@ -1528,17 +1572,12 @@ static u128 spu_rdch_impl(spu_context* ctx, uint32_t channel)
+                             /* KZ3 patch 1061: pending AND mask [CBEA s.9.11.1] */
+                             if (!kz3_evstat_unmasked()) v &= ctx->event_mask;
+                             break;
+-    case SPU_RdMachStat:    /* KZ3 patch 1061: bit 31 = IE latch [CBEA s.9.8] (upstream #289), opt-in */
+-                            v = kz3_machstat_ie() ? (ctx->int_enable ? 1u : 0u)
+-                                                  : ((ctx->status == SPU_STATUS_RUNNING) ? 1 : 0);
+-                            if (kz3_machstat_trace()) {
+-                                static long n0, n1; static int shown;
+-                                if (ctx->int_enable) n1++; else n0++;
+-                                if (!ctx->int_enable && shown < 24) { shown++;
+-                                    fprintf(stderr, "[machstat] img=%d pc=0x%05X ie=0 (reads ie0=%ld ie1=%ld)\n",
+-                                            ctx->image_id, ctx->pc & SPU_LS_MASK, n0, n1); }
+-                            }
+-                            break;
++    case SPU_RdMachStat: {  /* KZ3 patch 1061 / R&C patch 7105: bit 31 = the interrupt-enable state [CBEA s.9.8] */
++                            const int running = ctx->status == SPU_STATUS_RUNNING;
++                            const uint32_t v_old = spu_machstat_value(ctx->int_enable, running, 0);
++                            v = spu_machstat_value(ctx->int_enable, running, kz3_machstat_ie());
++                            if (kz3_machstat_trace()) kz3_machstat_note(ctx, v, v_old);
++                            break; }
+     case SPU_RdSRR0:        v = ctx->srr0;                              break;
+     default:
+         v = 0;
+diff --git a/runtime/spu/spu_machstat.h b/runtime/spu/spu_machstat.h
+new file mode 100644
+index 0000000..6f78d26
+--- /dev/null
++++ b/runtime/spu/spu_machstat.h
+@@ -0,0 +1,41 @@
++/* R&C patch 7105: the value `rdch SPU_RdMachStat` returns.
++ *
++ * CBEA v1.02 s.9.8: SPU_RdMachStat bit 31 (value 0x1) is the SPU's interrupt-enable state, bit 30 (0x2) the
++ * isolation state (this runtime never runs isolated SPUs: 0), the rest reads 0. The interrupt-enable state is
++ * changed only by the E (0x40000, set) and D (0x80000, clear) bits of a taken bi, bisl, bisled, iret, biz, binz, bihz or
++ * bihnz, and cleared by interrupt entry; reading the channel changes nothing. The runtime already keeps that state in
++ * ctx->int_enable (the lift, spu_lifter.py `_ied`; the interpreter, spu_interp.c; the bi fallbacks in spu_channels.c;
++ * interrupt entry, spu_drain.c spu_take_interrupt).
++ *
++ * KZ3 patch 1061 returned the constant "1 while running" unless KZ3_SPU_MACHSTAT_IE=1. Insomniac's WWS job policy
++ * module (All 4 One pm 0xDAE900, Into the Nexus pm 0xD3F400: the audio job list, SPURS wid 4) asserts at its job-API
++ * entries that interrupts are off, `rdch SPU_RdMachStat; andi 1; brnz 0x1714`, and 0x1714 is a `stop 0` trap: with the
++ * constant 1 the audio job list stops there for good (status 0x2, pc 0x1714), the PPU's sound command ring at
++ * 0x00FF3B40 (A4O) fills, and the main thread then waits on it forever (SPU notes 2026-11-19).
++ * Pure header, host-testable (runtime/spu/tests/test_spu_machstat.c). */
++#ifndef SPU_MACHSTAT_H
++#define SPU_MACHSTAT_H
++
++#include <stdint.h>
++
++#define SPU_MACHSTAT_IE        0x1u   /* bit 31 in CBEA numbering: interrupts enabled */
++#define SPU_MACHSTAT_ISOLATED  0x2u   /* bit 30: isolation mode (never set here) */
++
++/* The architectural value (tracked = 1, the default) or the old KZ3 1061 rule (tracked = 0: 1 while running, for
++ * A/B runs only, KZ3_SPU_MACHSTAT_IE=0). */
++static inline uint32_t spu_machstat_value(uint32_t int_enable, int running, int tracked)
++{
++    if (!tracked) return running ? SPU_MACHSTAT_IE : 0u;
++    return int_enable ? SPU_MACHSTAT_IE : 0u;
++}
++
++/* The interrupt-enable effect of a TAKEN bi-family branch word (bi, bisl, bisled, iret, biz, binz, bihz, bihnz): E sets,
++ * D clears, neither leaves it. Same decode as the lift and the interpreter. */
++static inline uint32_t spu_ie_after_branch(uint32_t int_enable, uint32_t insn)
++{
++    if (insn & 0x40000u) return 1u;
++    if (insn & 0x80000u) return 0u;
++    return int_enable;
++}
++
++#endif /* SPU_MACHSTAT_H */
+diff --git a/runtime/spu/tests/test_spu_machstat.c b/runtime/spu/tests/test_spu_machstat.c
+new file mode 100644
+index 0000000..5c41142
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_machstat.c
+@@ -0,0 +1,107 @@
++/* R&C patch 7105 host test: what `rdch SPU_RdMachStat` returns, against the CBEA rule (bit 31 = the interrupt-enable
++ * state, set/cleared by the E/D bits of a taken bi-family branch, cleared by interrupt entry, unchanged by the read).
++ * A small SPU model runs the two guest shapes that read it:
++ *   1. Insomniac's WWS job policy module (A4O pm 0xDAE900, Nexus 0xD3F400): a job enters a job-API entry through bisld
++ *      (D bit: interrupts off), the entry does `rdch SPU_RdMachStat; andi 1; brnz 0x1714` and 0x1714 is `stop 0`.
++ *      Pass = the job API returns, the trap is never taken, for every job of the list.
++ *   2. A WWS AddJob that saves the state (`rdch; andi 1`), disables, and re-enables on exit only if it was set (KZ3's
++ *      shape, KZ3 patch 1061 note): entered with interrupts on, it must leave them on; entered with them off, off.
++ * Plus the plain rules: a context starts with IE clear, interrupt entry clears it, iret with E sets it, a stopped SPU
++ * keeps its IE bit, and reading changes nothing.
++ * Build with -DNO_7105 for the pre-patch value ("1 while running", KZ3 1061's default): this test FAILS.
++ *   cc -std=gnu17 -Wall -Wextra -I runtime/spu runtime/spu/tests/test_spu_machstat.c && ./a.out */
++#include <stdio.h>
++#include <stdint.h>
++#include "spu_machstat.h"
++
++#ifdef NO_7105
++#define TRACKED 0
++#else
++#define TRACKED 1
++#endif
++
++/* bi-family words with the E/D bits (opcode bits are irrelevant to the decode) */
++#define BR_PLAIN 0x35000000u          /* bi    */
++#define BR_E     (0x35000000u | 0x40000u)  /* bie / irete / bisle */
++#define BR_D     (0x35200000u | 0x80000u)  /* bid / bisld */
++
++typedef struct {
++    uint32_t int_enable, status_running, trapped, stopped_pc;
++} spu_t;
++
++static int fails, passes;
++#define CHECK(c, ...) do { if (c) passes++; else { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
++
++static uint32_t rdch_machstat(spu_t* s)
++{
++    const uint32_t before = s->int_enable;
++    uint32_t v = spu_machstat_value(s->int_enable, s->status_running, TRACKED);
++    CHECK(s->int_enable == before, "reading SPU_RdMachStat changed the IE state");
++    return v;
++}
++static void branch(spu_t* s, uint32_t insn) { s->int_enable = spu_ie_after_branch(s->int_enable, insn); }
++static void take_interrupt(spu_t* s) { s->int_enable = 0; }   /* spu_take_interrupt: srr0 <- pc, IE <- 0 */
++
++/* WWS PM job-API entry (A4O 0x17D8, 0x1858, 0x18C0, ...): assert interrupts off, else stop 0 at 0x1714 */
++static int wws_job_api(spu_t* s)
++{
++    if (rdch_machstat(s) & 1u) { s->trapped = 1; s->status_running = 0; s->stopped_pc = 0x1714; return 0; }
++    return 1;
++}
++
++/* One job of the list: the PM's job loop runs with interrupts on between jobs (bie at its poll), the job calls the
++ * job API through bisld (D) and comes back by a plain bi. */
++static int run_job(spu_t* s)
++{
++    branch(s, BR_E);        /* PM poll window: interrupts on */
++    branch(s, BR_D);        /* bisld into the job (interrupts off) */
++    if (!wws_job_api(s)) return 0;
++    branch(s, BR_PLAIN);    /* bi $r0 back: IE unchanged */
++    return 1;
++}
++
++/* AddJob-like save/restore (KZ3 1061 note): save IE, disable, work, re-enable only if it was on */
++static void addjob(spu_t* s)
++{
++    const uint32_t saved = rdch_machstat(s) & 1u;
++    branch(s, BR_D);
++    branch(s, saved ? BR_E : BR_PLAIN);
++}
++
++int main(void)
++{
++    /* plain rules */
++    spu_t s = { 0, 1, 0, 0 };
++    CHECK(rdch_machstat(&s) == 0, "a fresh running context reads IE 1 (it starts with interrupts disabled)");
++    branch(&s, BR_E);
++    CHECK(rdch_machstat(&s) == 1, "bie did not set the IE bit");
++    take_interrupt(&s);
++    CHECK(rdch_machstat(&s) == 0, "interrupt entry left the IE bit set");
++    branch(&s, BR_E);       /* irete */
++    CHECK(rdch_machstat(&s) == 1, "irete did not set the IE bit");
++    branch(&s, BR_PLAIN);
++    CHECK(rdch_machstat(&s) == 1, "a plain bi changed the IE bit");
++    s.status_running = 0;
++    CHECK(rdch_machstat(&s) == 1, "the IE bit follows the run state instead of the interrupt-enable state");
++    CHECK((spu_machstat_value(1, 1, TRACKED) & ~SPU_MACHSTAT_IE) == 0, "bits other than IE are set (no isolation)");
++
++    /* 1. the audio job list: 64 jobs through the job API, never the stop-0 trap */
++    spu_t a = { 0, 1, 0, 0 };
++    int done = 0;
++    for (int j = 0; j < 64; j++) { if (!run_job(&a)) break; done++; }
++    CHECK(!a.trapped, "the WWS PM took its interrupts-off trap: stopped at pc 0x%04X after %d of 64 jobs",
++          a.stopped_pc, done);
++    CHECK(done == 64, "only %d of 64 jobs ran", done);
++    CHECK(a.status_running, "the job list is not running at the end");
++
++    /* 2. AddJob keeps the caller's state */
++    spu_t k = { 1, 1, 0, 0 };
++    addjob(&k);
++    CHECK(k.int_enable == 1, "AddJob entered with interrupts on left them off");
++    spu_t k0 = { 0, 1, 0, 0 };
++    addjob(&k0);
++    CHECK(k0.int_enable == 0, "AddJob entered with interrupts off turned them on");
++
++    printf("test_spu_machstat: %d passed, %d failed%s\n", passes, fails, TRACKED ? "" : " (NO_7105: pre-patch value)");
++    return fails ? 1 : 0;
++}
