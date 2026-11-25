@@ -9,7 +9,9 @@
 # -v prints the output of failed tests. RC_HOST_TESTS_LOGDIR=DIR keeps every test's full output there.
 # SKIP = the test printed SKIP and exited 0 with no PASS line (a test that cannot run here). With RC_HOST_TESTS_STRICT=1
 # (CI) ANY line starting with SKIP (also indented / [SKIP]) is a FAIL, so a green CI run never means "tested nothing", except
-# for tests named in a `#:allow-skip PATH reason` line of the list (a known partial skip, with its reason).
+# for tests named in a `#:allow-skip PATH reason` line of the list (a known partial skip, with its reason; the ok line
+# then names the SKIP), and a test that exits 0 without a pass line (PASS_RE below) is a FAIL too. A partial SKIP
+# (SKIP lines next to a PASS line) is shown on the ok line in every mode. tools/test_run_host_tests.py tests these rules.
 # Each test is limited to RC_HOST_TESTS_TIMEOUT seconds (default 600). Run at low load: it compiles with gcc/clang.
 #
 # Left out on purpose (the ledger is at the end of tools/host-tests.txt): tests that need game data or lifted game code,
@@ -25,6 +27,10 @@ STRICT="${RC_HOST_TESTS_STRICT:-0}"
 [[ -d work/ps3recomp-patched ]] || echo "warning: work/ps3recomp-patched is missing (tools/ps3recomp-patched.sh): tests that link it will FAIL" >&2
 out="$(mktemp -d "${TMPDIR:-/tmp}/rc-host-tests.XXXXXX")"; trap 'rm -rf "$out"' EXIT
 export TMPDIR="$out"   # every test's scratch files land here and go away with it
+
+# What counts as a pass line in strict mode for a test without SKIP lines (case-insensitive, anywhere in a line):
+# "PASS", "-> PASS", ": ok", "ok N checks", "all passed", "all checks pass", "selftest: OK".
+PASS_RE='(^|[^a-z])pass([^a-z]|$)|(^|: |\] )ok([^a-z]|$)|all (checks )?pass(ed)?'
 
 # Extra arguments per test (the list holds bare paths).
 args_for() { case "$1" in
@@ -50,20 +56,27 @@ while IFS= read -r t; do
   t0=$SECONDS
   timeout "$TMO" "${cmd[@]}" </dev/null >"$log" 2>&1; rc=$?
   dt=$((SECONDS - t0))
+  note=""; why=""
   if (( rc == 0 )); then
-    # the tests' own pass lines: "PASS", "[PASS] x", "[run_x_test] PASS" (at line start only), "ok", "[ok]"
-    if grep -qE '^[[:space:]]*\[?SKIP' "$log"; then
-      if grep -qE '^(PASS|ok|\[ok\]|\[PASS\]|\[[A-Za-z0-9_]+\] PASS)' "$log"; then st=ok; else st=SKIP; fi
+    skipl="$(grep -m1 -E '^[[:space:]]*\[?SKIP' "$log" | sed 's/^[[:space:]]*//' | cut -c1-110)"
+    if [[ -n "$skipl" ]]; then
+      # the tests' own pass lines: "PASS", "[PASS] x", "[run_x_test] PASS", "test_x: PASS" (at line start only), "ok", "[ok]"
+      if grep -qE '^(PASS|ok|\[ok\]|\[PASS\]|\[[A-Za-z0-9_]+\] PASS|[A-Za-z0-9_]+: PASS)' "$log"; then st=ok; note="; partial SKIP: $skipl"; else st=SKIP; fi
       # strict: any SKIP line fails, unless the test is on the explicit partial-skip allow-list
-      if [[ "$STRICT" == 1 && -z "${ALLOW_SKIP[$t]:-}" ]]; then st=FAIL; fi
-    else st=ok; fi
+      if [[ "$STRICT" == 1 && -z "${ALLOW_SKIP[$t]:-}" ]]; then st=FAIL; why="strict: SKIP line: $skipl"; fi
+      [[ "$STRICT" == 1 && -n "${ALLOW_SKIP[$t]:-}" ]] && note="; allowed partial SKIP: $skipl"
+    else
+      st=ok
+      # strict: exit 0 is not enough, the test must also say it passed (audit 2026-11-25 L50)
+      if [[ "$STRICT" == 1 ]] && ! grep -qiE "$PASS_RE" "$log"; then st=FAIL; why="strict: exit 0 but no pass line"; fi
+    fi
   else st=FAIL; fi
-  [[ "$st" == SKIP && "$STRICT" == 1 ]] && st=FAIL
+  [[ "$st" == SKIP && "$STRICT" == 1 ]] && { st=FAIL; why="strict: SKIP line: $skipl"; }
   case "$st" in
-    ok) ok=$((ok+1)); printf 'ok    %s (%ss)\n' "$t" "$dt" ;;
-    SKIP) skip=$((skip+1)); printf 'SKIP  %s (%s)\n' "$t" "$(grep -m1 -E '^\[?SKIP' "$log" | cut -c1-120)" ;;
+    ok) ok=$((ok+1)); printf 'ok    %s (%ss%s)\n' "$t" "$dt" "$note" ;;
+    SKIP) skip=$((skip+1)); printf 'SKIP  %s (%s)\n' "$t" "$skipl" ;;
     FAIL) fail=$((fail+1)); failed+=("$t")
-          if (( rc == 0 )); then printf 'FAIL  %s (strict: SKIP line: %s)\n' "$t" "$(grep -m1 -E '^[[:space:]]*\[?SKIP' "$log" | cut -c1-100)"
+          if (( rc == 0 )); then printf 'FAIL  %s (%s)\n' "$t" "$why"
           else printf 'FAIL  %s (exit %s, %ss)\n' "$t" "$rc" "$dt"; fi
           if (( verbose )); then tail -40 "$log" | sed 's/^/      | /'; fi ;;
   esac

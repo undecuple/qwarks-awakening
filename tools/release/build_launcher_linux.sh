@@ -66,6 +66,10 @@ map="-ffile-prefix-map=$ROOT=. -ffile-prefix-map=$SDL3_SRC=sdl3 -ffile-prefix-ma
   -DLAUNCHER_LINUX_RELEASE=ON -DLAUNCHER_RELEASE_API="$API" -DLAUNCHER_FONT_DIR=fonts
 "$CMAKE" --build "$OUT/launcher-build"
 cp "$OUT/launcher-build/launcher" "$OUT/qwarks-awakening"
+# The program loads <exe dir>/fonts (LAUNCHER_FONT_DIR): stage them so the build output runs where it is built (the
+# navigation test and a developer run it from here; pack_linux.py/pack_appimage.py take launcher/fonts themselves).
+# 2026-11-25: without them the CI navigation test failed 38 of 43 checks ("cannot load font fonts/...").
+mkdir -p "$OUT/fonts"; cp "$ROOT"/launcher/fonts/*.ttf "$OUT/fonts/"
 # The licence texts of what SDL3 links into the program: SDL itself (zlib) and the two third-party parts of its source
 # that end up in it (linker map, 2026-11-16): HIDAPI in SDL_hidapi.c (used under its BSD-style licence, one of the three
 # it offers) and yuv2rgb (BSD-3-Clause). SDL's own libm (Sun's notice) is only linked where the C library lacks the

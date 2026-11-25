@@ -113,6 +113,9 @@ author's sister ports. Each patch header names its source.
   through PR #41 with the author's commits kept: the native Windows source build (`tools/build-windows.ps1`, the
   patch applier `tools/ps3recomp_patched.py` and its host test), the check that recognises disc images that are
   already decrypted, and the native Windows smoke test in the README's status table.
+  [PR #28](https://github.com/undecuple/qwarks-awakening/pull/28): the larger host stack for the SPURS threads that
+  run recompiled SPU code (patch 6510, submitted as 1157), the host test of patch 2147's ring-wrap counts
+  (`port/rc/tests/run_gcm_r137_test.sh`) and the Windows build of the constant-upload benchmark.
 
 Ratchet & Clank and the names of its games and characters are trademarks of Sony Interactive Entertainment. This
 project is not affiliated with or endorsed by Sony Interactive Entertainment, Insomniac Games or the studios that

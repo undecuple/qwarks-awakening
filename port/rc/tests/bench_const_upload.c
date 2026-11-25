@@ -10,12 +10,31 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <malloc.h>
+#include <windows.h>
+#endif
 enum { NCONST = 512, BLOCK = 8448, DRAWS = 6964, RING_BLOCKS = 4096, SAME = 3124, FRAMES = 50 };
+#ifdef _WIN32
+static double now(void)
+{
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
+    return (double)t.QuadPart / (double)f.QuadPart;
+}
+static void* ring_alloc(size_t size) { return _aligned_malloc(size, 256); }
+static void ring_free(void* p) { _aligned_free(p); }
+#else
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static void* ring_alloc(size_t size) { return aligned_alloc(256, size); }
+static void ring_free(void* p) { free(p); }
+#endif
 int main(void)
 {
     static float consts[NCONST * 4]; for (int i = 0; i < NCONST * 4; i++) consts[i] = (float)i;
-    unsigned char* ring = aligned_alloc(256, (size_t)BLOCK * RING_BLOCKS); memset(ring, 0, (size_t)BLOCK * RING_BLOCKS);
+    unsigned char* ring = ring_alloc((size_t)BLOCK * RING_BLOCKS);
+    if (!ring) { fputs("allocation failed\n", stderr); return 1; }
+    memset(ring, 0, (size_t)BLOCK * RING_BLOCKS);
     volatile unsigned sink = 0; unsigned used = 0;
     double t0 = now();
     for (int f = 0; f < FRAMES; f++)
@@ -44,5 +63,6 @@ int main(void)
     }
     printf("(c) reuse the previous block for unchanged draws: %d of %d copies skipped -> (a) x %.2f = %.2f ms/frame\n",
            SAME, DRAWS, (double)(DRAWS - SAME) / DRAWS, full * 1e3 * (DRAWS - SAME) / DRAWS);
+    ring_free(ring);
     return (int)(sink & 0);
 }

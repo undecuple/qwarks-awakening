@@ -11,11 +11,37 @@
 #   - --gpu exposes the NVIDIA device nodes + /run/opengl-driver (for Vulkan/RPCS3 runs).
 #   - --ro PATH binds an extra host path read-only at the same location (e.g. a Proton install).
 #   - --x11 (maintainer only) exposes the user's X display :0
-#     (Xwayland socket) as $RC_REAL_DISPLAY; still no network, no audio, no D-Bus.
+#     (Xwayland socket) as $RC_REAL_DISPLAY; still no network, no audio, no D-Bus. Game controllers only from
+#     /dev/input (see input_nodes below), never the keyboard, mouse or security-key nodes. The X socket itself is what
+#     any X client gets: the program can see input sent to the X display and read the screen through it, which is why
+#     --x11 stays maintainer-only (a nested X server would close that; not done).
+#   tools/sandbox.sh --list-input-nodes   prints the /dev/input nodes --x11 would bind (nothing runs)
+#   RC_SANDBOX_DRY=1 tools/sandbox.sh ... prints the bwrap arguments one per line instead of running (tests); only then
+#     RC_SANDBOX_TEST_{DEV,SYS,UDEV,XSOCK} replace /dev/input, /sys/class/input, /run/udev/data and the X socket
 # Run it from inside `nix develop` so the tools are on PATH.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IN_DEV=/dev/input IN_SYS=/sys/class/input IN_UDEV=/run/udev/data XSOCK=/tmp/.X11-unix/X0
+DRY=0
+if [[ "${RC_SANDBOX_DRY:-0}" == 1 || "${1:-}" == --list-input-nodes ]]; then
+  DRY=1; IN_DEV="${RC_SANDBOX_TEST_DEV:-$IN_DEV}" IN_SYS="${RC_SANDBOX_TEST_SYS:-$IN_SYS}"
+  IN_UDEV="${RC_SANDBOX_TEST_UDEV:-$IN_UDEV}" XSOCK="${RC_SANDBOX_TEST_XSOCK:-$XSOCK}"
+fi
+# input_nodes (2026-11-25; it used to bind all of /dev/input, keyboards, mice and security keys included):
+# the evdev (event*) and joystick (js*) nodes whose udev record (/run/udev/data/c<major>:<minor>, the database Wine's
+# winebus/SDL enumerate with; major:minor from /sys/class/input/<node>/dev) says E:ID_INPUT_JOYSTICK=1. udev's input_id
+# builtin sets that from the device's own capabilities (gamepad buttons, joystick axes), whatever made the device: a
+# USB/Bluetooth pad on xpad or hid-sony, Steam Input's or another uinput virtual pad. A keyboard (ID_INPUT_KEY/KEYBOARD),
+# a mouse (ID_INPUT_MOUSE) or a security key never carries it. Nodes without a udev record are left out.
+input_nodes() { local n mm
+  for n in "$IN_DEV"/event* "$IN_DEV"/js*; do
+    [[ -e $n ]] || continue
+    mm="$(cat "$IN_SYS/${n##*/}/dev" 2>/dev/null)" || continue
+    grep -qsx 'E:ID_INPUT_JOYSTICK=1' "$IN_UDEV/c$mm" && echo "$n"
+  done
+  return 0; }
+[[ "${1:-}" == --list-input-nodes ]] && { input_nodes; exit 0; }
 GPU=0 NET=0
 EXTRA_RO=()
 LANE_RO=()
@@ -124,11 +150,12 @@ fi
 for p in "${EXTRA_RO[@]}"; do args+=(--ro-bind "$(readlink -f "$p")" "$p"); done
 for p in "${LANE_RO[@]}"; do args+=(--ro-bind "$p" "$p"); done
 if [[ $X11 -eq 1 ]]; then
-  [[ -S /tmp/.X11-unix/X0 ]] || { echo "sandbox: no X display socket /tmp/.X11-unix/X0" >&2; exit 2; }
-  args+=(--bind /tmp/.X11-unix/X0 /tmp/.X11-unix/X0 --setenv RC_REAL_DISPLAY :0)
-  # The user's game controller for real-display play sessions (maintainer only, like --x11): the evdev/joystick
-  # nodes and the udev database Wine's winebus (SDL) enumerates them with. Xbox pads on xpad have no hidraw node.
-  [[ -d /dev/input ]] && args+=(--dev-bind /dev/input /dev/input)
+  [[ -S "$XSOCK" ]] || { echo "sandbox: no X display socket $XSOCK" >&2; exit 2; }
+  args+=(--bind "$XSOCK" /tmp/.X11-unix/X0 --setenv RC_REAL_DISPLAY :0)
+  # The user's game controller for real-display play sessions (maintainer only, like --x11): only the pad nodes
+  # (input_nodes above; a pad plugged in after the start is not seen) and the udev database Wine's winebus (SDL)
+  # enumerates them with. Xbox pads on xpad have no hidraw node.
+  while IFS= read -r d; do args+=(--dev-bind "$d" "$d"); done < <(input_nodes)
   args+=(--ro-bind-try /run/udev /run/udev)
   # Sony pads (DualShock 4, DualSense) reach Wine's winebus through their hidraw node, not evdev: a DualShock 4 gave no
   # input without it. Only Sony (vendor 054C) nodes the user can open are bound: the seat's ACL can also grant security
@@ -144,4 +171,5 @@ if [[ $GPU -eq 1 ]]; then
   args+=(--ro-bind-try /sys /sys)
 fi
 
+(( DRY )) && { printf '%s\n' "${args[@]}" -- "$@"; exit 0; }
 exec bwrap "${args[@]}" -- "$@"
