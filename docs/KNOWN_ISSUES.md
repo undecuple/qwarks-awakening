@@ -68,14 +68,6 @@ graphics-stall notice can show during them. Shorter pauses follow after the leve
 earlier build (2026-11-11) had three each: eight of them 3.2 to 3.7 s and one 8.4 s. A second start with the cache
 of the first is much shorter (1.3 s in one run).
 
-### Two levels stop drawing
-
-The game's developer level option started Zordoom Prison and Meridian City directly
-(scripted, no input, 2026-11-13). Both load and draw their first frames. Then the picture stops changing for the
-rest of the run, while the game waits for a frame to be shown. The run logs point to the way the port runs the
-game's SPU (co-processor) programs. A fix is in development; it is not yet tried on these two levels and not in this
-release.
-
 ### Two script errors in the log
 
 The game's scripts report two caught errors when its settings tables are read,

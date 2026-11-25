@@ -349,6 +349,78 @@ def test_release_check(tmp):
         srv.shutdown()
 
 
+def test_disk_errors(tmp, z, sha):
+    """A full disk or no permission while saving gives a REASON naming the error and the free space, never a
+    traceback; the staging folder, the partial download and the half-written kit list are cleaned up."""
+    import errno
+    url = "file://" + urllib.request.pathname2url(z)
+    real_replace, real_makedirs = os.replace, os.makedirs
+
+    def run_fetch(name, patch):
+        root = bare_root(tmp, name)
+        before = snapshot(root)
+        out = io.StringIO()
+        patch()
+        try:
+            rc = kit.fetch(root, url, sha, out, allow_local=True)
+        finally:
+            os.replace, os.makedirs = real_replace, real_makedirs
+        return root, before, rc, out.getvalue()
+
+    def moving_fails(code):
+        def patch():
+            def rep(src, dst, *a, **k):
+                if os.path.basename(dst) == "CMakeLists.txt" and os.sep + "ps3recomp" + os.sep in dst:
+                    raise OSError(code, os.strerror(code))
+                return real_replace(src, dst, *a, **k)
+            os.replace = rep
+        return patch
+    # the move into place fails halfway (the disk filled up)
+    root, before, rc, text = run_fetch("d1", moving_fails(errno.ENOSPC))
+    check(rc == 1 and "REASON The build kit could not be saved: the disk is full" in text and "MB free" in text
+          and "RESULT ok=0 step=verify" in text and "Traceback" not in text and root not in text,
+          "disk full while installing: a REASON naming the error and the free space", text)
+    check(not os.path.exists(os.path.join(root, kit.STAGING)) and not os.path.exists(os.path.join(root, kit.DOWNLOADS))
+          and not os.path.exists(os.path.join(root, kit.MANIFEST + ".part")),
+          "disk full while installing: staging, download and partial list are removed")
+    check(kit.status(root, sha)["state"] != "ready", "disk full while installing: the kit is not reported as installed")
+    check("nothing was installed" not in text and not os.path.exists(os.path.join(root, kit.MANIFEST)),
+          "disk full during the move: no false 'nothing was installed' claim; kit.json is absent")
+    # no permission to make the staging folder
+    def staging_denied():
+        def mk(path, *a, **k):
+            if os.path.basename(path.rstrip(os.sep)) == kit.STAGING:
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real_makedirs(path, *a, **k)
+        os.makedirs = mk
+    root, before, rc, text = run_fetch("d2", staging_denied)
+    check(rc == 1 and "permission denied" in text and "REASON" in text and "Traceback" not in text
+          and snapshot(root) == before, "permission denied: a REASON, nothing changed", text)
+    # the download cannot be written (disk full): not worded as a connection problem
+    def download_full():
+        def rep(src, dst, *a, **k):
+            if src.endswith(".part"):
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+            return real_replace(src, dst, *a, **k)
+        os.replace = rep
+    root, before, rc, text = run_fetch("d3", download_full)
+    check(rc == 1 and "the disk is full" in text and "Check the connection" not in text and snapshot(root) == before
+          and not os.path.exists(os.path.join(root, kit.DOWNLOADS)), "disk full while downloading is not blamed on the connection", text)
+    # an unrelated OSError is not worded as a disk problem
+    root = bare_root(tmp, "d5")
+    out = io.StringIO()
+    try:
+        kit.install(os.path.join(tmp, "missing.zip"), root, sha, out)
+        check(False, "install: an unrelated OSError is refused")
+    except kit.Refused as e:
+        check("disk" not in str(e) and "Free some space" not in str(e), "install: an unrelated OSError is not blamed on the disk", str(e))
+    # a real connection failure keeps its own wording
+    out = io.StringIO()
+    root = bare_root(tmp, "d4")
+    rc = kit.fetch(root, "file://" + urllib.request.pathname2url(os.path.join(tmp, "nothing.zip")), sha, out, allow_local=True)
+    check(rc == 1 and "Check the connection" in out.getvalue(), "a missing download keeps the connection wording", out.getvalue())
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -356,6 +428,7 @@ def main():
         test_urls()
         z, sha = test_status_install(tmp)
         test_fetch(tmp, z, sha)
+        test_disk_errors(tmp, z, sha)
         test_symbols(tmp)
         test_release_check(tmp)
     finally:

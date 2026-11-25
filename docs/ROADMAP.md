@@ -10,7 +10,7 @@ copy. The port is not playable yet.
 |---|---|
 | Done | Builds from the 1.03 update and starts as a Windows program (tested under Proton on Linux only) |
 | Done | A scripted new game from the menus reaches the first level, luminopolis (scripted run, 2026-11-18) |
-| In progress | The picture stops about 468 seconds into luminopolis; the same fault stops *Into the Nexus* in its first level (scripted runs, 2026-11-18) |
+| Done | Luminopolis runs to the end of a 600-second scripted run; the stop about 468 seconds in is fixed (scripted runs, 2026-11-19 and 2026-11-20) |
 | Planned | The player in control in luminopolis, moving and fighting |
 | Planned | Playable start to finish: a full run through the game, saves loaded again after a quit, audio, input |
 | Planned | Testing on real Windows (not run so far) and on macOS (not run so far) |
@@ -51,9 +51,9 @@ table below and [FEATURE-PARITY.md](FEATURE-PARITY.md)).
 |---|---|---|
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
 | Ratchet & Clank Future: A Crack in Time | 2009 | next: builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable |
-| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches the first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable |
-| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
-| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
+| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches the first level, luminopolis, and runs there to the end of a 600-second run (scripted runs, 2026-11-19 and 2026-11-20); not in control yet; not playable |
+| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); a scripted new game passes the title screen and reaches the level phoenix_ph1, and keeps drawing there to the end of a 420-second run, as does a run from a campaign save (scripted runs, 2026-11-24); not playable |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); a scripted new game reaches its first level, prison_transport, where Ratchet stands to the end of a 600-second run (scripted run, 2026-11-20); the script does not leave the first room yet; not playable |
 | Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |
 | Ratchet: Deadlocked HD (PS2 remaster) | 2013 | last: a different engine; builds; a scripted new game plays its intro, then stops before the first level; not playable|
 

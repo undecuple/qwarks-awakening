@@ -1,0 +1,33 @@
+cellSaveData: savedata_fixed logs what it hands the title's funcFixed and what comes back (diagnostics only, no behaviour change).
+
+Full Frontal Assault 1.05's AutoLoad funcFixed (lifted func_0068239C, OPD 0xE5D2B8) reads ONLY get->dirListNum ([get+4]);
+it never reads dirList names, newData or PARAM.SFO fields. dirListNum 0 -> it returns OK_NEXT without a dirName, which
+savedata_fixed then reports as rc 0x8002B404 (ls-ffa-save-campaign-1118-082308). The success path printed neither the
+prefix, dirListMax, count nor listed, so the next run cannot say which of those was 0. Adds one line before the
+callback ("savedata_fixed(load|save): root prefix dirListMax count listed first") and one after (cbresult, set dirName /
+newIcon / option words). Held until the RPCS3 reference of the same point; not a fix.
+
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1250,6 +1250,9 @@
+     u32 prefix = vm_read32((u32)(uintptr_t)setList + 8);
+     u32 count = enumerate_save_dirs(prefix ? (char*)vm_base + prefix : "", dirs, dir_max);
+     u32 listed = count < dir_max ? count : dir_max;
++    printf("[cellSaveData] savedata_fixed(%s): root='%s' prefix='%s' dirListMax=%u count=%u listed=%u first='%s'\n",
++           is_save ? "save" : "load", s_save_root, prefix ? (const char*)(vm_base + prefix) : "", dir_max, count,
++           listed, (dirs && listed) ? dirs[0].dirName : "");
+     scratch_reset();
+     u32 cb = scratch_alloc(SAVEDATA_CBRESULT_SIZE);
+     u32 get = scratch_alloc(0x4C); /* dirNum, dirListNum, dirList, reserved[64] */
+@@ -1264,6 +1267,11 @@
+     free(dirs);
++    vm_write32(cb, 0x5A5A5A5Au); /* sentinel: a callback that runs overwrites cbresult.result */
+     g_ps3_guest_caller((u32)(uintptr_t)funcFixed, cb, get, set, 0, 0, 0, 0, 0);
+     s32 result = marshal_cbresult_read_result(cb);
++    int entered = (u32)result != 0x5A5A5A5Au;
++    if (!entered) result = CELL_SAVEDATA_CBRESULT_OK_NEXT; /* what the code did before the sentinel */
++    printf("[cellSaveData] savedata_fixed: funcFixed entered=%d cbresult=%d set.dirName=0x%08X newIcon=0x%08X option=%u\n",
++           entered, result, vm_read32(set), vm_read32(set + 4), vm_read32(set + 8));
+     if (result == CELL_SAVEDATA_CBRESULT_OK_LAST ||
+         result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM) return CELL_OK;
+     if (result != CELL_SAVEDATA_CBRESULT_OK_NEXT) {

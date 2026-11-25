@@ -8,6 +8,8 @@ Structure after the Killzone 3 port's tools/release/test_draw_dividers.py (same 
 
     python3 tools/release/test_draw_dividers.py
 """
+import contextlib
+import io
 import os
 import re
 import struct
@@ -59,7 +61,12 @@ with tempfile.TemporaryDirectory() as t:
     p = os.path.join(t, "divider-plate.png")
     with open(p, "ab") as fh:
         fh.write(b"x")
-    check(dd.main(["--check", "--out", t]) == 1, "--check fails on a changed file")
+    # the expected refusal prints draw_dividers' own "FAIL ... differs" line: captured, so a CI log shows no FAIL line
+    # for a passing test (0.4.1's log read as a failure), and checked to name the changed file
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        rc = dd.main(["--check", "--out", t])
+    check(rc == 1 and "divider-plate.png: differs from a fresh render" in buf.getvalue(), "--check fails on a changed file")
 PUB = os.path.join(ROOT, "public") if os.path.isdir(os.path.join(ROOT, "public")) else ROOT   # private layout or export root
 readme = open(os.path.join(PUB, "README.md"), encoding="utf-8").read()
 paths = re.findall(r'src="([^"#:]+)"', readme) + re.findall(r"!\[[^\]]*\]\(([^)#:\s]+)\)", readme)

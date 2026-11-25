@@ -12,6 +12,7 @@
 #include "win32_compat.h"
 #include "pad_mouse.h"                   /* Project Helghast's mouse (libs/input): the stage 3 cursor rule */
 #include "rc_mouse.h"
+#include "rc_cpu_check.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -691,7 +692,18 @@ static DWORD WINAPI frame_clock(LPVOID)
     s_fc_rsx_ok = (rc_rsx_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
             s_fc_rsx_ok ? "OK -- window open" : "FAILED");
-    if (s_fc_rsx_ok && s_rsx_live) rc_modal_install((HWND)rsx_null_backend_get_hwnd());
+    if (!s_fc_rsx_ok) {
+        /* No window or no D3D12 device (the backend's own WARP fallback, if any, has already been tried inside
+         * rc_rsx_init): the game cannot be shown, so tell the player and end the process. Before this the frame loop just
+         * kept ticking and <game>.exe stayed running with nothing on screen. The guest PPU/SPU threads are running:
+         * TerminateProcess like the window-close path. */
+        RC_LOGE("rsx", "the window or the Direct3D 12 renderer could not be started: exiting (exit code 4)");
+        rc_show_error("the game window or the Direct3D 12 renderer could not be started (is the graphics driver up to date?)", NULL);
+        rc_log_exit(4, "window or Direct3D 12 initialisation failed");
+        fflush(NULL);
+        TerminateProcess(GetCurrentProcess(), 4);
+    }
+    if (s_rsx_live) rc_modal_install((HWND)rsx_null_backend_get_hwnd());
 
     s_fc_next_tick = GetTickCount64();
 
@@ -959,6 +971,7 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
 
 int main(int argc, char** argv)
 {
+    rc_cpu_check();   /* first: a CPU lacking a feature this build requires gets a message and exit code 3 */
     if (argc < 2) {
         printf("usage: %s <PPU ELF>\n", argv[0]);
         return 2;
@@ -1022,6 +1035,7 @@ int main(int argc, char** argv)
 
     if (!alloc_guest_vm()) {
         RC_LOGE("boot", "could not allocate the guest address space");
+        rc_show_error("could not reserve the memory the game needs (close other programs and try again)", NULL);
         rc_log_exit(1, "could not allocate the guest address space");
         return 1;
     }
@@ -1029,6 +1043,7 @@ int main(int argc, char** argv)
     uint32_t entry = ppu_load_elf(argv[1]);
     if (!entry) {
         RC_LOGE("boot", "could not load %s", argv[1]);
+        rc_show_error("could not load the game program (the build may be incomplete: see the log)", NULL);
         rc_log_exit(1, "could not load the EBOOT");
         return 1;
     }
@@ -1125,7 +1140,18 @@ int main(int argc, char** argv)
     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n", entry, STACK_TOP);
     int rc = ppu_run(entry, STACK_TOP);
     printf("\n[boot] ppu_run returned %d (entry function unwound)\n", rc);
-    const int code = g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
-    rc_log_exit(code, g_sys_process_exit_called ? "the guest called sys_process_exit" : "ppu_run returned (entry function unwound)");
+    /* ASSUMPTION: a PS3 program that quits normally ends in sys_process_exit (the CRT calls it after main returns), so
+     * the entry function unwinding without it is not a normal quit and must not look like success (exit code 0); ppu_run's
+     * own value is not known to be a status, so it is only used when non-zero. A status the guest did pass to
+     * sys_process_exit is handed on unchanged (0 = EXIT_SUCCESS). */
+    if (g_sys_process_exit_called) {
+        const int code = (int)g_sys_process_exit_code;
+        rc_log_exit(code, "the guest called sys_process_exit");
+        return code;
+    }
+    const int code = rc != 0 ? rc : 5;
+    RC_LOGE("exit", "the game's entry function returned without sys_process_exit: not a normal quit (exit code %d)", code);
+    rc_show_error("the game ended unexpectedly", NULL);
+    rc_log_exit(code, "ppu_run returned (entry function unwound) without sys_process_exit: not a normal quit");
     return code;
 }

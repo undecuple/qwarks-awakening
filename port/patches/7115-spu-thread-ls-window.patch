@@ -1,0 +1,270 @@
+SPU DMA: serve the SPU-thread local-store window (EA 0xF0000000 + n*0x100000 + LSA) from the LS of SPU thread n of the
+issuing thread's group. Upstream candidate (general runtime fix; not yet proposed upstream).
+
+Problem: lv2 maps, for every SPU thread of a thread group, the local store of each thread of THAT group at
+0xF0000000 + n*0x100000 (LS at +0, problem state at +0x40000, SNR1 +0x5400C, SNR2 +0x5C00C; n = the thread number,
+sys_spu_thread_initialize's thread_num; for SPURS, the SPU index of the instance). SPU code may GET/PUT a peer's LS
+there. The runtime only has the raw-SPU window (0xE0000000, guest memory backed, spu_raw.c); an SPU thread's LS is the
+host buffer ls_store, so a DMA to 0xF0000000+ went through the plain path to vm_base + 0xF0000000 (a demand-committed
+zero page). Ratchet & Clank: Into the Nexus 1.01: the ig broadphase job writes its candidate items to its own LS 0x7380
+and publishes cursor 0xF0000000 + 0x7380 (word [0xF3FF10 + 0x14] = 0xF0000000) in the narrow-queue line; the narrow job
+GETs 16-byte items from that cursor and read zeros, so every collision query answered "no hit" and Ratchet sank through
+the floor of prison_transport. RPCS3 serves the window for SPU threads (do_dma_transfer: thread index from the EA,
+looked up in the issuer's group thread map; LS offsets redirect the copy to that thread's LS, out of range is an error;
+a 4-byte PUT to SNR1/SNR2 signals the thread; other offsets are an error; read 2026-11-20 for behaviour, nothing
+copied) [src:rpcs3-sputhread].
+
+Fix:
+- runtime/spu/spu_dma.h: mfc_do_transfer sends an element with EA >= 0xF0000000 to mfc_thread_ls_window after the size
+  and LSA checks (plain GET/PUT and every GETL/PUTL element, which all come through it). n = (ea - 0xF0000000) >> 20,
+  offset = ea & 0xFFFFF; LS offsets (< 0x40000, transfer inside the LS) are copied from/to the peer's ctx->ls (memmove:
+  n may be the issuer). A GET also tells the overlay-residency tracker as a main-memory GET does. Problem-state offsets
+  (sndsig to a peer SNR, which RPCS3 serves; register reads) and an issuer or slot the runtime does not know keep the
+  old plain path and log once ([spu-tlsw] UNSUPPORTED / UNRESOLVED). SPU_TLSW_LOG=1 logs every served transfer (default: the first 4).
+- runtime/spu/spu_channels.c: the group table spu_group_ls_bind / _unbind / _peer: (kind, key, index) -> context,
+  kind lv2 (key = group id) or SPURS (key = instance EA), one slot per context, SRW lock, 128 slots. Lock-line atomics
+  (GETLLAR/PUTLLC/PUTLLUC) into the window are not served from a peer (log once, old path): ASSUMPTION that no title
+  needs them; the ig jobs use atomics on main memory only.
+- runtime/spu/spurs_policy.c: spu_run_policy_module binds its context as SPU thread spu_num of the instance before the
+  run (beside the 7034 SNR enter). The binding stays after the run: the SPU's LS keeps what the run left until another
+  workload's context runs on that SPU.
+- runtime/syscalls/lv2_register.c: group_start binds each lifted thread's context as thread t->index of the group;
+  group_destroy unbinds before it frees the context.
+The PPU has no mapping at 0xF0000000 on lv2 (it uses sys_spu_thread_read_ls/write_ls), so nothing changes on the PPU side.
+
+Test: port/rc/tests/run_spu_thread_ls_window_test.sh (test_spu_thread_ls_window.c, real runtime link set, ASan+UBSan,
+4 GB demand-commit guest space): lv2 group GET and PUT between two threads, a GETL with main-memory and window elements,
+isolation between two groups, the SPURS hand-over through two real spu_run_policy_module runs on SPUs 0 and 1, the
+plain path for an unbound context, problem state and after unbind. Negative control: the same test against the tree
+with this patch reverse-applied fails cases 1-5.
+
+diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -182,6 +182,92 @@
+ /* KZ3 patch 1141: job I/O capture, every DMA element after it moved (null unless a title installs it). */
+ extern void (*g_spu_jcap_xfer)(spu_context*, uint32_t lsa, uint64_t ea, uint32_t size, uint32_t cmd);
+ 
++/* R&C patch 7115: the SPU-thread local-store window.
++ *
++ * lv2 lets every SPU thread of a thread group reach the local store (and the
++ * problem-state registers) of the other threads of ITS group by DMA, at
++ *
++ *   0xF0000000 + n*0x100000 + 0x00000   LS of SPU thread n of the group (256 KB)
++ *   0xF0000000 + n*0x100000 + 0x40000   its problem state (SNR1 at +0x5400C,
++ *                                       SNR2 at +0x5C00C)
++ *
++ * n is the thread's number within the group (sys_spu_thread_initialize's
++ * thread_num; for a SPURS instance, its SPU index 0..nSpus-1). The window is
++ * relative to the ISSUING thread's group, so the same EA names different
++ * stores in different groups, and the PPU has no mapping there (it uses
++ * sys_spu_thread_read_ls / write_ls). A context's local store here is a host
++ * buffer (ls_store), not guest memory, so a DMA in this range must be served
++ * from the peer's buffer: through the plain path it read and wrote whatever
++ * vm_base held at 0xF0000000+ (a demand-committed zero page). Insomniac's ig
++ * collision jobs depend on it: the broadphase writes its candidate items to its
++ * own LS 0x7380 and publishes 0xF0000000 + 0x7380 as the cursor, and the narrow
++ * phase GETs the items from there (Nexus 1.01; docs: the RE notes).
++ *
++ * The runtime records which context is thread n of which group in a small
++ * table (spu_channels.c): lv2 groups at group_start, SPURS instances at each
++ * policy-module run (the context then on SPU n). An unknown issuer or an empty
++ * slot keeps the old plain-memory path and says so once. */
++#define SPU_THREAD_LS_BASE    0xF0000000u
++#define SPU_THREAD_LS_STRIDE  0x00100000u
++#define SPU_THREAD_LS_PROB    0x00040000u      /* LS below, problem state above */
++#define SPU_GROUP_LS_LV2      1u               /* key = lv2 SPU thread group id */
++#define SPU_GROUP_LS_SPURS    2u               /* key = SPURS instance EA */
++/* Bind ctx as thread `index` of group (kind, key); replaces the previous holder
++ * of that slot and any other slot ctx held. ctx NULL clears the slot. */
++void     spu_group_ls_bind(uint32_t kind, uint32_t key, uint32_t index, spu_context* ctx);
++/* Forget every slot ctx holds (before the context is freed). */
++void     spu_group_ls_unbind(const spu_context* ctx);
++/* Local store of thread n of the issuer's group, or NULL when the issuer is in
++ * no known group or slot n is empty. */
++uint8_t* spu_group_ls_peer(const spu_context* issuer, uint32_t n);
++
++/* Serve one transfer element whose EA is in [0xF0000000, 4 GB). Returns 0 when
++ * served, 1 to leave it to the plain path (not resolvable here). */
++static inline int mfc_thread_ls_window(spu_context* spu, uint32_t lsa, uint32_t ea,
++                                       uint32_t size, uint32_t cmd)
++{
++    const uint32_t n   = (ea - SPU_THREAD_LS_BASE) / SPU_THREAD_LS_STRIDE;
++    const uint32_t off = (ea - SPU_THREAD_LS_BASE) % SPU_THREAD_LS_STRIDE;
++    if (off >= SPU_THREAD_LS_PROB || size > SPU_THREAD_LS_PROB - off) {
++        /* Problem state (a sndsig to a peer's SNR, a register read) or a
++         * transfer running off the end of the LS: not modelled for SPU threads
++         * (the raw-SPU window's registers are served for PPU loads/stores only,
++         * spu_raw.c). The plain path keeps its old behaviour. */
++        static int _n = 0;
++        if (PS3_LOG_FIRST(_n, 4))
++            fprintf(stderr, "[spu-tlsw] UNSUPPORTED %s img=%d pc=0x%05X ea=0x%08X size=%u: SPU thread %u "
++                    "problem state (+0x%05X) is not modelled; plain memory\n",
++                    mfc_is_get(cmd) ? "GET" : "PUT", spu->image_id, (uint32_t)spu->pc & SPU_LS_MASK,
++                    ea, size, n, off);
++        return 1;
++    }
++    uint8_t* peer = spu_group_ls_peer(spu, n);
++    if (!peer) {
++        static int _n = 0;
++        if (PS3_LOG_FIRST(_n, 8))
++            fprintf(stderr, "[spu-tlsw] UNRESOLVED %s img=%d pc=0x%05X ea=0x%08X size=%u: no SPU thread %u "
++                    "known in this context's group; plain memory\n",
++                    mfc_is_get(cmd) ? "GET" : "PUT", spu->image_id, (uint32_t)spu->pc & SPU_LS_MASK,
++                    ea, size, n);
++        return 1;
++    }
++    uint8_t* mine = &spu->ls[lsa];
++    if (mfc_is_get(cmd)) {
++        memmove(mine, peer + off, size);       /* n may be the issuer itself */
++        extern void spu_overlay_note_get(spu_context*, uint32_t, const uint8_t*, uint32_t);
++        spu_overlay_note_get(spu, ea, (const uint8_t*)mine, size);
++    } else if (mfc_is_put(cmd)) {
++        memmove(peer + off, mine, size);
++    }
++    { static int _n = 0; static int s_all = -1;
++      if (s_all < 0) s_all = getenv("SPU_TLSW_LOG") ? 1 : 0;
++      if (s_all || PS3_LOG_FIRST(_n, 4))
++          fprintf(stderr, "[spu-tlsw] %s img=%d pc=0x%05X lsa=0x%05X <-> SPU thread %u LS 0x%05X size=%u\n",
++                  mfc_is_get(cmd) ? "GET" : "PUT", spu->image_id, (uint32_t)spu->pc & SPU_LS_MASK,
++                  lsa, n, off, size); }
++    return 0;
++}
++
+ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+                                    uint32_t size, uint32_t cmd)
+ {
+@@ -469,6 +555,11 @@
+     if ((uint64_t)lsa + (uint64_t)size > (uint64_t)SPU_LS_SIZE)
+         return -1;
+ 
++    /* R&C patch 7115: a peer SPU thread's local store, not guest memory. */
++    if (__builtin_expect((uint32_t)ea >= SPU_THREAD_LS_BASE, 0) &&
++        mfc_thread_ls_window(spu, lsa, (uint32_t)ea, size, cmd) == 0)
++        return 0;
++
+     /* Reject transfers whose main-memory range is not committed guest memory,
+      * so a garbage EA (e.g. from an incomplete SPURS context) is a failed DMA
+      * rather than a host segfault. */
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -751,6 +751,63 @@
+ static inline int kz3_putlluc_self_lr(void)
+ { static int s = -1; if (s < 0) { const char* e = getenv("KZ3_SPU_PUTLLUC_SELF_LR"); s = (e && *e == '1') ? 1 : 0; } return s; }
+ 
++/* R&C patch 7115: which context is SPU thread n of which group, for the SPU-thread LS window (spu_dma.h,
++ * mfc_thread_ls_window). A slot is (kind, key, index): kind SPU_GROUP_LS_LV2 keys an lv2 thread group by id,
++ * SPU_GROUP_LS_SPURS a SPURS instance by its EA (its SPU threads are the kernel's SPUs 0..nSpus-1). A context holds
++ * at most one slot. Lookups run only for DMAs into the window; writers are group_start / destroy and each
++ * policy-module run. Pointers stay valid while bound: lv2 unbinds before it frees a thread's context, and SPURS policy
++ * contexts are never freed. */
++#define SPU_GROUP_LS_MAX 128
++static struct { uint32_t kind, key, index; spu_context* ctx; } s_group_ls[SPU_GROUP_LS_MAX];
++static SRWLOCK s_group_ls_lock = SRWLOCK_INIT;
++void spu_group_ls_bind(uint32_t kind, uint32_t key, uint32_t index, spu_context* ctx)
++{
++    AcquireSRWLockExclusive(&s_group_ls_lock);
++    int slot = -1;
++    for (int i = 0; i < SPU_GROUP_LS_MAX; i++) {
++        if (!s_group_ls[i].ctx) { if (slot < 0) slot = i; continue; }
++        if ((ctx && s_group_ls[i].ctx == ctx) ||
++            (s_group_ls[i].kind == kind && s_group_ls[i].key == key && s_group_ls[i].index == index)) {
++            s_group_ls[i].ctx = NULL;
++            if (slot < 0) slot = i;
++        }
++    }
++    if (ctx && slot >= 0) {
++        s_group_ls[slot].kind = kind; s_group_ls[slot].key = key; s_group_ls[slot].index = index;
++        s_group_ls[slot].ctx = ctx;
++    }
++    ReleaseSRWLockExclusive(&s_group_ls_lock);
++    if (ctx && slot < 0) {
++        static int _n = 0;
++        if (PS3_LOG_FIRST(_n, 4))
++            fprintf(stderr, "[spu-tlsw] group table full (%d): thread %u of %s 0x%X not bound\n", SPU_GROUP_LS_MAX,
++                    index, kind == SPU_GROUP_LS_SPURS ? "SPURS" : "group", key);
++    }
++}
++void spu_group_ls_unbind(const spu_context* ctx)
++{
++    if (!ctx) return;
++    AcquireSRWLockExclusive(&s_group_ls_lock);
++    for (int i = 0; i < SPU_GROUP_LS_MAX; i++)
++        if (s_group_ls[i].ctx == ctx) s_group_ls[i].ctx = NULL;
++    ReleaseSRWLockExclusive(&s_group_ls_lock);
++}
++uint8_t* spu_group_ls_peer(const spu_context* issuer, uint32_t n)
++{
++    uint8_t* ls = NULL;
++    AcquireSRWLockShared(&s_group_ls_lock);
++    for (int i = 0; i < SPU_GROUP_LS_MAX; i++) {
++        if (s_group_ls[i].ctx != issuer) continue;
++        const uint32_t kind = s_group_ls[i].kind, key = s_group_ls[i].key;
++        for (int j = 0; j < SPU_GROUP_LS_MAX; j++)
++            if (s_group_ls[j].ctx && s_group_ls[j].kind == kind && s_group_ls[j].key == key &&
++                s_group_ls[j].index == n) { ls = s_group_ls[j].ctx->ls; break; }
++        break;
++    }
++    ReleaseSRWLockShared(&s_group_ls_lock);
++    return ls;
++}
++
+ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+ {
+     /* Classify FIRST. Every MFC_Cmd write lands here, and only the switch at
+@@ -809,6 +866,17 @@
+         }
+       } }
+ 
++    /* R&C patch 7115: lock-line commands into the SPU-thread LS window (0xF0000000+, spu_dma.h) are not served from
++     * the peer's local store: the reservation model here is per guest-memory line. ASSUMPTION: no title needs them
++     * (atomics go through the MFC atomic cache, for cacheable storage; the ig collision jobs use them only on main
++     * memory). The old guest-memory path runs, said once. */
++    if (__builtin_expect(ea >= SPU_THREAD_LS_BASE, 0)) {
++        static int _n = 0;
++        if (PS3_LOG_FIRST(_n, 4))
++            fprintf(stderr, "[spu-tlsw] UNSUPPORTED atomic cmd=0x%X ea=0x%08X pc=0x%05X img=%d: lock-line op into the "
++                    "SPU-thread LS window; plain memory\n", cmd, ea, (uint32_t)ctx->pc & SPU_LS_MASK, ctx->image_id);
++    }
++
+     /* Guard atomic line ops against an uncommitted/garbage EA (e.g. a SPURS
+      * policy computing a lock-line address from an incomplete instance context).
+      * Same rationale as the DMA EA guard: a bad guest atomic must not segfault
+diff --git a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -563,6 +563,11 @@
+     kz3_pm_select_run_begin();                                        /* patch 1058 */
+     if (g_kz3_run_ctx_hook) g_kz3_run_ctx_hook(ctx, 1, 1, wid, spu_num);   /* KZ3 patch 1081 */
+     spurs_snr_enter(spurs_ea, spu_num, ctx);                          /* R&C patch 7034: this SPU's SNRs */
++    /* R&C patch 7115: this context is now SPU thread spu_num of the instance's thread group, for the SPU-thread LS
++     * window (spu_dma.h). It stays bound after the run: the SPU's local store keeps what the run left until another
++     * workload's context runs there and takes the slot. */
++    { extern void spu_group_ls_bind(uint32_t, uint32_t, uint32_t, spu_context*);
++      spu_group_ls_bind(2u /* SPU_GROUP_LS_SPURS */, spurs_ea, spu_num, ctx); }
+     const int pm_halted = spu_run_with_halt(entry, ctx);
+     spurs_snr_leave(spurs_ea, spu_num, ctx);                          /* R&C patch 7034 */
+     if (g_kz3_run_ctx_hook) g_kz3_run_ctx_hook(ctx, 0, 1, wid, spu_num);   /* KZ3 patch 1081 */
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -1073,6 +1073,9 @@
+                 d.image_id = spu_thread_image_id(t);
+                 for (int a = 0; a < 4; a++) d.args[a] = t->args[a];
+                 spu_lifted_thread_setup(t->sctx, &d);
++                /* R&C patch 7115: SPU thread t->index of this group, for the SPU-thread LS window (spu_dma.h). */
++                { extern void spu_group_ls_bind(uint32_t, uint32_t, uint32_t, struct spu_context*);
++                  spu_group_ls_bind(1u /* SPU_GROUP_LS_LV2 */, id, t->index, t->sctx); }
+                 t->running = 1;
+ #ifdef _WIN32
+                 if (!t->finish_event)
+@@ -1374,6 +1377,8 @@
+                     t->local_store = NULL;
+                 }
+                 if (t->sctx) {
++                    /* R&C patch 7115: no window lookup may reach a freed context. */
++                    { extern void spu_group_ls_unbind(const struct spu_context*); spu_group_ls_unbind(t->sctx); }
+                     free(t->sctx);
+                     t->sctx = NULL;
+                 }

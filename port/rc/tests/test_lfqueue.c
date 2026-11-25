@@ -204,6 +204,42 @@ int main(void)
         assert(push(0x712, 0) == 0 && g_sig.n == before + 2 && g_sig.id == 7);
         assert(push(0x713, 0) == 0 && g_sig.n == before + 2);                              /* ring empty again */
     }
+    /* (c) ToD's Edge zlib queue, the path TODS_EDGE_HOST=0 takes (xgame-1123 item 4). Shape measured in ls-tods-newgame-1123-150440
+     * (_LFQueueInitialize owner = the taskset, size 32, depth 12, dir 2), the same as QfB's in qfb-s1 l.1376. Line before the first
+     * push as QfB measured it (qfb-s1 l.1386-1394): +0x30 = 0001 0700 (one waiter, id 0x0700 = wid 7 task 0). The element is
+     * built like func_007E3FA0 @0x7e402c-0x7e404c: +0x00 eaIn, +0x04 eaOut, +0x08 compressedSize, +0x0C outSize,
+     * +0x10 eaCounter | mode, +0x14 eaEventFlag, +0x18 u16 bits; the ToD task loads only +0x00..+0x18 (mode = bit 0 of +0x10,
+     * @LS 0x345c `andi -2`). PushBody third argument 3 (both ToD callers, @0x616ebc and @0x6174cc). */
+    {
+        assert(_cellSpursLFQueueInitialize(TS, Q, BUF, 0x20, D, 2) == CELL_OK);
+        assert(vm_read32(Q + 0x10) == 0x20 && vm_read32(Q + 0x14) == D && vm_read64(Q + 0x18) == BUF);   /* qfb-s1 l.1388 */
+        assert(vm_read32(Q + 0x24) == 2 && vm_read32(Q + 0x2C) == 1 && vm_read64(Q + 0x70) == TS);       /* l.1389, l.1393 */
+        for (u32 o = 0; o < 0x10; o += 4) assert(vm_read32(Q + o) == 0);                                 /* l.1387 */
+        vm_write16(Q + 0x30, 0x0001); vm_write16(Q + 0x32, 0x0700);                                      /* l.1390 */
+        const u32 e_in = 0x10A00002u, e_out = 0x10B00000u, e_cs = 0x7F3Au, e_os = 0x10000u;
+        const u32 e_ctr = 0x10C02C00u, e_evf = 0x10C02980u; const u16 e_bits = 0x0004;
+        for (u32 mode = 0; mode <= 1; mode++) {
+            int before = g_sig.n;
+            memset(vm_base + ELEM, 0, 0x20);
+            vm_write32(ELEM + 0x00, e_in); vm_write32(ELEM + 0x04, e_out); vm_write32(ELEM + 0x08, e_cs);
+            vm_write32(ELEM + 0x0C, e_os); vm_write32(ELEM + 0x10, e_ctr | mode); vm_write32(ELEM + 0x14, e_evf);
+            vm_write16(ELEM + 0x18, e_bits);
+            assert(_cellSpursLFQueuePushBody(Q, ELEM, 3) == CELL_OK);
+            if (mode == 0) {   /* the waiter is woken once: task 0 of the owner taskset (wid byte ignored for a taskset owner) */
+                assert(g_sig.n == before + 1 && g_sig.ea == TS && g_sig.id == 0);
+                assert(vm_read16(Q + 0x30) == ((1u << 10) | 1u));                                        /* head 1 = tail 1 */
+            } else assert(g_sig.n == before);
+            assert(vm_read16(Q + 0x08) == mode + 1 && vm_read16(Q + 0x0E) == mode + 1 && vm_read16(Q + 0x0A) == 0);
+            /* the consumer's view of the element: the 32 bytes land unchanged in slot `mode` */
+            u32 el = BUF + 0x20 * mode;
+            assert(memcmp(vm_base + el, vm_base + ELEM, 0x20) == 0);
+            assert(vm_read32(el + 0x00) == e_in && vm_read32(el + 0x04) == e_out && vm_read32(el + 0x08) == e_cs &&
+                   vm_read32(el + 0x0C) == e_os && (vm_read32(el + 0x10) & ~1u) == e_ctr && (vm_read32(el + 0x10) & 1u) == mode &&
+                   vm_read32(el + 0x14) == e_evf && vm_read16(el + 0x18) == e_bits);
+        }
+        u32 t0 = 0, t1 = 0;
+        assert(pop(&t0) && t0 == e_in && pop(&t1) && t1 == e_in && !pop(&t0));
+    }
 #ifndef RC_LFQ_NO_7031
     /* JoinTaskset frees the workload id; a later AddWorkload in the slot resolves its own PM */
     rc_spurs_taskset_wid_free(TS);

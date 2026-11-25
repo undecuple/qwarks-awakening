@@ -1,0 +1,97 @@
+R&C patch 7108: the fragment-program decompiler gives WPOS.w as 1/w (the RSX value), not the host's clip w.
+Idea from Re-TeRo17/ps3recomp 26ecf1a libs/video/rsx_fp_decompiler.c (MIT); a hand rewrite on our _rsx_wpos/_rsx_inv_w helpers.
+
+Problem: WPOS (input 0) reads `_rsx_wpos(input.position)`, and the macro passed SV_POSITION.w through: (p).w in the
+buffered (window-convention) form, (p) itself unbuffered. Under FXC (D3D12) SV_POSITION.w is the clip-space w; the RSX,
+like GL's gl_FragCoord.w and NV_fragment_program's fragment.position.w, gives 1/w. The same file already knew this for
+perspective_corr texcoord reads (_rsx_inv_w: 1.0 / w under FXC, the bare w where glslang lowered it to FragCoord.w and
+RSX_FRAGCOORD_W_IS_RCP is defined), but WPOS did not use it, so on our D3D12 path a program that scales by WPOS.w was
+off by w^2 while the Vulkan/Metal paths were right. Re-TeRo17's Tools of Destruction 1.2.1 fixed the same read in
+their fork: Kreeli Comet's ground fog divides WPOS.w by the scene depth read back as colour and drew as an opaque
+light-blue sheet with w in place of 1/w.
+
+Fix (libs/video/rsx_fp_decompiler.c): _rsx_wpos takes its w from _rsx_inv_w(p) on both branches (buffered: x, y with
+the window origin and pixel-centre bias as before, z, _rsx_inv_w(p); unbuffered: float4((p).xyz, _rsx_inv_w(p))), and
+the _rsx_inv_w block is emitted when the body uses either helper. RSX_FRAGCOORD_W_IS_RCP keeps its meaning: the
+glslang paths still read the bare FragCoord.w, now for WPOS too. Programs that do not read WPOS stay byte-identical;
+programs that do get the helper block (new pipeline keys for those only). x, y, z and rsx_fp_apply_wpos_grid are
+unchanged. No A/B switch: the decompiler's output feeds the pipeline cache and translator id.
+
+Tests: libs/video/tests/test_fp_decompiler.c expects the new macro text and the helper with a WPOS read (90/90; the
+tree without this patch: 4 failed). port/rc/tests/run_fp_wpos_w_test.sh: text checks for MOV r0, WPOS and WPOS.wwww
+buffered and unbuffered, then the emitted helper macros evaluated as C for FXC (SV_POSITION.w = 4) and glslang
+(RSX_FRAGCOORD_W_IS_RCP, FragCoord.w = 0.25): WPOS.w = 0.25 in all four. Without this patch: 12 text failures and
+WPOS.w = 4 on both FXC forms (the glslang forms were already right).
+
+Not checked in a game run: no WPOS.w-reading program has been identified in our titles yet (look at ig fog shaders).
+
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 5543fa3..182636d 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -394,7 +394,8 @@ static void decode_src(u32 w, int abs_bit, Src* s)
+ 
+ /* HLSL expression for the interpolated input selected by OPDEST.INPUT_SRC.
+  * The backend's passthrough VS forwards COL0/COL1/FOG/TEXCOORD0..7; WPOS maps
+- * to SV_POSITION (screen-space — an approximation of the RSX window coord). */
++ * to SV_POSITION (screen-space — an approximation of the RSX window coord;
++ * _rsx_wpos applies the window origin and gives .w as 1/w). */
+ static const char* input_expr(u32 input_src)
+ {
+     static const char* tc[8] = {
+@@ -1498,8 +1499,9 @@ static int rsx_fp_decompile_internal(
+      * clip w under FXC (D3D12) but already 1/w once glslang lowers it to
+      * SPIR-V FragCoord (Vulkan, and Metal's [[position]] is (x, y, z, 1/w));
+      * the glslang paths define RSX_FRAGCOORD_W_IS_RCP. Emitted only where the
+-     * body uses it, so every other program stays byte-identical. */
+-    if (strstr(o.p, "_rsx_inv_w("))
++     * body uses it, so every other program stays byte-identical. _rsx_wpos
++     * reads it too (R&C patch 7108). */
++    if (strstr(o.p, "_rsx_inv_w(") || strstr(o.p, "_rsx_wpos("))
+         out_puts(&p,
+             "#ifdef RSX_FRAGCOORD_W_IS_RCP\n"
+             "#define _rsx_inv_w(p) ((p).w)\n"
+@@ -1512,12 +1514,17 @@ static int rsx_fp_decompile_internal(
+      * uv = wpos * (1/W, -1/H) + (0, 1), mirrored its source when it read the host y.
+      * The draw engine passes the window height in fp_alpha.y when the origin is
+      * BOTTOM (0 otherwise) and a pixel-center bias in fp_alpha.z (-0.5 for INTEGER
+-     * centers, 0 for HALF). A backend that leaves both 0 gets the host position. */
++     * centers, 0 for HALF). A backend that leaves both 0 gets the host x, y and z.
++     * R&C patch 7108: WPOS.w is 1/w on the RSX, like GL's gl_FragCoord.w, on both
++     * paths. SV_POSITION.w is the clip w under FXC, so .w goes through _rsx_inv_w
++     * (RSX_FRAGCOORD_W_IS_RCP on the glslang paths, where it is already 1/w).
++     * Passed through, a program that scales by WPOS.w was off by w^2: Tools of
++     * Destruction's Kreeli ground fog saturated to an opaque sheet. */
+     if (strstr(o.p, "_rsx_wpos("))
+         out_puts(&p, buffered
+             ? "#define _rsx_wpos(p) float4((p).x + fp_alpha.z, "
+-              "(fp_alpha.y != 0.0 ? fp_alpha.y - (p).y : (p).y) + fp_alpha.z, (p).z, (p).w)\n"
+-            : "#define _rsx_wpos(p) (p)\n");
++              "(fp_alpha.y != 0.0 ? fp_alpha.y - (p).y : (p).y) + fp_alpha.z, (p).z, _rsx_inv_w(p))\n"
++            : "#define _rsx_wpos(p) float4((p).xyz, _rsx_inv_w(p))\n");
+     /* Texture bank. With no cube units (the default) emit the exact legacy
+      * array declaration so 2D-only programs are byte-identical. When any unit
+      * is a cubemap, declare each unit individually at its t-register so the
+diff --git a/libs/video/tests/test_fp_decompiler.c b/libs/video/tests/test_fp_decompiler.c
+index 033d252..086a7b5 100644
+--- a/libs/video/tests/test_fp_decompiler.c
++++ b/libs/video/tests/test_fp_decompiler.c
+@@ -581,13 +581,16 @@ int main(void)
+         check("wpos_buffered_read",   hlsl, "_rsx_wpos(input.position)");
+         check("wpos_buffered_helper", hlsl,
+               "#define _rsx_wpos(p) float4((p).x + fp_alpha.z, "
+-              "(fp_alpha.y != 0.0 ? fp_alpha.y - (p).y : (p).y) + fp_alpha.z, (p).z, (p).w)");
++              "(fp_alpha.y != 0.0 ? fp_alpha.y - (p).y : (p).y) + fp_alpha.z, (p).z, _rsx_inv_w(p))");
++        check("wpos_buffered_inv_w_helper", hlsl, "#define _rsx_inv_w(p)");
+         rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+-        check("wpos_unbuffered_identity", hlsl, "#define _rsx_wpos(p) (p)\n");
++        check("wpos_unbuffered_host_xyz", hlsl, "#define _rsx_wpos(p) float4((p).xyz, _rsx_inv_w(p))\n");
++        check("wpos_unbuffered_inv_w_helper", hlsl, "#define _rsx_inv_w(p)");
+ 
+         put_word(prog + 0, OPC(0x01) | OUTMASK_ALL | INSRC(1) | END); /* MOV r0, COL0 */
+         rsx_fp_decompile_buffered_ex(prog, sizeof prog, CTRL_32BIT, 0, hlsl, sizeof hlsl, &nk);
+         check_absent("wpos_no_read_no_helper", hlsl, "_rsx_wpos");
++        check_absent("wpos_no_read_no_inv_w", hlsl, "_rsx_inv_w");
+ 
+     }
+ 

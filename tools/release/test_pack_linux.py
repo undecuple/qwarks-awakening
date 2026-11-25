@@ -111,6 +111,7 @@ def make_root(tmp):
     wr(os.path.join(r, "public", "LICENSE"), "MIT License port")
     wr(os.path.join(r, "public", "NOTICE.md"), "# Notice")
     wr(os.path.join(r, "public", "docs", "LINUX.md"), "# The launcher on Linux")
+    wr(os.path.join(r, "public", "recomplauncher.json"), '{"format": 1}\n')
     for n in pack_linux.ENGINE:
         wr(os.path.join(r, "tools", "release", n), "# " + n)
     for rel in pack_zip.KIT_FILES:
@@ -197,7 +198,7 @@ def test_pack(tmp):
             "licenses/SDL3-hidapi-LICENSE.txt", "licenses/SDL3-yuv2rgb-LICENSE.txt",
             "licenses/imgui-LICENSE.txt", "licenses/LICENSE.txt", "licenses/ps3recomp-LICENSE.txt",
             "port/rc/CMakeLists.txt", "port/rc/tests/run.sh", "data/titles/catalog.json", "tools/spu/spu_lift.py",
-            "cmake/llvm-mingw.cmake", "ps3recomp/runtime/x.c", "docs/LINUX.md", pack_zip.IDENT}
+            "cmake/llvm-mingw.cmake", "ps3recomp/runtime/x.c", "docs/LINUX.md", "recomplauncher.json", pack_zip.IDENT}
     want |= {f"tools/release/{n}" for n in pack_linux.ENGINE} | set(pack_zip.KIT_FILES)
     want |= {f"ps3recomp/{n}" for n in pack_zip.TOOLKIT_NEEDS}
     check(files == want, "the packaging list, exactly", sorted(files ^ want))
@@ -219,6 +220,10 @@ def test_pack(tmp):
     check("steam-run " + names.LINUX_PROGRAM in rd and "nix-ld" in rd and "docs/LINUX.md" in rd
           and "QwarksAwakening-" in rd and "machine-id" in rd,
           "README.txt: NixOS (steam-run for the launcher, nix-ld for the build tools) and where the game log is")
+    with tarfile.open(tar) as t:
+        check(t.extractfile(f"{top}/recomplauncher.json").read() == b'{"format": 1}\n'
+              and ms[f"{top}/recomplauncher.json"].mode == 0o644,
+              "recomplauncher.json sits at the top of the Linux archive beside the program")
     rc9, t9 = pack(r, tk, b, os.path.join(tmp, "out9"), "--commit", "v1.2.3")
     check(rc9 == 2 and "not a git commit" in t9, "a --commit that is not a hash refused", t9)
     check("install.sh" in rd and "--uninstall" in rd and "Python 3.10" in rd and "glibc" in rd and names.NAME_NOTE in rd,

@@ -1,0 +1,36 @@
+{
+ "schema": 1,
+ "comment": "ENHANCEMENT: other projects' recompiled games the launcher can START (launch only, off by default, pref 'unofficial'). The launcher never downloads, builds or patches them; the player points a card at an already-built exe. Facts read from each project's README (2026-11-17).",
+ "entries": [
+  {
+   "id": "unofficial-tods",
+   "title": "Ratchet & Clank: Tools of Destruction",
+   "project": "ratchet-tod-recomp",
+   "url": "https://github.com/Re-TeRo17/ratchet-tod-recomp",
+   "licence": "MIT",
+   "exe_name": "tod.exe",
+   "layout": "tod.exe sits in the game folder beside game/, elf/, gamedata/, cache/, log/ and tod.ini (the project's release zip folder, e.g. tod-recomp-1.3.0).",
+   "requires": "Windows 10/11 x64, AVX2, Direct3D 12; your own European disc (BCES00052 v1.00)."
+  },
+  {
+   "id": "unofficial-nexus",
+   "title": "Ratchet & Clank: Into the Nexus",
+   "project": "nexus-recomp",
+   "url": "https://github.com/vagenam/nexus-recomp",
+   "licence": "MIT",
+   "exe_name": "NexusRecomp.exe",
+   "layout": "RecompFolder\\NexusRecomp.exe, made by that project's RecompBuilder.exe (with settings.txt and PS3_GAME\\USRDIR\\EBOOT.elf).",
+   "requires": "Windows 10/11 x64, AVX2, Vulkan 1.3 GPU; your own dump (BCUS99245 v1.00) and a decrypted EBOOT."
+  },
+  {
+   "id": "unofficial-acit",
+   "title": "Ratchet & Clank Future: A Crack in Time",
+   "project": "RACiT",
+   "url": "https://github.com/HighDrexler/RACiT",
+   "licence": "MIT",
+   "exe_name": "RaCACiT Launcher.exe",
+   "layout": "The project's own launcher (RaCACiT Launcher.exe, from its release zip) sets the game up and starts the newest build in builds\\v<number>\\RaCACiT.exe; settings, saves and log.txt live in that launcher's folder, so start its launcher.",
+   "requires": "Windows x64, Vulkan; your own decrypted North American disc (BCUS98124): EBOOT.ELF and USRDIR."
+  }
+ ]
+}

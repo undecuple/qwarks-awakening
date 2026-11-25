@@ -1,0 +1,28 @@
+cellUserInfo: cellUserInfoGetStat(id=0) is the current user.
+
+id 0 is CELL_SYSUTIL_USERID_CURRENT: the call returns the logged-in user (here user 1, "User"). An id above
+CELL_SYSUTIL_USERID_MAX (99999999) is CELL_USERINFO_ERROR_PARAM; any other id but 1 stays CELL_USERINFO_ERROR_NOUSER
+(reference: RPCS3 cellUserInfo.cpp, read only). Each call is logged ("[cellUserInfo] GetStat(id=N) -> ...").
+Full Frontal Assault 1.05's "User ID Query Thread" (func_00540A6C) calls GetList, then GetStat(0): success sets the
+user-query state word at 0xE745B8 to 2, failure to 3. With 3, func_00545B5C returns user id 100000000, the frontend's
+"Auto Load Thread" (func_00682240) takes the UserListAutoLoad path, savedata_user_ok() refuses the id, and the thread
+exits without loading; RPCS3 instead calls cellSaveDataListAutoLoad there and shows the title screen.
+
+--- a/libs/system/cellUserInfo.c
++++ b/libs/system/cellUserInfo.c
+@@ -38,6 +38,15 @@
+         return CELL_USERINFO_ERROR_PARAM;
+     stat = GUEST_PTR(stat, CellUserInfoUserStat*);
+ 
++    /* patch 7083: id 0 is CELL_SYSUTIL_USERID_CURRENT, the logged-in user; above CELL_SYSUTIL_USERID_MAX is a
++     * parameter error (reference: RPCS3 cellUserInfoGetStat). FFA's "User ID Query Thread" asks for id 0 and keeps
++     * an invalid user id when it fails, so the frontend's save-data auto-load never runs. */
++    u32 req = id;
++    if (id > 99999999u)
++        return CELL_USERINFO_ERROR_PARAM;
++    if (id == 0)
++        id = EMU_USER_ID;
++    printf("[cellUserInfo] GetStat(id=%u) -> %s\n", req, id == EMU_USER_ID ? "user 1" : "NOUSER");
+     if (id != EMU_USER_ID)
+         return CELL_USERINFO_ERROR_NOUSER;
+ 

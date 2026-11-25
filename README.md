@@ -31,12 +31,10 @@
 *Qwark's Awakening* is a fan project's name, after a character from the series. It is not official and not
 affiliated with or endorsed by Sony Interactive Entertainment or Insomniac Games.
 
-**Status: early work, not playable yet.** Version <!-- version -->0.4.0<!-- /version -->, a launcher release: a new
-look, a Linux launcher (tar.gz and AppImage) that builds the games and starts them through Proton, a build check that
-knows more regions, and a Discord forum for the project. The games' code is the same as in 0.3.1
-([CHANGELOG](CHANGELOG.md)). The launcher builds the games on your PC from your own copy. Every test so far ran the
+**Status: early work, not playable yet.** Version <!-- version -->0.4.1<!-- /version -->, a fix release: the build files that
+0.4.0 lacked for five games are back, and the games' code is new since 0.3.1 ([CHANGELOG](CHANGELOG.md)). The launcher builds the games on your PC from your own copy. Every test so far ran the
 Windows programs under Proton on Linux; the project has not tested on Windows itself (a contributor's report of a
-native Windows build is in the [status table](#status)). The current focus is *Ratchet & Clank: All 4 One*: a scripted new game reaches its first level, luminopolis, and the picture stops about 468 seconds in (scripted run, 2026-11-18); it is not in the player's control yet. *Tools of Destruction*, the earlier focus, was played by hand from its first level, with known bugs; its work continues in another port effort and its results stay recorded here. Nobody
+native Windows build is in the [status table](#status)). The current focus is *Ratchet & Clank: All 4 One*: a scripted new game reaches its first level, luminopolis, and runs there to the end of a 600-second run (scripted runs, 2026-11-19 and 2026-11-20); it is not in the player's control yet. *Tools of Destruction*, the earlier focus, was played by hand from its first level, with known bugs; its work continues in another port effort and its results stay recorded here. Nobody
 has played either through. How far each other game gets in scripted runs is in the [status table](#status). No game is
 online yet ([ONLINE.md](docs/ONLINE.md)).
 
@@ -45,7 +43,7 @@ online yet ([ONLINE.md](docs/ONLINE.md)).
 <!-- badges:start -->
 [![ToD: in game](assets/badges/tods.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-tools-of-destruction) [![QfB: in game](assets/badges/qfb.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-quest-for-booty) [![ACiT: boots](assets/badges/acit.svg)](docs/FEATURE-PARITY.md#ratchet--clank-future-a-crack-in-time) [![A4O: boots](assets/badges/a4o.svg)](docs/FEATURE-PARITY.md#ratchet--clank-all-4-one) [![FFA: boots](assets/badges/ffa.svg)](docs/FEATURE-PARITY.md#ratchet--clank-full-frontal-assault) [![Nexus: boots](assets/badges/nexus.svg)](docs/FEATURE-PARITY.md#ratchet--clank-into-the-nexus) [![R&C 1: in game](assets/badges/rc1.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 2: in game](assets/badges/rc2.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![R&C 3: in game](assets/badges/rc3.svg)](docs/FEATURE-PARITY.md#ratchet--clank-collection-ratchet--clank-1-2-and-3) [![Deadlocked HD: menus](assets/badges/dlhd.svg)](docs/FEATURE-PARITY.md#ratchet-deadlocked-hd)
 
-*Each state is a measured run (last checked 2026-11-14, the Windows programs under Proton on Linux). "In game" means reached with scripted input, not played through by hand. The six states are defined in [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).*
+*Each state is a measured run (last checked 2026-11-24, the Windows programs under Proton on Linux). "In game" means reached with scripted input, not played through by hand. The six states are defined in [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).*
 <!-- badges:end -->
 
 </div>
@@ -171,7 +169,8 @@ A scripted run follows a pad script, or has no input at all; hand play is a pers
 | Date | Kind | What it showed |
 |---|---|---|
 | 2026-11-15 | native Windows smoke test, 60 s, reported by a contributor | On the contributor's own hardware (the project has not run it on Windows itself), the native setup path built the known BCUS98127 02.00 executable, initialized the D3D12 renderer, rendered the front end and closed cleanly. Setup/build validation, not play. |
-| 2026-11-12 and 2026-11-13 | scripted, no input, 300 s per level | Started with the game's developer level option: 17 of its 19 levels loaded and drew frames to the end without a crash. About 12 to 59 frames per second over the last two minutes, 11 of the 17 under 30. Zordoom Prison and Meridian City drew their first frames, then stopped drawing (a known issue). Loading and drawing only, not play. |
+| 2026-11-24 | scripted, 300 s per level started directly, 420 s for a new game | With the SPU fix of patch 7120, Zordoom Prison and Meridian City, started with the game's developer level option, drew frames to the end of the run with no input; so did Kerchu City and a new game in Metropolis. Loading and drawing only, not play. |
+| 2026-11-12 and 2026-11-13 | scripted, no input, 300 s per level | Started with the game's developer level option: 17 of its 19 levels loaded and drew frames to the end without a crash. About 12 to 59 frames per second over the last two minutes, 11 of the 17 under 30. Zordoom Prison and Meridian City drew their first frames, then stopped drawing (for runs with patch 7120, see the row above). Loading and drawing only, not play. |
 | 2026-11-10 | scripted, two runs of 16 minutes | From an empty drive the game installs its data. A new game plays its intro and reaches Metropolis. The player then moves, jumps, swings the wrench and fires for about 11 minutes. No crash; the only error lines are the game's own script messages. |
 | 2026-11-04 | scripted, five minutes each (ps3recomp v0.18.0) | A new game reaches Metropolis and goes on to Cobalia. A saved game loads into Fastoon, at 44.5 frames per second over seconds 250 to 269. No crash. |
 | 2026-10-22 | by hand | An earlier build played at about 37 frames per second in Fastoon, with a DualShock 4. Alt+Enter fullscreen and in-game saving worked. |
@@ -183,9 +182,9 @@ Not reached yet: a chapter played to its end, and the port's own save loaded aga
 | Ratchet & Clank Future: Tools of Destruction | 2007 | earlier focus, work continues in another port effort; played by hand from its first level; a scripted new game from an empty install plays about 11 minutes in Metropolis without a crash; not playable through yet |
 | Ratchet & Clank Future: Quest for Booty | 2008 | builds; a scripted new game from a fresh install reaches the ship deck, with about 90 seconds of scripted play without errors (one run); not playable |
 | Ratchet & Clank Future: A Crack in Time | 2009 | builds (1.20 update); a scripted new game reaches its first level (great_clock_a) and plays its opening cutscenes, in 4 of 4 runs; player control there is not confirmed; not playable |
-| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, then the picture stops about 468 seconds in (scripted run, 2026-11-18); not in control yet; not playable |
-| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); the screen stays black; not playable |
-| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); installs its data and shows its intro movie, then the lobby stays black; not playable |
+| Ratchet & Clank: All 4 One | 2011 | first target: builds (1.03 update); a scripted new game reaches its first level, luminopolis, and runs there to the end of a 600-second run (scripted runs, 2026-11-19 and 2026-11-20); not in control yet; not playable |
+| Ratchet & Clank: Full Frontal Assault | 2012 | builds and installs its data (1.05 update); a scripted new game passes the title screen and reaches the level phoenix_ph1, and keeps drawing there to the end of a 420-second run, as does a run from a campaign save (scripted runs, 2026-11-24); not playable |
+| Ratchet & Clank: Into the Nexus | 2013 | builds (1.01 update); a scripted new game reaches its first level, prison_transport, where Ratchet stands to the end of a 600-second run (scripted run, 2026-11-20); the script does not leave the first room yet; not playable |
 | Ratchet & Clank Collection: Ratchet & Clank 1, 2 and 3 (PS2 remasters) | 2012 | each game builds into its own program; a scripted new game reaches its first level with the player under scripted control; not playable |
 | Ratchet: Deadlocked HD (PS2 remaster) | 2013 | builds; a scripted new game plays its intro, then stops before the first level; not playable |
 

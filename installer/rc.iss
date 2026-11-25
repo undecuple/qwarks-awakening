@@ -7,7 +7,7 @@
 ;
 ; Payload = the unpacked full build zip's folder (tools/release/pack_zip.py, names.build_zip_top): the launcher,
 ; SDL3.dll, fonts\, python\, tools\, data\, licenses\, the build kit (port\, cmake\, ps3recomp\, toolchain\) and
-; kit.json. Every file of it is installed as it is, so the installed files are byte-identical to the zip's.
+; kit.json, recomplauncher.json. Every file of it is installed as it is, so the installed files are byte-identical to the zip's.
 ; PayloadTops below lists its top-level names; the compile stops on any other name (the [InstallDelete] and
 ; [UninstallDelete] folder lists must then be extended) and tools/release/test_rc_iss.py checks the list against
 ; pack_zip.py.
@@ -43,7 +43,7 @@
 #define RepoURL "https://github.com/undecuple/qwarks-awakening"
 
 ; The payload's top-level names (lower case, '|' between them). Folders also in PayloadDirs.
-#define PayloadTops "qwarks-awakening-launcher.exe|sdl3.dll|readme.txt|kit.json|fonts|python|licenses|tools|data|port|cmake|ps3recomp|toolchain"
+#define PayloadTops "qwarks-awakening-launcher.exe|sdl3.dll|readme.txt|recomplauncher.json|kit.json|fonts|python|licenses|tools|data|port|cmake|ps3recomp|toolchain"
 #define PayloadDirs "fonts|python|licenses|tools|data|port|cmake|ps3recomp|toolchain"
 
 #if !FileExists(AddBackslash(Payload) + LauncherExe)

@@ -10,7 +10,7 @@ if(NOT RC_EXE)
     set(RC_EXE "${RC_GAME}")
 endif()
 project(rc_${RC_GAME}
-    VERSION 0.4.0
+    VERSION 0.4.1
     LANGUAGES C CXX
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )
@@ -86,6 +86,22 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 # different reason. add_subdirectory hands all of that over with the target.
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
+
+# Shader translator identity (patch 2141; same rule as the Killzone 3 port): a hash of the renderer's sources
+# (libs/video/*.c|*.h of the toolkit this build uses), compiled into rsx_live_draw.c as RSX_TRANSLATOR_ID and written
+# into the PSO preload's key file, so a key file / pipeline library made by another build is discarded instead of
+# handing this build the old shaders. Without this define the header's fallback is 0 and the check compares 0 with 0
+# (patch 7051 noted it). Any change to such a file re-runs configure. The set_property must come after add_subdirectory:
+# rsx_live_draw.c is compiled by ps3recomp_runtime in the toolkit's own directory scope.
+include("${CMAKE_CURRENT_SOURCE_DIR}/rsx_translator_id.cmake")
+rc_rsx_translator_id("${PS3RECOMP_DIR}" _rc_xl_id _rc_xl_files)
+foreach(_rc_xl_f IN LISTS _rc_xl_files)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_rc_xl_f}")
+endforeach()
+set_property(SOURCE "${PS3RECOMP_DIR}/libs/video/rsx_live_draw.c" DIRECTORY "${PS3RECOMP_DIR}"
+             APPEND PROPERTY COMPILE_DEFINITIONS "RSX_TRANSLATOR_ID=0x${_rc_xl_id}ull")
+list(LENGTH _rc_xl_files _rc_xl_count)
+message(STATUS "Shader translator id: ${_rc_xl_id} (${_rc_xl_count} files in libs/video)")
 
 # ---------------------------------------------------------------------------
 # The HLE NID table
@@ -264,6 +280,7 @@ add_executable(${PROJECT_NAME}
     rc_settings.cpp                          # per-game settings folder (keybinds.ini, display.ini, settings.ini)
     rc_keybinds_shared.c                     # <data folder>/shared/keybinds.ini over the game's key defaults (C: pad_keybinds.h)
     rc_trace_read.cpp                        # RC_TRACE_READ access tracer (diagnostic, default off)
+    rc_cpu_check.c                           # startup CPU-feature check (exit 3), from the build's own -m flags
     ${RC_LOG_SOURCES}
     stubs.cpp
     ${RC_GAME}/hle_${RC_GAME}.cpp            # the game's HLE for imports the runtime leaves unresolved
@@ -283,12 +300,44 @@ add_executable(${PROJECT_NAME}
 #                          full optimization. (There is no target-wide -O1:
 #                          the lifted PPU TUs build at the RelWithDebInfo -O2 -g,
 #                          checked 2026-10-27.) The last -O on the line wins.
+#   RC_SPU_SSE41_IMAGES -- lifted SPU images (directory names under SPU_DIR, or ALL) built with -msse4.1
+#                          -ffp-contract=off (R&C 2026-11-23; option text after branch rc-sse41 b24cbb2). spu_helpers.h
+#                          has its fast paths (pshufb shufb, the patch-1038 byte permutes behind rotqby/shlqbyi/rotqbyi,
+#                          vector mpy*, selb, ...) under #if __SSE4_1__; built for plain x86-64 they are byte loops
+#                          (shipped DLHD exe 8eb25377: three 16-byte loops per shufb in elf_008e3500 func 0x42C8). The
+#                          runtime library is already built with -msse4.1 (ps3recomp CMakeLists.txt,
+#                          PS3RECOMP_HAS_MSSE41), so the CPU floor does not move; rc_cpu_check then requires SSE4.1
+#                          (RC_CPU_REQUIRE_SSE41). DLHD Edge LZMA task, host bench on 663 real level1 blocks
+#                          (tools/spu/lzma_bench): 16.4 -> 2.13 ms per block, same output and SPU state for every block.
+#                          Per image, not per build: port/rc/tests/run_spu_isa_diff_test.sh finds spu_fma/fms/fnms giving
+#                          other bits with -msse4.1 than without (2026-11-23, beyond patch 1040's flush), so only images
+#                          without those ops are listed. elf_008e3500 has none (integer LZMA decoder). Default: that
+#                          image for dlhd, nothing for the other titles.
+set(RC_SPU_SSE41_IMAGES_DEFAULT "")
+if(RC_GAME STREQUAL "dlhd")
+    set(RC_SPU_SSE41_IMAGES_DEFAULT "elf_008e3500")
+endif()
+set(RC_SPU_SSE41_IMAGES "${RC_SPU_SSE41_IMAGES_DEFAULT}" CACHE STRING
+    "lifted SPU images (dir names under SPU_DIR, ;-separated, or ALL) built with -msse4.1 -ffp-contract=off")
 if(SPU_SOURCES)
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2")
+        set(RC_SPU_SSE41_DONE "")
+        foreach(src IN LISTS SPU_LIFTED)
+            get_filename_component(img "${src}" DIRECTORY)
+            get_filename_component(img "${img}" NAME)
+            if(RC_SPU_SSE41_IMAGES STREQUAL "ALL" OR img IN_LIST RC_SPU_SSE41_IMAGES)
+                set_source_files_properties("${src}" PROPERTIES COMPILE_OPTIONS "-O2;-msse4.1;-ffp-contract=off")
+                list(APPEND RC_SPU_SSE41_DONE "${img}")
+            endif()
+        endforeach()
+        if(RC_SPU_SSE41_DONE)
+            set_source_files_properties(rc_cpu_check.c PROPERTIES COMPILE_DEFINITIONS RC_CPU_REQUIRE_SSE41)
+            message(STATUS "Lifted SPU with -msse4.1: ${RC_SPU_SSE41_DONE}")
+        endif()
     endif()
 endif()
 

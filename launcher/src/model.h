@@ -31,6 +31,8 @@ struct Game {
     std::string id, title, readme, reason, titleId, version, needsUpdate;
     int year = 0, order = 0;
     bool supported = false;
+    bool untested = false;                  // a recognised release the port has not been built or run with (state not_ported)
+    bool digital = false;                   // stage 0: a digital copy found, not yet supported (state not_ported)
     State state = State::NotAdded;
     std::string disc, update, eboot, saves; // files (empty = none recorded)
     std::map<std::string, std::string> overrides, sources, suggested;   // per slot (disc|update|eboot|saves), from the engine
@@ -50,6 +52,12 @@ struct Game {
     ArtTex art;
 };
 
+// ENHANCEMENT: another project's recompiled game (library.json "unofficial", only when prefs.unofficial is "on"; engine:
+// catalog.py unofficial_known / unofficial_entry). Launch only: the launcher never fetches, builds or patches it.
+struct Unofficial {
+    std::string id, title, project, url, licence, exeName, layout, requires_, exe, state, reason, warning;
+};
+
 struct Locations {   // library.json "locations"; empty/absent = default (the engine owns the file, the launcher only reads it)
     std::vector<std::string> libraryFolders, excluded, rpcs3Folders;
     bool rpcs3Auto = true;
@@ -63,13 +71,16 @@ struct Library {
     std::string theme;   // library.json "prefs.theme": "system" (or absent), "light", "dark" (written by the engine's set-pref)
     std::string debugInfo, updateCheck;   // prefs.debug_info and prefs.update_check: "on" or off (absent)
     std::vector<Game> games;
+    bool unofficialOn = false;               // prefs.unofficial == "on": the extra group is shown
+    std::vector<Unofficial> unofficial;
 };
 
 inline Game parseGame(const Json& j) {
     Game g;
     g.id = j["id"].str(); g.title = j["title"].str(); g.year = j["year"].num(); g.order = j["order"].num();
     g.readme = j["readme_state"].str(); g.supported = j["supported"].boolean();
-    g.state = parseState(j["state"].str()); g.reason = j["reason"].str();
+    g.state = parseState(j["state"].str()); g.reason = j["reason"].str(); g.untested = j["untested"].boolean();
+    g.digital = j["digital"].boolean();
     g.titleId = j["title_id"].str(); g.version = j["version"].str(); g.needsUpdate = j["needs_update"].str();
     g.disc = j["files"]["disc"].str(); g.update = j["files"]["update"].str(); g.eboot = j["files"]["eboot"].str();
     g.saves = j["files"]["saves"].str();
@@ -113,6 +124,14 @@ inline Library loadLibrary(const std::string& path) {
     lib.loc.build = l["build"].str(); lib.loc.saves = l["saves"].str(); lib.loc.logs = l["logs"].str(); lib.loc.artCache = l["art_cache"].str();
     lib.theme = root["prefs"]["theme"].str();
     lib.debugInfo = root["prefs"]["debug_info"].str(); lib.updateCheck = root["prefs"]["update_check"].str();
+    lib.unofficialOn = root["prefs"]["unofficial"].str() == "on";
+    if (lib.unofficialOn) for (auto& e : root["unofficial"].a) {
+        Unofficial u;
+        u.id = e["id"].str(); u.title = e["title"].str(); u.project = e["project"].str(); u.url = e["url"].str();
+        u.licence = e["licence"].str(); u.exeName = e["exe_name"].str(); u.layout = e["layout"].str(); u.requires_ = e["requires"].str();
+        u.exe = e["exe"].str(); u.state = e["state"].str(); u.reason = e["reason"].str(); u.warning = e["warning"].str();
+        if (!u.id.empty()) lib.unofficial.push_back(u);
+    }
     for (auto& g : root["games"].a) lib.games.push_back(parseGame(g));
     std::stable_sort(lib.games.begin(), lib.games.end(), [](const Game& a, const Game& b) { return a.order < b.order; });
     lib.empty = lib.games.empty();   // a valid library with no game: the launcher shows its empty state, not an error

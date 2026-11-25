@@ -1,0 +1,717 @@
+SPU: single-precision mode RC_SPU_XFLOAT=1 (round toward zero, FTZ, DAZ on SPU host threads); helpers exact under it.
+
+Problem: the SPU single-precision unit truncates, reads denorm operands as zero, gives +0 for denorm and zero results,
+and has no Inf/NaN (SPU ISA v1.2 s.9.1 p.195, fma p.208, fi p.219) [src:spu-isa-1.2]. The helpers use the host's SSE ops
+under the default MXCSR (round to nearest, no flush) and only recompute exponent-255 lanes exactly (KZ3 1071/1079/1089):
+ordinary lanes round up to 1 ulp above the SPU, keep denormals (fcgt(0, -denorm) true where the SPU says false; cflts of
+a denormal 2^24 instead of 0), and return -0 (fm of a zero by a negative operand, fma family, FTZ underflow)
+(the RE notes s.25, oracle 6506). RPCS3, on which these games work with "SPU XFloat Accuracy: Approximate", sets round
+toward zero and zeroing denormals on every SPU thread (spu_thread::cpu_task, read for behaviour, nothing copied)
+[src:rpcs3-sputhread]. Nexus 1.01 prison_transport falls through the floor in the port; its collision jobs
+(igCollBroadSpu 0x00C21400, igcollspu 0x00C2D800, the RE notes s.36) are float code: fm fma fa fs fcgt fnms fms fi
+frsqest frest fcmgt cuflt csflt fceq. A host-rounding or denormal difference changes their compare outcomes at exact
+boundaries (a point on a plane, a shared triangle edge), which a lifted-vs-interpreted differential cannot see (both
+use these helpers).
+
+Fix (runtime/spu/spu_fpmode.h, spu_drain.c, spu_helpers.h):
+- RC_SPU_XFLOAT=1: spu_host_fp_init (SPURS kernel/lane/PM/jobchain threads) and spu_fpmode_init_thread (raw SPU,
+  workload task threads) set MXCSR round toward zero | FTZ | DAZ (0xE040), and log "[spu-fp] RC_SPU_XFLOAT=1: SPU host
+  thread MXCSR FFC0 ..." once per starting module. Unset/0 = as before (A/B switch). SPU code that a PPU thread runs
+  synchronously (spu_workload_dispatch_job / spu_run_spurs_job called on the pushing thread) keeps that thread's MXCSR.
+- Result-range lanes: spu__xr_mask_r (|r| >= 0x7F7FFFFF) replaces the exponent-255 result test of fa/fs/fm, csflt/cuflt
+  and the fma reference path; the -mfma fma fast path's odd test also sends 0x7F7FFFFF. Under truncation an x86 overflow
+  is +-FLT_MAX, not Inf, so the old test missed it; those lanes now take the exact lane code (same cost: cmpgt for cmpeq).
+- +0 results: spu__pos0 (lane == 0x80000000 -> 0) on fa/fs/fm/fma/fms/fnms/csflt, all modes.
+- fi: every lane in the integer formulation (spu__fi_int4 / spu__fi_lane, KZ3 1134 / PR #287 lane code), not only the
+  exponent-255 lanes: the float form rounded to nearest and, under FTZ|DAZ, flushed step*y (frest+fi down to 4 bits for
+  x exponent 242..249). The float form stays for tests (spu__fi_ref, spu__fi_float4).
+- fma reference path (cold): in the SPU mode every lane from spu__fma_lane (no libm fmaf, whose rounding-mode behaviour
+  on MinGW is not known).
+- Double-precision ops (dfa dfs dfm dfma dfms dfnms dfnma, frds): the SPU rounds them per FPSCR (nearest after reset,
+  s.9.2), so under the SPU mode they run with the default MXCSR between two MXCSR writes (operands and results pinned by
+  empty asm statements), then restore it. Unchanged in the default mode.
+
+Tests: runtime/spu/tests/test_spu_xfloat_mode.c (tools/spu/run_spu_xfloat_test.sh): an integer reference of ISA chapter 9
+written for this patch, 17 op families on all edge pairs/triples (36 words x 2 signs) and random tuples, strict in the
+RC_SPU_XFLOAT=1 mode: 0 mismatches on 9.0 M lanes, nofma and -mfma; double ops round to nearest, MXCSR control restored.
+Negative control (the tree without this patch, MXCSR set by hand): FAIL (fa 3240, fm 44035, fma 54622, fi(frest) 19320,
+fi(any) 27657 mismatches: zero sign, range (FLT_MAX for an overflow), fi rounding; frest+fi 4 bits; double ops 10 lanes).
+The compares and cflts/cfltu already match with the MXCSR alone (DAZ). The 6506 oracle gets a 'spu' mode (MXCSR 0x7FC0): 0 mismatches in every
+single-precision family on 1.0-7.3 M lanes each (was fa 28425, fm 297183, fma 171671, csflt 1813352 ... with the
+same MXCSR before the patch). fesd/frds keep their known exp-255 widening (not used by the collision jobs).
+
+ASSUMPTION: the real SPU's fi equals the ISA formula truncated (as RPCS3's integer fi); the estimate tables (frest,
+frsqest) are unchanged.
+diff --git a/runtime/spu/spu_fpmode.h b/runtime/spu/spu_fpmode.h
+index 2ea5fae..cdbfc86 100644
+--- a/runtime/spu/spu_fpmode.h
++++ b/runtime/spu/spu_fpmode.h
+@@ -20,7 +20,33 @@
+ #define SPU_FPMODE_X86 1
+ #endif
+ 
++#include <stdlib.h>
+ #define SPU_FPMODE_FTZ_DAZ 0x8040u
++/* RC patch 7107: the SPU single-precision mode, MXCSR round toward zero (RC = 11, 0x6000) | FTZ | DAZ.
++ * SPU ISA v1.2 s.9.1 (p.195): "The only supported rounding mode is truncation (toward zero)", denorm operands read as
++ * zero, a would-be denorm result is +0. RPCS3 sets the same host state on every SPU thread (spu_thread::cpu_task:
++ * fesetround(FE_TOWARDZERO) and zeroing denormals; read for behaviour, nothing copied) [src:rpcs3-sputhread]. The helpers
++ * keep the extended range exact under it (spu__xr_mask_r: a truncated overflow is +-FLT_MAX), give +0 for zero
++ * results (spu__pos0), compute fi in integers, and run the double-precision ops under the default MXCSR (spu_helpers.h).
++ * On by RC_SPU_XFLOAT=1 (value starting with '1'); unset or 0 = the host's default rounding as before (KZ3_SPU_FTZ=1
++ * still sets FTZ|DAZ alone). */
++#define SPU_FPMODE_SPU 0xE040u
++static inline int spu_fpmode_rc_on(void)
++{
++    static int s_on = -1;
++    if (s_on < 0) { const char* e = getenv("RC_SPU_XFLOAT"); s_on = (e && *e == '1') ? 1 : 0; }
++    return s_on;
++}
++#include <stdio.h>
++static inline void spu_fpmode_set_spu_rz(void)
++{
++#ifdef SPU_FPMODE_X86
++    _mm_setcsr((_mm_getcsr() & ~0x6000u) | SPU_FPMODE_SPU);
++    static int s_said;   /* once per translation unit that starts SPU threads (drain, raw, workload) */
++    if (!s_said) { s_said = 1; fprintf(stderr, "[spu-fp] RC_SPU_XFLOAT=1: SPU host thread MXCSR %04X (round toward zero|FTZ|DAZ)\n",
++                                       _mm_getcsr() & ~0x3Fu); }
++#endif
++}
+ 
+ /* KZ3_SPU_FTZ: on only when set to a value starting with '1' (opt-in, SPU pass 70: no throughput change measured). */
+ static inline int spu_fpmode_env_on(const char* e) { return (e && *e == '1') ? 1 : 0; }
+@@ -42,6 +68,7 @@ static inline void spu_fpmode_init_thread(void)
+     static int s_on = -1;
+     if (s_on < 0) s_on = spu_fpmode_env_on(getenv("KZ3_SPU_FTZ"));
+     if (s_on) spu_fpmode_set_spu();
++    if (spu_fpmode_rc_on()) spu_fpmode_set_spu_rz();   /* RC patch 7107 */
+ }
+ 
+ static inline unsigned spu_fpmode_get(void)
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+index da20410..e1fe1d7 100644
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -38,6 +38,7 @@ void spu_host_fp_init(void)
+ {
+     if (g_kz3_spu_ftz < 0) g_kz3_spu_ftz = spu_fpmode_env_on(getenv("KZ3_SPU_FTZ"));
+     if (g_kz3_spu_ftz) spu_fpmode_set_spu();
++    if (spu_fpmode_rc_on()) spu_fpmode_set_spu_rz();   /* RC patch 7107: SPU rounding + denormal rule (RC_SPU_XFLOAT=1) */
+ }
+ /* KZ3 patch 1039: KZ3_SPU_FASTCG=N turns on the fast paths of patches <= N (unset: all; 0: none; 1038: only
+  * patch 1038's; any other value starting with a digit is the patch number). */
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+index 5e21362..488449e 100644
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -240,6 +240,50 @@ static inline unsigned spu__xr_mask(u128 v) {
+     unsigned m = 0; for (int i = 0; i < 4; i++) m |= ((v._u32[i] & 0x7F800000u) == 0x7F800000u) << i; return m;
+ #endif
+ }
++/* RC patch 7107: MXCSR access for the SPU float mode (spu_fpmode.h): spu__mx_spu() = this thread runs SPU single-
++ * precision semantics (round toward zero); cold paths only. SPU__PIN keeps a value in place between two MXCSR writes. */
++#if defined(__SSE__) || defined(_M_X64)
++#include <xmmintrin.h>
++static inline unsigned spu__csr(void) { return _mm_getcsr(); }
++static inline void spu__setcsr(unsigned c) { _mm_setcsr(c); }
++#else
++static inline unsigned spu__csr(void) { return 0; }
++static inline void spu__setcsr(unsigned c) { (void)c; }
++#endif
++static inline int spu__mx_spu(void) { return (spu__csr() & 0x6000u) == 0x6000u; }
++#if defined(__GNUC__) || defined(__clang__)
++#  define SPU__PIN(d) __asm__ volatile("" : "+x"(d))
++#  define SPU__PIN_F(f) __asm__ volatile("" : "+x"(f))
++#else
++#  define SPU__PIN(d) ((void)0)
++#  define SPU__PIN_F(f) ((void)0)
++#endif
++/* RC patch 7107 (SPU float mode): the RESULT lanes the exact lane code must recompute are biased exponent 255 and the
++ * largest finite magnitude 0x7F7FFFFF. Under the SPU rounding (round toward zero, spu_fpmode.h RC_SPU_XFLOAT=1) an
++ * x86 overflow gives +-FLT_MAX instead of Inf, while the SPU result lies in the exponent-255 binade or saturates
++ * (ISA v1.2 s.9.1); a true result of exactly 0x7F7FFFFF is recomputed to the same value. Same cost as spu__xr_mask. */
++static inline unsigned spu__xr_mask_r(u128 v) {
++#if defined(__SSE2__)
++    __m128i V; memcpy(&V, &v, 16);
++    return (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(_mm_and_si128(V, _mm_set1_epi32(0x7FFFFFFF)),
++                                                                      _mm_set1_epi32(0x7F7FFFFE))));
++#else
++    unsigned m = 0; for (int i = 0; i < 4; i++) m |= ((v._u32[i] & 0x7FFFFFFFu) >= 0x7F7FFFFFu) << i; return m;
++#endif
++}
++/* RC patch 7107: "a zero result is always a positive zero" (ISA v1.2 s.9.1). The host gives -0 for a product of a zero
++ * and a negative operand, a -0 sum of two -0 terms, and an underflow of a negative value under FTZ; those lanes become
++ * +0 (two integer ops: the lane equal to 0x80000000 is cleared). */
++static inline u128 spu__pos0(u128 v) {
++#if defined(__SSE2__)
++    __m128i V; memcpy(&V, &v, 16);
++    V = _mm_andnot_si128(_mm_cmpeq_epi32(V, _mm_set1_epi32((int)0x80000000u)), V);
++    memcpy(&v, &V, 16); return v;
++#else
++    for (int i = 0; i < 4; i++) if (v._u32[i] == 0x80000000u) v._u32[i] = 0;
++    return v;
++#endif
++}
+ #define SPU_XR_FIXM(mask, r, a, b, expr) do { const unsigned _m = (mask); \
+     if (__builtin_expect(_m != 0, 0) && g_kz3_spu_xr) for (int _i = 0; _i < 4; _i++) if (_m >> _i & 1) { \
+         const uint32_t x = (a)._u32[_i], y = (b)._u32[_i]; (void)x; (void)y; (r)._u32[_i] = (expr); } } while (0)
+@@ -382,10 +426,17 @@ static inline __attribute__((always_inline)) __m128 spu__xrq(__m128 r, __m128 a,
+ 
+ /* FI decodes the base and step fields produced by the hardware estimate
+  * instructions; its second operand is not an ordinary reciprocal float. */
++/* RC patch 7107: spu_fi computes every lane with the integer formulation (spu__fi_lane / spu__fi_int4 below, ISA
++ * v1.2 p.219 truncated), not only the exponent-255 ones. The float form below rounds to nearest (1 ulp above the SPU)
++ * and under FTZ|DAZ flushes its step*y product for estimate exponents 4..11 (frest+fi down to 4 bits, the RE notes
++ * s.25). It stays as spu__fi_ref for the tests. */
+ #if defined(__SSE4_1__)
+ SPU_XR_COLD __attribute__((unused)) u128 spu__fi_ref(u128 a, u128 b) {   /* KZ3 patch 1131: the loop below; 1134: tests only */
+ #else
+ SPU_HOT u128 spu_fi(u128 a, u128 b) {
++    u128 r; for (int i = 0; i < 4; i++) r._u32[i] = spu__fi_lane(a._u32[i], b._u32[i]); return r;   /* RC patch 7107 */
++}
++SPU_XR_COLD __attribute__((unused)) u128 spu__fi_ref(u128 a, u128 b) {
+ #endif
+     u128 r;
+     for (int i = 0; i < 4; i++) {
+@@ -434,7 +485,11 @@ static inline __m128i spu__fi_int4(__m128i A, __m128i B, __m128i e) {
+     const __m128i r = _mm_or_si128(_mm_and_si128(B, _mm_set1_epi32((int)0x80000000u)), _mm_or_si128(_mm_slli_epi32(e2, 23), mant));
+     return _mm_andnot_si128(zero, r);
+ }
+-SPU_HOT u128 spu_fi(u128 a, u128 b) {
++SPU_HOT u128 spu_fi(u128 a, u128 b) {   /* RC patch 7107: every lane in the integer form */
++    __m128i A, B; memcpy(&A, &a, 16); memcpy(&B, &b, 16);
++    return spu__iv(spu__fi_int4(A, B, _mm_and_si128(_mm_srli_epi32(B, 23), _mm_set1_epi32(0xFF))));
++}
++static inline __attribute__((unused)) u128 spu__fi_float4(u128 a, u128 b) {   /* the 1131/1134 form (tests only) */
+     __m128i A, B; memcpy(&A, &a, 16); memcpy(&B, &b, 16);
+     const __m128i e = _mm_and_si128(_mm_srli_epi32(B, 23), _mm_set1_epi32(0xFF));
+     const __m128i x255 = _mm_cmpeq_epi32(e, _mm_set1_epi32(0xFF));
+@@ -778,13 +833,13 @@ static inline u128 spu_rotqbii(u128 a, int sh) { sh&=7; if(!sh) return a;
+ #endif
+ /* kz3-rmask begin */
+ #if SPU_XR_RMASK
+-#  define SPU__XRM_AR(a, b, r) spu__xr_mask(r)
++#  define SPU__XRM_AR(a, b, r) spu__xr_mask_r(r)   /* RC patch 7107: was spu__xr_mask(r) */
+ #else
+-#  define SPU__XRM_AR(a, b, r) spu__xr_mask3(a, b, r)
++#  define SPU__XRM_AR(a, b, r) (spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask_r(r))
+ #endif
+ /* kz3-rmask end */
+-SPU_HOT u128 spu_fa(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_add_ps, a._f32[i] + b._f32[i]); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FA); }
+-SPU_HOT u128 spu_fs(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_sub_ps, a._f32[i] - b._f32[i]); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FS); }
++SPU_HOT u128 spu_fa(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_add_ps, a._f32[i] + b._f32[i]); r = spu__pos0(r); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FA); }
++SPU_HOT u128 spu_fs(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_sub_ps, a._f32[i] - b._f32[i]); r = spu__pos0(r); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FS); }
+ 
+ /* RI8 scale: float-to-int uses 2^(173-i8), int-to-float 2^(i8-155).
+  * The canonical immediates 173 and 155 are identity conversions. */
+@@ -821,14 +876,14 @@ SPU_HOT u128 spu_csflt(u128 a, int i8){ u128 r; __m128i A; memcpy(&A, &a, 16);
+     const __m128 R = _mm_movelh_ps(_mm_cvtpd_ps(_mm_mul_pd(_mm_cvtepi32_pd(A), f)),
+                                    _mm_cvtpd_ps(_mm_mul_pd(_mm_cvtepi32_pd(_mm_unpackhi_epi64(A, A)), f)));
+     memcpy(&r, &R, 16);
+-    SPU_XR_RET(spu__xr_mask(r), r, a, a, SPU_XR_CSFLT, i8); }
++    r = spu__pos0(r); SPU_XR_RET(spu__xr_mask_r(r), r, a, a, SPU_XR_CSFLT, i8); }   /* RC patch 7107 */
+ SPU_HOT u128 spu_cuflt(u128 a, int i8){ u128 r; __m128i A; memcpy(&A, &a, 16);
+     const __m128d f = _mm_set1_pd(spu__pow2d(i8 - 155)), b31 = _mm_set1_pd(2147483648.0);
+     A = _mm_xor_si128(A, _mm_set1_epi32((int)0x80000000u));
+     const __m128d l = _mm_add_pd(_mm_cvtepi32_pd(A), b31), h = _mm_add_pd(_mm_cvtepi32_pd(_mm_unpackhi_epi64(A, A)), b31);
+     const __m128 R = _mm_movelh_ps(_mm_cvtpd_ps(_mm_mul_pd(l, f)), _mm_cvtpd_ps(_mm_mul_pd(h, f)));
+     memcpy(&r, &R, 16);
+-    SPU_XR_RET(spu__xr_mask(r), r, a, a, SPU_XR_CUFLT, i8); }
++    SPU_XR_RET(spu__xr_mask_r(r), r, a, a, SPU_XR_CUFLT, i8); }   /* RC patch 7107 */
+ #else
+ SPU_HOT u128 spu_cflts(u128 a, int i8){ u128 r; double f=spu__pow2d(173-i8);
+     for(int i=0;i<4;i++){ double v=(double)a._f32[i]*f; if(v>2147483647.0)v=2147483647.0; if(v<-2147483648.0)v=-2147483648.0; r._s32[i]=(int32_t)v; }
+@@ -838,12 +893,12 @@ SPU_HOT u128 spu_cfltu(u128 a, int i8){ u128 r; double f=spu__pow2d(173-i8);
+     SPU_XR_RET(spu__xr_mask(a), r, a, a, SPU_XR_CFLTU, i8); }
+ SPU_HOT u128 spu_csflt(u128 a, int i8){ u128 r; double f=spu__pow2d(i8-155);
+     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._s32[i]*f);
+-    SPU_XR_RET(spu__xr_mask(r), r, a, a, SPU_XR_CSFLT, i8); }
++    r = spu__pos0(r); SPU_XR_RET(spu__xr_mask_r(r), r, a, a, SPU_XR_CSFLT, i8); }   /* RC patch 7107 */
+ SPU_HOT u128 spu_cuflt(u128 a, int i8){ u128 r; double f=spu__pow2d(i8-155);
+     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._u32[i]*f);
+-    SPU_XR_RET(spu__xr_mask(r), r, a, a, SPU_XR_CUFLT, i8); }
++    SPU_XR_RET(spu__xr_mask_r(r), r, a, a, SPU_XR_CUFLT, i8); }   /* RC patch 7107 */
+ #endif
+-SPU_HOT u128 spu_fm(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_mul_ps, a._f32[i] * b._f32[i]); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FM); }   /* patch 1079 */
++SPU_HOT u128 spu_fm(u128 a, u128 b) { u128 r; SPU__F2(r, a, b, _mm_mul_ps, a._f32[i] * b._f32[i]); r = spu__pos0(r); SPU_XR_RET_Q(SPU__XRM_AR(a, b, r), r, a, b, SPU_XR_FM); }   /* patch 1079 */
+ /* KZ3 patch 1035: fused multiply-add without the libm call. Without -mfma, fmaf is MinGW's software
+  * routine (with frexp/ldexp inside; ~3 % of the level's SPURS samples in SPU pass 21). The product of two
+  * floats is exact in double, so s = a*b + c has one double rounding; rounding s to float then equals the
+@@ -893,11 +948,16 @@ void kz3_spu_fma_note(const double s[4], int ftz);
+  * (with the 1071 recompute) are the same code, moved into two cold functions. */
+ SPU_XR_COLD u128 spu__fma4_ref(u128 a, u128 b, u128 c, int negb, int negc, int cgm) {
+     u128 r;
++    if (spu__mx_spu()) {   /* RC patch 7107: SPU float mode, every lane from the exact model (no libm fmaf) */
++        for (int i = 0; i < 4; i++)
++            r._u32[i] = spu__fma_lane(a._u32[i], b._u32[i], c._u32[i], negb ? 0x80000000u : 0u, negc ? 0x80000000u : 0u);
++        return r;
++    }
+     for (int i = 0; i < 4; i++)
+         r._f32[i] = spu__fmaf(a._f32[i], negb ? -b._f32[i] : b._f32[i], negc ? -c._f32[i] : c._f32[i]);
+     /* patch 1071: the fast path above never takes an exponent-255 operand (it reads as Inf/NaN in double) */
+-    SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b,
+-                spu__fma_lane(x, y, c._u32[_i], negb ? 0x80000000u : 0u, negc ? 0x80000000u : 0u));
++    SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask_r(r), r, a, b,
++                spu__fma_lane(x, y, c._u32[_i], negb ? 0x80000000u : 0u, negc ? 0x80000000u : 0u));   /* 7107: _r */
+     if (cgm == 0)
+         for (int i = 0; i < 4; i++)
+             if (r._f32[i] != 0.0f && __builtin_fabsf(r._f32[i]) < 0x1p-126f) r._u32[i] &= 0x80000000u;
+@@ -983,13 +1043,14 @@ SPU_HOT u128 spu__fma4(u128 a, u128 b, u128 c, int negb, int negc) {
+ #endif
+ #if SPU_FMA_ODD4   /* KZ3 patch 1106: |r| + 0x7F000000 > -0x01800001 (signed) = not normal; ptest with |r| drops zeros */
+         /* kz3-fmaodd begin */
+-        const __m128i nn = _mm_cmpgt_epi32(_mm_add_epi32(ab, _mm_set1_epi32(0x7F000000)), _mm_set1_epi32(-0x01800001));
++        /* RC patch 7107: -0x01800002 (was -0x01800001) also sends |r| = 0x7F7FFFFF (a round-toward-zero overflow) */
++        const __m128i nn = _mm_cmpgt_epi32(_mm_add_epi32(ab, _mm_set1_epi32(0x7F000000)), _mm_set1_epi32(-0x01800002));
+         if (__builtin_expect(_mm_testz_si128(nn, ab), 1)) { u128 r; memcpy(&r, &r4, 16); return r; }
+         /* kz3-fmaodd end */
+ #else
+         const __m128i odd = _mm_or_si128(
+             _mm_andnot_si128(_mm_cmpeq_epi32(ab, _mm_setzero_si128()), _mm_cmplt_epi32(ab, _mm_set1_epi32(0x01000000))),
+-            _mm_cmpgt_epi32(ab, _mm_set1_epi32(0x7F7FFFFF)));
++            _mm_cmpgt_epi32(ab, _mm_set1_epi32(0x7F7FFFFE)));   /* RC patch 7107: was 0x7F7FFFFF */
+         if (__builtin_expect(_mm_testz_si128(odd, odd), 1)) { u128 r; memcpy(&r, &r4, 16); return r; }
+ #endif
+     }
+@@ -1019,13 +1080,14 @@ SPU_HOT u128 spu__fma4(u128 a, u128 b, u128 c, int negb, int negc) {
+     }
+     return spu__fma4_refv(A0, B0, C0, negb, negc, cgm);
+ }
+-SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__fma4(a, b, c, 0, 0); }
+-SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__fma4(a, b, c, 0, 1); }
+-SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__fma4(a, b, c, 1, 0); }
++/* RC patch 7107: +0 for a zero result on every path (spu__pos0) */
++SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__pos0(spu__fma4(a, b, c, 0, 0)); }
++SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__pos0(spu__fma4(a, b, c, 0, 1)); }
++SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__pos0(spu__fma4(a, b, c, 1, 0)); }
+ #else
+-SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); return r; }
+-SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], -c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); return r; }
+-SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], -b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); return r; }
++SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask_r(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); return spu__pos0(r); }   /* RC patch 7107 */
++SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], -c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask_r(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); return spu__pos0(r); }   /* RC patch 7107 */
++SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], -b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask_r(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); return spu__pos0(r); }   /* RC patch 7107 */
+ #endif
+ /* patch 1079: forced inline; an exponent-255 operand lane is recomputed in spu__xr_fix (a twice = no result term) */
+ #if defined(__SSE2__)
+@@ -1049,20 +1111,43 @@ static inline void spu__dset(u128* r, int i, double d) {
+     uint64_t u; memcpy(&u, &d, sizeof u);
+     r->_u32[i*2] = (uint32_t)(u >> 32); r->_u32[i*2+1] = (uint32_t)u;
+ }
+-static inline u128 spu_dfa(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)+spu__dget(b,i)); return r; }
+-static inline u128 spu_dfs(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)-spu__dget(b,i)); return r; }
+-static inline u128 spu_dfm(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)*spu__dget(b,i)); return r; }
++/* RC patch 7107: the SPU's double-precision ops round as its FPSCR says (round to nearest after reset, ISA v1.2 s.9.2),
++ * not by truncation: under the SPU float mode (MXCSR round toward zero, FTZ, DAZ for the single-precision ops,
++ * spu_fpmode.h) these run with the host's default MXCSR for the operation, then restore it. Empty asm statements
++ * pin the operands and results between the two MXCSR writes (GCC does not order float arithmetic around ldmxcsr). */
++#define SPU__DP_MASK 0xE040u
++#define SPU__DP_OP(r, expr2) do { const unsigned _c = spu__csr(); \
++    if (__builtin_expect(_c & SPU__DP_MASK, 0)) { \
++        double _x0 = spu__dget(a, 0), _x1 = spu__dget(a, 1), _y0 = spu__dget(b, 0), _y1 = spu__dget(b, 1); \
++        double _t0 = spu__dget(t, 0), _t1 = spu__dget(t, 1); \
++        spu__setcsr(_c & ~SPU__DP_MASK); \
++        SPU__PIN(_x0); SPU__PIN(_x1); SPU__PIN(_y0); SPU__PIN(_y1); SPU__PIN(_t0); SPU__PIN(_t1); \
++        double _r0, _r1; { const double x = _x0, y = _y0, z = _t0; (void)z; _r0 = (expr2); } \
++        { const double x = _x1, y = _y1, z = _t1; (void)z; _r1 = (expr2); } \
++        SPU__PIN(_r0); SPU__PIN(_r1); spu__setcsr(_c); spu__dset(&(r), 0, _r0); spu__dset(&(r), 1, _r1); \
++    } else for (int _i = 0; _i < 2; _i++) { const double x = spu__dget(a, _i), y = spu__dget(b, _i), z = spu__dget(t, _i); \
++        (void)z; spu__dset(&(r), _i, (expr2)); } } while (0)
++static inline u128 spu_dfa(u128 a, u128 b) { const u128 t = b; u128 r; SPU__DP_OP(r, x + y); return r; }
++static inline u128 spu_dfs(u128 a, u128 b) { const u128 t = b; u128 r; SPU__DP_OP(r, x - y); return r; }
++static inline u128 spu_dfm(u128 a, u128 b) { const u128 t = b; u128 r; SPU__DP_OP(r, x * y); return r; }
+ /* double FMA family: c = rt (accumulator, 3-register). */
+-static inline u128 spu_dfma(u128 a, u128 b, u128 t)  { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)*spu__dget(b,i)+spu__dget(t,i)); return r; }
+-static inline u128 spu_dfms(u128 a, u128 b, u128 t)  { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)*spu__dget(b,i)-spu__dget(t,i)); return r; }
+-static inline u128 spu_dfnms(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(t,i)-spu__dget(a,i)*spu__dget(b,i)); return r; }
+-static inline u128 spu_dfnma(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, -(spu__dget(a,i)*spu__dget(b,i)+spu__dget(t,i))); return r; }
++static inline u128 spu_dfma(u128 a, u128 b, u128 t)  { u128 r; SPU__DP_OP(r, x * y + z); return r; }   /* 7107 */
++static inline u128 spu_dfms(u128 a, u128 b, u128 t)  { u128 r; SPU__DP_OP(r, x * y - z); return r; }
++static inline u128 spu_dfnms(u128 a, u128 b, u128 t) { u128 r; SPU__DP_OP(r, z - x * y); return r; }
++static inline u128 spu_dfnma(u128 a, u128 b, u128 t) { u128 r; SPU__DP_OP(r, -(x * y + z)); return r; }
+ /* double compares -> per-lane 64-bit mask (RPCS3 stubs these; sane impl here). */
+ static inline u128 spu_dfceq(u128 a, u128 b)  { u128 r; for(int i=0;i<2;i++){ uint64_t m=(spu__dget(a,i)==spu__dget(b,i))?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
+ static inline u128 spu_dfcmeq(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++){ double x=spu__dget(a,i),y=spu__dget(b,i); if(x<0)x=-x; if(y<0)y=-y; uint64_t m=(x==y)?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
+ /* Singles occupy preferred words 0 and 2 when converting doubleword lanes. */
+ static inline u128 spu_fesd(u128 a) { u128 r; memset(&r,0,sizeof r); for(int i=0;i<2;i++) spu__dset(&r,i,(double)a._f32[i*2]); return r; }
+-static inline u128 spu_frds(u128 a) { u128 r; memset(&r,0,sizeof r); for(int i=0;i<2;i++) r._f32[i*2]=(float)spu__dget(a,i); return r; }
++static inline u128 spu_frds(u128 a) { u128 r; memset(&r,0,sizeof r);
++    const unsigned c = spu__csr();   /* RC patch 7107: rounds as the FPSCR (nearest), as the double ops above */
++    if (__builtin_expect(c & SPU__DP_MASK, 0)) {
++        double d0 = spu__dget(a, 0), d1 = spu__dget(a, 1); spu__setcsr(c & ~SPU__DP_MASK); SPU__PIN(d0); SPU__PIN(d1);
++        float f0 = (float)d0, f1 = (float)d1; SPU__PIN_F(f0); SPU__PIN_F(f1); spu__setcsr(c); r._f32[0] = f0; r._f32[2] = f1;
++        return r;
++    }
++    for(int i=0;i<2;i++) r._f32[i*2]=(float)spu__dget(a,i); return r; }
+ /* mpyhhu: high-16 x high-16 of each word, unsigned, full 32-bit product. */
+ #if defined(__SSE4_1__)
+ static inline u128 spu_mpyhhu(u128 a, u128 b){ return spu__iv(_mm_mullo_epi32(_mm_srli_epi32(spu__vi(a), 16), _mm_srli_epi32(spu__vi(b), 16))); }
+diff --git a/runtime/spu/tests/test_spu_float_oracle.c b/runtime/spu/tests/test_spu_float_oracle.c
+index 6789e4e..3a86787 100644
+--- a/runtime/spu/tests/test_spu_float_oracle.c
++++ b/runtime/spu/tests/test_spu_float_oracle.c
+@@ -1,8 +1,9 @@
+ /* Differential oracle for the SPU single-precision helpers (spu_helpers.h), 2026-11-03.
+  *
+- * Build/run: tools/spu/run_float_oracle.sh (default and FTZ|DAZ MXCSR, with and without -mfma).
++ * Build/run: tools/spu/run_float_oracle.sh (default, FTZ|DAZ and the RC_SPU_XFLOAT=1 MXCSR round toward zero|FTZ|DAZ
++ * ('spu', port patch 7107), with and without -mfma).
+  *   gcc -O2 -std=gnu17 -msse4.1 -ffp-contract=off -I runtime/spu -I include test_spu_float_oracle.c -lm
+- *   ./a.out [ftz] [report]       exit 0 always unless 'strict' is given (then 1 when any "other" mismatch is found)
++ *   ./a.out [ftz|spu] [report]   exit 0 always unless 'strict' is given (then 1 when any "other" mismatch is found)
+  *
+  * The oracle (the o_* functions) is written from SPU ISA v1.2 chapter 9 and uses only integer arithmetic (a 640-bit
+  * unsigned bigint for exact sums), never host float. Rules: biased exponent 255 is an ordinary binade (no Inf/NaN); the
+@@ -294,9 +295,10 @@ static void chain_acc(int rsq, int* minbits_h, int* minbits_o, long* nlow_h, lon
+ }
+ 
+ int main(int argc, char** argv) {
+-    int ftz = 0, strict = 0;
+-    for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "ftz")) ftz = 1; if (!strcmp(argv[i], "strict")) strict = 1; }
+-    _mm_setcsr(0x1F80 | (ftz ? 0x8040 : 0));
++    int ftz = 0, strict = 0, rz = 0;
++    for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "ftz")) ftz = 1; if (!strcmp(argv[i], "strict")) strict = 1;
++                                     if (!strcmp(argv[i], "spu")) ftz = rz = 1; }   /* RC patch 7107: RC_SPU_XFLOAT=1 mode */
++    _mm_setcsr(0x1F80 | (ftz ? 0x8040 : 0) | (rz ? 0x6000 : 0));
+     build_tuples();
+     static const int scales[] = { 0, 1, 127, 155, 173, 254, 255 };
+     for (int f = 0; f < F_FESD; f++) {
+@@ -311,7 +313,7 @@ int main(int argc, char** argv) {
+               if (k) run_batch(f, b4, (int)k, scales[si]); }
+     }
+     run_dp();
+-    printf("# SPU float oracle: MXCSR %s, %s, tuples %ld, xr gate %d\n", ftz ? "FTZ|DAZ" : "default",
++    printf("# SPU float oracle: MXCSR %s, %s, tuples %ld, xr gate %d\n", rz ? "RZ|FTZ|DAZ (spu)" : ftz ? "FTZ|DAZ" : "default",
+ #ifdef __FMA__
+         "-mfma",
+ #else
+diff --git a/runtime/spu/tests/test_spu_xfloat_mode.c b/runtime/spu/tests/test_spu_xfloat_mode.c
+new file mode 100644
+index 0000000..6f637e6
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_xfloat_mode.c
+@@ -0,0 +1,324 @@
++/* SPU single-precision mode (port patch 7107): the float helpers the Insomniac collision jobs use, against an exact
++ * reference of SPU ISA v1.2 chapter 9 [src:spu-isa-1.2], on boundary and random inputs.
++ *
++ * Build/run: tools/spu/run_spu_xfloat_test.sh (no game data). One binary, two passes:
++ *   spu  : RC_SPU_XFLOAT=1 and spu_fpmode_init_thread() (MXCSR round toward zero | FTZ | DAZ, as the SPU host threads
++ *          get it); every op must match the reference bit for bit (exit 1 otherwise).
++ *   host : default MXCSR (round to nearest, no flush), the runtime without RC_SPU_XFLOAT; mismatches are counted and
++ *          printed by class only (the known host deviations: rounding, denormals, zero sign).
++ * Ops: fa fs fm fma fms fnms fceq fcgt fcmeq fcmgt fi(frest/frsqest) csflt cuflt cflts cfltu (the collision jobs use all
++ * but cflts/cfltu, the RE notes s.37), and the double ops dfa/dfm/dfma/frds (must keep round-to-nearest in the SPU mode).
++ *
++ * Reference rules (ISA v1.2 s.9.1 p.195 and the instruction pages): biased exponent 255 is an ordinary binade, no
++ * Inf/NaN; magnitudes above Smax = 0x7FFFFFFF saturate to +-Smax; exponent 0 (zero, denorm) reads as zero; a result
++ * below Smin = 2^-126 is +0; "a zero result is always a positive zero"; the only rounding is truncation; fma's product
++ * is exact (p.208); fcgt: "Two zeros never compare greater than independent of their sign bits and fractions" (p.233);
++ * fi (p.219): (-1)^S * (1.Base - 0.000Step * Y) * 2^(E-127), Y = 0.RA[13:31]; csflt/cuflt (p.220-221): integer /
++ * 2^(155-I8), scale 0..127; cflts/cfltu: value * 2^(173-I8), truncated and saturated. The reference uses integers only.
++ * Without the patch (spu_fpmode.h has no SPU_FPMODE_SPU) the spu pass sets the same MXCSR by hand: that is the
++ * negative control (the unpatched helpers then give FLT_MAX for overflows, -0 results and a rounded fi). */
++#include "spu_helpers.h"
++#include "spu_fpmode.h"
++#include <stdio.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <xmmintrin.h>
++
++int g_kz3_spu_xr = 1, g_kz3_spu_xrq = 1, g_kz3_xr_stats = 0, g_kz3_spu_slowcg = 0, g_kz3_fma_stats = 0;
++void kz3_spu_xr_note(int op, unsigned m, const uint32_t* a, const uint32_t* b, const uint32_t* c, const uint32_t* r, const void* ra)
++{ (void)op; (void)m; (void)a; (void)b; (void)c; (void)r; (void)ra; }
++void kz3_spu_fma_note(const double s[4], int ftz) { (void)s; (void)ftz; }
++
++/* ------------------------------------------------------------------ exact reference */
++typedef unsigned __int128 u128x;
++static int msb128(u128x v) { const uint64_t hi = (uint64_t)(v >> 64); return hi ? 127 - __builtin_clzll(hi) : 63 - __builtin_clzll((uint64_t)v); }
++/* sign * (mag * 2^e2 - tiny), tiny > 0 far below one unit of mag when 'below' is set; truncated to 24 bits, SPU range */
++static uint32_t r_pack(uint32_t sign, u128x mag, int e2, int below) {
++    if (!mag) return 0;
++    int top = msb128(mag);
++    uint32_t kept; int dropped_nz;
++    if (top > 23) { kept = (uint32_t)(mag >> (top - 23)); dropped_nz = (mag & (((u128x)1 << (top - 23)) - 1)) != 0; }
++    else { kept = (uint32_t)(mag << (23 - top)); dropped_nz = 0; }
++    if (below && !dropped_nz) {                     /* exactly representable minus a sliver: one unit lower */
++        kept -= 1;
++        if (kept < (1u << 23)) { kept = (1u << 24) - 1; top -= 1; }
++    }
++    const int biased = top + e2 + 127;
++    if (biased > 255) return sign | 0x7FFFFFFFu;
++    if (biased < 1) return 0;
++    return sign | ((uint32_t)biased << 23) | (kept & 0x7FFFFFu);
++}
++typedef struct { uint32_t s; uint64_t m; int e; } term;   /* value = (-1)^s * m * 2^e, m = 0 for zero */
++static term r_dec(uint32_t x) { term t; t.s = x & 0x80000000u; const uint32_t be = x >> 23 & 0xFF;
++    t.m = be ? (x & 0x7FFFFFu) | 0x800000u : 0; t.e = (int)be - 150; return t; }
++static uint32_t r_add(term a, term b) {
++    if (!a.m && !b.m) return 0;
++    if (!a.m) return r_pack(b.s, b.m, b.e, 0);
++    if (!b.m) return r_pack(a.s, a.m, a.e, 0);
++    /* order by magnitude: compare m*2^e */
++    term hi = a, lo = b;
++    { const int ta = msb128(a.m) + a.e, tb = msb128(b.m) + b.e;
++      int swap = tb > ta;
++      if (ta == tb) { const int d = a.e - b.e;   /* same top bit: align the shorter */
++          const u128x A = d >= 0 ? (u128x)a.m << d : a.m, B = d >= 0 ? b.m : (u128x)b.m << -d; swap = B > A; }
++      if (swap) { hi = b; lo = a; } }
++    const int d = hi.e - lo.e;
++    if (d > 64 || d < -64) {                          /* lo is below 2^-16 units of hi's 48-bit window: a sliver */
++        if (d < 0) { fprintf(stderr, "r_add: unexpected order\n"); exit(2); }
++        return r_pack(hi.s, hi.m, hi.e, hi.s != lo.s);
++    }
++    const int eb = d >= 0 ? lo.e : hi.e;
++    const u128x H = d >= 0 ? (u128x)hi.m << d : hi.m, L = d >= 0 ? lo.m : (u128x)lo.m << -d;
++    if (hi.s == lo.s) return r_pack(hi.s, H + L, eb, 0);
++    if (H == L) return 0;
++    return r_pack(hi.s, H - L, eb, 0);              /* |hi| > |lo| */
++}
++static uint32_t r_fa(uint32_t x, uint32_t y) { return r_add(r_dec(x), r_dec(y)); }
++static uint32_t r_fs(uint32_t x, uint32_t y) { return r_add(r_dec(x), r_dec(y ^ 0x80000000u)); }
++static uint32_t r_fm(uint32_t x, uint32_t y) { const term a = r_dec(x), b = r_dec(y);
++    if (!a.m || !b.m) return 0; return r_pack(a.s ^ b.s, (u128x)a.m * b.m, a.e + b.e, 0); }
++static uint32_t r_fmx(uint32_t x, uint32_t y, uint32_t z, uint32_t negp, uint32_t negc) {
++    const term a = r_dec(x), b = r_dec(y); term c = r_dec(z); c.s ^= negc;
++    term p; p.s = (a.s ^ b.s) ^ negp; p.m = (a.m && b.m) ? a.m * b.m : 0; p.e = a.e + b.e;
++    return r_add(p, c); }
++/* compare: -1/0/1 of the SPU values (zero for exponent 0) */
++static int r_cmp(uint32_t x, uint32_t y, int mag) {
++    term a = r_dec(x), b = r_dec(y); if (mag) a.s = b.s = 0;
++    const int sa = !a.m ? 0 : a.s ? -1 : 1, sb = !b.m ? 0 : b.s ? -1 : 1;
++    if (sa != sb) return sa < sb ? -1 : 1;
++    if (!sa) return 0;
++    const uint32_t ka = (uint32_t)(a.e + 150) << 23 | (uint32_t)(a.m & 0x7FFFFF), kb = (uint32_t)(b.e + 150) << 23 | (uint32_t)(b.m & 0x7FFFFF);
++    const int c = ka == kb ? 0 : ka > kb ? 1 : -1; return sa > 0 ? c : -c; }
++static uint32_t r_fi(uint32_t ra, uint32_t rb) {
++    const uint32_t e = rb >> 23 & 0xFF, base = rb >> 10 & 0x1FFF, step = rb & 0x3FF, y = ra & 0x7FFFF;
++    const u128x mag = ((u128x)(8192 + base) << 19) - (u128x)step * y;     /* (1.Base - 0.000Step*Y) * 2^32 */
++    if (!e) return 0;   /* 2^-127 * (<2): below Smin */
++    return r_pack(rb & 0x80000000u, mag, (int)e - 127 - 32, 0); }
++static uint32_t r_cxflt(uint32_t v, int i8, int uns) {
++    uint32_t s = 0; uint64_t m = v; if (!uns && (int32_t)v < 0) { s = 0x80000000u; m = (uint64_t)(-(int64_t)(int32_t)v); }
++    return r_pack(s, m, -(155 - i8), 0); }
++static uint32_t r_cflx(uint32_t x, int i8, int uns) {
++    const term a = r_dec(x); if (!a.m) return 0;
++    const int sh = a.e + (173 - i8);
++    if (uns && a.s) return 0;
++    u128x v = sh >= 0 ? (sh > 100 ? ~(u128x)0 >> 1 : (u128x)a.m << sh) : (sh <= -64 ? 0 : (u128x)(a.m >> -sh));
++    if (uns) return v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v;
++    if (a.s) return v >= 0x80000000u ? 0x80000000u : 0u - (uint32_t)v;
++    return v > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)v; }
++
++/* ------------------------------------------------------------------ inputs */
++static const uint32_t edge[] = { 0x00000000, 0x00000001, 0x007FFFFF, 0x00400000, 0x00800000, 0x00800001, 0x00FFFFFF, 0x01000000,
++    0x0C000000, 0x1E800000, 0x33800000, 0x34000000, 0x3EAAAAAB, 0x3F000000, 0x3F7FFFFF, 0x3F800000, 0x3F800001, 0x3FFFFFFF,
++    0x40000000, 0x40400000, 0x40490FDB, 0x4B000000, 0x4B7FFFFF, 0x4F000000, 0x5F000000, 0x7E7FFFFF, 0x7E800000, 0x7F000000,
++    0x7F000001, 0x7F7FFFFE, 0x7F7FFFFF, 0x7F800000, 0x7F800001, 0x7FC00000, 0x7FFFFFFE, 0x7FFFFFFF };
++#define NEDGE ((int)(sizeof edge / sizeof edge[0]))
++static uint64_t rs = 0x2545F4914F6CDD1Dull;
++static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
++static uint32_t rword(void) {
++    const uint64_t r = rnd(); const uint32_t s = (uint32_t)(r & 1) << 31, f = (uint32_t)(r >> 9) & 0x7FFFFF;
++    switch ((r >> 1) & 7) {
++    case 0: return (uint32_t)(r >> 32);
++    case 1: return s | ((uint32_t)(r >> 40) % 3) << 23 | f;            /* exponent 0..2 */
++    case 2: return s | (253u + (uint32_t)(r >> 40) % 3) << 23 | f;     /* exponent 253..255 */
++    case 3: return s | edge[(r >> 40) % NEDGE];
++    default: return s | (110u + (uint32_t)(r >> 40) % 40) << 23 | f;   /* ordinary magnitudes */
++    }
++}
++
++/* ------------------------------------------------------------------ harness */
++enum { O_FA, O_FS, O_FM, O_FMA, O_FMS, O_FNMS, O_FCEQ, O_FCGT, O_FCMEQ, O_FCMGT, O_FI_REST, O_FI_RSQ, O_FI_ANY,
++       O_CSFLT, O_CUFLT, O_CFLTS, O_CFLTU, O_N };
++static const char* const oname[O_N] = { "fa", "fs", "fm", "fma", "fms", "fnms", "fceq", "fcgt", "fcmeq", "fcmgt",
++    "fi(frest)", "fi(frsqest)", "fi(any)", "csflt", "cuflt", "cflts", "cfltu" };
++enum { K_ZSIGN, K_DEN, K_ULP, K_RANGE, K_OTHER, K_N };
++static const char* const kname[K_N] = { "zero-sign", "denormal", "1ulp", "range", "other" };
++typedef struct { long n, bad, k[K_N]; uint32_t ex[3][5]; int nex; } stat;
++static stat st[O_N];
++static int isden(uint32_t x) { return !(x >> 23 & 0xFF) && (x & 0x7FFFFF); }
++static void note(int o, uint32_t a, uint32_t b, uint32_t c, int imm, uint32_t got, uint32_t want) {
++    stat* s = &st[o]; s->n++;
++    if (got == want) return;
++    int k;
++    const int64_t mg = got & 0x7FFFFFFF, mw = want & 0x7FFFFFFF;
++    if (!mg && !mw) k = K_ZSIGN;
++    else if (isden(a) || isden(b) || isden(c) || isden(got)) k = K_DEN;
++    else if ((got ^ want) >> 31 == 0 && (mg - mw == 1 || mw - mg == 1)) k = K_ULP;
++    else if (((got >> 23) & 0xFF) >= 254 || ((want >> 23) & 0xFF) >= 254) k = K_RANGE;
++    else k = K_OTHER;
++    s->bad++; s->k[k]++;
++    if (s->nex < 3) { uint32_t* e = s->ex[s->nex++]; e[0] = a; e[1] = b; e[2] = c; e[3] = got; e[4] = want; (void)imm; }
++}
++static void run4(int o, const uint32_t* A4, const uint32_t* B4, const uint32_t* C4, int imm) {
++    u128 A, B, C, R; memcpy(A._u32, A4, 16); memcpy(B._u32, B4, 16); memcpy(C._u32, C4, 16);
++    switch (o) {
++    case O_FA: R = spu_fa(A, B); break;          case O_FS: R = spu_fs(A, B); break;
++    case O_FM: R = spu_fm(A, B); break;          case O_FMA: R = spu_fma(A, B, C); break;
++    case O_FMS: R = spu_fms(A, B, C); break;     case O_FNMS: R = spu_fnms(A, B, C); break;
++    case O_FCEQ: R = spu_fceq(A, B); break;      case O_FCGT: R = spu_fcgt(A, B); break;
++    case O_FCMEQ: R = spu_fcmeq(A, B); break;    case O_FCMGT: R = spu_fcmgt(A, B); break;
++    case O_FI_REST: B = spu_frest(A); R = spu_fi(A, B); break;
++    case O_FI_RSQ: B = spu_frsqest(A); R = spu_fi(A, B); break;
++    case O_FI_ANY: R = spu_fi(A, B); break;
++    case O_CSFLT: R = spu_csflt(A, imm); break;  case O_CUFLT: R = spu_cuflt(A, imm); break;
++    case O_CFLTS: R = spu_cflts(A, imm); break;  case O_CFLTU: R = spu_cfltu(A, imm); break;
++    default: return;
++    }
++    for (int i = 0; i < 4; i++) {
++        const uint32_t a = A._u32[i], b = B._u32[i], c = C._u32[i];
++        uint32_t w;
++        switch (o) {
++        case O_FA: w = r_fa(a, b); break;   case O_FS: w = r_fs(a, b); break;   case O_FM: w = r_fm(a, b); break;
++        case O_FMA: w = r_fmx(a, b, c, 0, 0); break;
++        case O_FMS: w = r_fmx(a, b, c, 0, 0x80000000u); break;
++        case O_FNMS: w = r_fmx(a, b, c, 0x80000000u, 0); break;
++        case O_FCEQ: w = r_cmp(a, b, 0) == 0 ? ~0u : 0; break;   case O_FCGT: w = r_cmp(a, b, 0) > 0 ? ~0u : 0; break;
++        case O_FCMEQ: w = r_cmp(a, b, 1) == 0 ? ~0u : 0; break;  case O_FCMGT: w = r_cmp(a, b, 1) > 0 ? ~0u : 0; break;
++        case O_FI_REST: case O_FI_RSQ: case O_FI_ANY: w = r_fi(a, b); break;
++        case O_CSFLT: w = r_cxflt(a, imm, 0); break;  case O_CUFLT: w = r_cxflt(a, imm, 1); break;
++        case O_CFLTS: w = r_cflx(a, imm, 0); break;   default: w = r_cflx(a, imm, 1); break;
++        }
++        note(o, a, b, c, imm, R._u32[i], w);
++    }
++}
++static const int nin[O_N] = { 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 1, 1, 2, 1, 1, 1, 1 };
++static void sweep(long nrand) {
++    uint32_t A[4], B[4], C[4]; int k = 0;
++    static const int sc_xflt[] = { 28, 29, 100, 127, 150, 154, 155 }, sc_cfl[] = { 46, 47, 100, 150, 172, 173 };
++    for (int o = 0; o < O_N; o++) {
++        const int* scs = (o == O_CSFLT || o == O_CUFLT) ? sc_xflt : (o == O_CFLTS || o == O_CFLTU) ? sc_cfl : 0;
++        const int ns = scs == sc_xflt ? 7 : scs ? 6 : 1;
++        for (int si = 0; si < ns; si++) {
++            const int imm = scs ? scs[si] : 0;
++            k = 0;
++#define PUSH(x, y, z) do { A[k] = (x); B[k] = (y); C[k] = (z); if (++k == 4) { run4(o, A, B, C, imm); k = 0; } } while (0)
++            /* edges with both signs: all pairs (all triples for the fma family) */
++            for (int i = 0; i < 2 * NEDGE; i++) {
++                const uint32_t x = edge[i >> 1] | (uint32_t)(i & 1) << 31;
++                if (nin[o] == 1) { PUSH(x, 0, 0); continue; }
++                for (int j = 0; j < 2 * NEDGE; j++) {
++                    const uint32_t y = edge[j >> 1] | (uint32_t)(j & 1) << 31;
++                    if (nin[o] == 2) { PUSH(x, y, 0); continue; }
++                    for (int l = 0; l < 2 * NEDGE; l++) PUSH(x, y, edge[l >> 1] | (uint32_t)(l & 1) << 31);
++                }
++            }
++            /* integers for the int -> float conversions */
++            if (o == O_CSFLT || o == O_CUFLT) {
++                static const uint32_t iv[] = { 0, 1, 2, 3, 0x7FFFFF, 0x800000, 0xFFFFFF, 0x1000001, 0x7FFFFFFF, 0x80000000u,
++                    0x80000001u, 0xFFFFFFFFu, 0xFF000001u, 0x12345678u };
++                for (unsigned i = 0; i < sizeof iv / 4; i++) PUSH(iv[i], 0, 0);
++            }
++            for (long r = 0; r < nrand; r++) {
++                uint32_t x = rword(), y = rword(), z = rword();
++                switch (r & 3) {
++                case 1: y = (x ^ 0x80000000u) + (uint32_t)((int)(rnd() % 9) - 4); break;          /* cancellation */
++                case 2: z = r_fm(x, y) ^ 0x80000000u; z += (uint32_t)((int)(rnd() % 5) - 2); break;   /* fma cancels */
++                case 3: if (o == O_CSFLT || o == O_CUFLT) x = (uint32_t)rnd(); break;
++                }
++                PUSH(x, y, z);
++            }
++            while (k) PUSH(0, 0, 0);
++#undef PUSH
++        }
++    }
++}
++/* frest/frsqest + fi: the refined estimate's accuracy (bits), x normal */
++static int chain_bits(int rsq) {
++    int worst = 99;
++    for (int i = 0; i < 100000; i++) {
++        const uint32_t x = (uint32_t)(2 + rnd() % 248) << 23 | (uint32_t)(rnd() & 0x7FFFFF);
++        u128 A = spu_zero(); A._u32[0] = x;
++        const uint32_t y = spu_fi(A, rsq ? spu_frsqest(A) : spu_frest(A))._u32[0];
++        const term a = r_dec(x), b = r_dec(y);
++        if (!b.m) continue;
++        /* x*y (or x*y*y) against 1, exactly */
++        u128x P = (u128x)a.m * b.m; int e = a.e + b.e;
++        if (rsq) { P *= b.m; e += b.e; }
++        if (-e < 0 || -e > 126) continue;
++        const u128x one = (u128x)1 << -e, err = P > one ? P - one : one - P;
++        const int bits = err ? -e - (msb128(err) + 1) : 99;
++        if (bits < worst) worst = bits;
++    }
++    return worst;
++}
++/* double ops: under the SPU mode they must give the round-to-nearest results computed before the mode was set */
++typedef struct { double a, b, c; uint64_t sum, prod, fma; uint32_t frds; } dcase;
++static dcase dc[6];
++static void dcases_ref(void) {   /* under the default MXCSR */
++    static const double v[6][3] = { { 1.0, 0x1p-60, 0.0 }, { 1.0, 0x1.8p-53, 0.0 }, { 3.0, 1.0 / 3.0, -1.0 },
++        { -1.0, 0x1.0000000000001p-53, 0x1p-80 }, { 0x1.fffffffffffffp1023, 1.0, 0.0 }, { 0x1.000001fffffffp0, 1.0, 0.0 } };
++    for (int i = 0; i < 6; i++) {
++        volatile double a = v[i][0], b = v[i][1], c = v[i][2];
++        const double s = a + b, p = a * b, f = a * b + c; const float fr = (float)a;
++        dc[i].a = a; dc[i].b = b; dc[i].c = c;
++        memcpy(&dc[i].sum, &s, 8); memcpy(&dc[i].prod, &p, 8); memcpy(&dc[i].fma, &f, 8); memcpy(&dc[i].frds, &fr, 4);
++    }
++}
++static int dcases_check(void) {
++    int bad = 0;
++    for (int i = 0; i < 6; i++) {
++        u128 A = spu_zero(), B = spu_zero(), T = spu_zero();
++        spu__dset(&A, 0, dc[i].a); spu__dset(&A, 1, dc[i].a); spu__dset(&B, 0, dc[i].b); spu__dset(&B, 1, dc[i].b);
++        spu__dset(&T, 0, dc[i].c); spu__dset(&T, 1, dc[i].c);
++        const u128 S = spu_dfa(A, B), P = spu_dfm(A, B), F = spu_dfma(A, B, T), R = spu_frds(A);
++        for (int k = 0; k < 2; k++) {
++            uint64_t s, p, f; double d;
++            d = spu__dget(S, k); memcpy(&s, &d, 8); d = spu__dget(P, k); memcpy(&p, &d, 8); d = spu__dget(F, k); memcpy(&f, &d, 8);
++            if (s != dc[i].sum || p != dc[i].prod || f != dc[i].fma || R._u32[2 * k] != dc[i].frds) {
++                bad++; printf("  double case %d lane %d: dfa %016llx/%016llx dfm %016llx/%016llx dfma %016llx/%016llx frds %08x/%08x\n",
++                    i, k, (unsigned long long)s, (unsigned long long)dc[i].sum, (unsigned long long)p, (unsigned long long)dc[i].prod,
++                    (unsigned long long)f, (unsigned long long)dc[i].fma, R._u32[2 * k], dc[i].frds);
++            }
++        }
++    }
++    return bad;
++}
++
++static int report(const char* pass, int strict) {
++    long tot = 0;
++    printf("# pass %s: MXCSR %04x\n", pass, _mm_getcsr());
++    for (int o = 0; o < O_N; o++) {
++        const stat* s = &st[o];
++        printf("%-12s n=%-8ld mismatch=%-7ld", oname[o], s->n, s->bad);
++        for (int k = 0; k < K_N; k++) printf(" %s=%ld", kname[k], s->k[k]);
++        printf("\n");
++        for (int e = 0; e < s->nex; e++)
++            printf("  eg in=%08x,%08x,%08x helper=%08x spu=%08x\n", s->ex[e][0], s->ex[e][1], s->ex[e][2], s->ex[e][3], s->ex[e][4]);
++        tot += s->bad;
++    }
++    const int bf = chain_bits(0), bq = chain_bits(1);
++    printf("frest+fi accuracy %d bits, frsqest+fi %d bits (normal x)\n", bf, bq);
++    if (strict && (bf < 11 || bq < 11)) tot++;
++    return tot != 0;
++}
++
++int main(int argc, char** argv) {
++    long nrand = argc > 1 ? atol(argv[1]) : 200000;
++    int fail = 0;
++    dcases_ref();
++    /* host pass: the default MXCSR (no RC_SPU_XFLOAT), informational */
++    _mm_setcsr(0x1F80);
++    sweep(nrand);
++    report("host (default MXCSR, informational)", 0);
++    memset(st, 0, sizeof st);
++    /* spu pass: the thread mode as the SPU host threads set it */
++    setenv("RC_SPU_XFLOAT", "1", 1);
++#ifdef SPU_FPMODE_SPU
++    spu_fpmode_init_thread();
++    const char* how = "spu_fpmode_init_thread, RC_SPU_XFLOAT=1";
++#else
++    _mm_setcsr(0x1F80 | 0xE040);
++    const char* how = "set by hand: this tree has no RC_SPU_XFLOAT (negative control)";
++#endif
++    const unsigned csr = _mm_getcsr();
++    printf("# spu mode: %s\n", how);
++    if ((csr & 0xE040) != 0xE040) { printf("FAIL: MXCSR %04x lacks round-toward-zero|FTZ|DAZ\n", csr); fail = 1; }
++    sweep(nrand);
++    fail |= report("spu (strict)", 1);
++    const int dbad = dcases_check();
++    if ((_mm_getcsr() & ~0x3Fu) != (csr & ~0x3Fu)) { printf("FAIL: MXCSR control %04x after the double ops (was %04x)\n", _mm_getcsr() & ~0x3Fu, csr & ~0x3Fu); fail = 1; }
++    printf("double ops under the spu mode: %d lane mismatches against round to nearest\n", dbad);
++    fail |= dbad != 0;
++    printf("%s\n", fail ? "FAIL" : "PASS");
++    return fail;
++}

@@ -1,0 +1,363 @@
+R&C patch 7116: keep the word an idle RSX fetches when the guest moves put (gcm walker). Upstream candidate (general
+runtime + lifter fix; not yet proposed upstream). Built from the preplan draft-h1-walker-race.patch with all the
+review fixes (work/coord/preplan-1123/ffa/review.md). NOT run in a game yet: host tests only.
+
+Problem (H1, walker race). Facts:
+- [read in code] Full Frontal Assault 0x006F6138 (lifted ppu_recomp_035.cpp, func_006F6138), frame end, first
+  injector: writes JUMP B at GET, the JUMP-back 0x20000000 | GET at the block's end (EA 0x406080B8), sync, put = that
+  slot (0x006080B8, l.11674-11676); waits get == put (0x0079C2F0, lr 0x6F6438); then put = GET and the old word back
+  at GET (l.11241-11244), with no wait for the RSX to take the JUMP-back; then resets the per-frame scratch ring the
+  block came from. The same "put back to GET, no wait" shape is read in Into the Nexus 1.01 0x005F8AF8 (first
+  injector) and the second injectors FFA 0x0073A4EC, Nexus 1.01 0x0063D3F4, A4O 0x006DC25C, ACiT 1.20 0x005F46F0
+  (work/coord/decomp-q-1123/ffa-inject.md + -check.md). Whether the non-FFA sites run is not measured.
+- [read in code] The walker reads put once per pass on the frame thread (cellGcmSys.c gcm_rsx_process_fifo_unlocked),
+  and nothing wakes it on a PPU put store.
+- [measured] ls-ffa-newgame-luamsg-1120-124120: put = 0x006080B8, the walker resumes there, decodes 0x49FC9A00
+  (scratch data), CALL 0x14 / FEED0001, "FIFO JUMP to unmapped", resync to put; ~1 flip per 6 s in phoenix_ph1.
+- [read, src:rpcs3-rsxfifo, behaviour only, nothing copied] RPCS3's puller re-reads put on every idle poll, fetches
+  the word at get right after put moves and executes from its fetch cache; its FFA reference run shows no FIFO error.
+- [read in code] Lifted stores do NOT reach the out-of-line vm_write32 in a default run: the generated ppu_recomp.h
+  stores inline (vm_write32_mm) whenever vm_mm_st_ok passes, and the control register (inject base 0x7F000000 +
+  0x2000 in the R&C port) is inside the inline span. Only PPU_WVAL / PPU_WWATCH / PT (vm_inline_st_ok = 0), the
+  barrier watch, a null sweep, or an SPU reservation on the line sent it out of line. The preplan draft's hook was
+  therefore dead in every run without a write watch (review.md s.1).
+
+Fix:
+- tools/ppu_lifter.py (the ppu_recomp.h template): ppu_mm gets `put` (= ppu_hle_inject_base + 0x2000, beside the
+  load side's `poll`). vm_write32_mm stores inline only when ea != put; vm_write64_mm only when [ea, ea + 8) does not
+  overlap [put, put + 4). So the guest's stw to put goes out of line in every run, as the 32-bit load of the ref-poll
+  word already does; every other store keeps the inline path. Both define forms use it: vm_write32_inl (outside a
+  lifted function) and the per-function `vm_write32(a, v) vm_write32_mm(&_mm, a, v)` (PPU_MM_SNAP). Cost: one more
+  compare per inline 32/64-bit store (not measured). 8/16-bit and raw (vector, byte-reversed, dcbz) stores are not
+  turned away: ASSUMPTION, no title moves put with them (every put store read is stw).
+  EVERY TITLE NEEDS A RE-LIFT (the header is generated) and a rebuild.
+- runtime/ppu/ppu_loader.cpp: vm_write32 calls g_gcm_put_hook(v) when the EA is g_gcm_put_ea, after the OOB / null
+  checks and BEFORE the store lands; vm_write64 does the same for a std whose high (ea == put) or low (ea == put - 4)
+  word is put. An unaligned overlap is not hooked (ASSUMPTION, as above).
+- libs/video/cellGcmSys.c:
+  - g_gcm_put_ea / g_gcm_put_hook are defined here (beside ppu_hle_inject_base), so a binary that links libgcm
+    without the PPU loader links as before; static forward declarations before cellGcmInit, which arms the hook.
+  - gcm_note_ppu_put (guest thread): if new put != old put AND the published get == old put (the walker is parked
+    there, so the next word it fetches is that one), it keeps ONE word, {old put, word at old put}, in one slot
+    (seq_cst exchange, before the guest's store lands). The walker's next fetch at that offset takes the kept word,
+    once. It keeps one word, not the span [old put, new put): later words of the span are read from memory as before.
+    That covers FFA's single JUMP-back word; a title that reuses later words of the span before the walker's next pass
+    is not covered.
+  - The slot is dropped on a resync (gcm_fifo_resync_why), when a pass starts at another offset, by a newer keep
+    (counted as dropped), and by the runtime's own put stores, which do not go through the hook: the two ring
+    recycle paths and cellGcm_syscall_set_fifo.
+  - Counter line `[gcm-putsnap] <when>: hook=N kept=N used=N changed=N dropped=N (mode M)`: every
+    GCM_PUT_SNAP_STATS seconds of walker passes (default 30, 0 = exit only) and at exit (atexit). hook = guest put
+    stores seen, kept = words kept, used = kept words taken by the fetch, changed = of those, words memory no longer
+    held, dropped = kept words never used. `[gcm-putsnap] io=... now X, was Y when put moved off it` for the first 16
+    changed words and then every power of two. `[gcm-putsnap] armed: ...` once at cellGcmInit.
+  - Knobs: GCM_PUT_SNAP=0/off/false/no (hook not armed), =log (keep and compare, walk memory: the old behaviour, the
+    discriminator), default on. GCM_PUT_SNAP_LOG=<n> logs the first n kept words. Do not combine with
+    GCM_GET_EQ_PUT=1 (it publishes get = put, so the parked test always passes).
+Why this matches the console [read in code + src:rpcs3-rsxfifo; behaviour in a game: guess until run]: an idle RSX
+fetches that word within microseconds of the put move, and by then it is final (titles write commands before moving
+put). A walker that is behind is unchanged (nothing is kept), like a busy RSX. Not a timeout, skip or clamp: it
+restores the fetch order. Not the "cache the word when parking" idea game-side.md s.6 rejects (that copy would be taken
+before the title appends); this one is taken at the put store. "Both FFA put stores are covered whatever the pass
+timing" is a guess: it holds only if the overwrite of the slot lands after the restore store, and a writer off the
+0x006F6138 path (another thread, an SPU, the third injector) is not excluded.
+
+Tests (host, no game data):
+- port/rc/tests/run_gcm_put_snap_test.sh: test_gcm_put_snap.c (the real walker, FFA's frame-end inject played in
+  GCM_PUT_SNAP on / log / off; behind-walker case; set_fifo, resync and stale-pass drops; both ring recycle paths
+  dropping a pending keep; a std with put as its low word; the counters). The guest's put stores run the tree's own
+  vm_write32 / vm_write64 hook lines, extracted verbatim by port/rc/tests/put_hook_lines.py (which also checks they sit
+  after the OOB guard and before the store). test_put_store_route.py: the lifter template routes the put store out of
+  line and nothing else. Negative controls: the route test against the tree without this patch fails 24 of 307
+  checks; the extractor fails on a ppu_loader.cpp without it; removing either recycle path's gcm_put_snap_forget(),
+  vm_write64's low-word branch or its put-EA-0 guard, or moving vm_write32's hook after the store fails the test.
+Runs needed before merge (coordinator): re-lift + rebuild every title that is built (tools/lift.sh: tods, acit120,
+nexus101, ffa, a4o, qfb, dlhd, collection, collection_rc1, collection_rc2, collection_rc3; acit / nexus are the
+disc-1.00 lifts, not built), then FFA newgame (the fix) and the guards in work/coord/preplan-1123/ffa/plan.md s.5
+(G1-G5), each recording the counter line; FFA must show hook > 0, kept > 0.
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -220,6 +220,20 @@ static CellGcmControl s_control;
+  * running guest code when its title claims this address range. */
+ uint32_t ppu_hle_inject_base = 0x20000000u;
+ 
++/* R&C patch 7116: the guest's put store, seen before it lands (gcm_note_ppu_put, with the walker below). The lifted
++ * code's out-of-line vm_write32 / vm_write64 (runtime/ppu/ppu_loader.cpp) call g_gcm_put_hook when the EA is
++ * g_gcm_put_ea; the lifter's inline store path sends that one word there (ppu_mm.put, tools/ppu_lifter.py). Armed in
++ * cellGcmInit; 0 / NULL = not armed. Defined here, beside ppu_hle_inject_base, so a binary that links libgcm without the
++ * PPU loader (the walker tests) links as before. HLE stores to put (ppu_memory.h's inline vm_write32: the ring recycle,
++ * cellGcm_syscall_set_fifo) do not come through the hook; they drop the kept word instead. */
++uint32_t g_gcm_put_ea = 0;
++void (*g_gcm_put_hook)(uint32_t new_put) = 0;
++void gcm_note_ppu_put(u32 new_put);
++static int  gcm_put_snap_mode(void);
++static void gcm_put_snap_forget(void);
++static void gcm_put_snap_summary(const char* when);
++static void gcm_put_snap_at_exit(void);
++
+ static u16 s_io_address_table[65536];
+ static u16 s_ea_address_table[65536];
+ 
+@@ -609,6 +623,17 @@ s32 cellGcmInit(u32 cmdSize, u32 ioSize,
+       gcm_forget_spu_blocks();
+       g_spu_put_hook = gcm_note_spu_put; }
+ 
++    /* R&C patch 7116: hook the guest's put store (gcm_note_ppu_put). */
++    gcm_put_snap_forget();
++    if (gcm_put_snap_mode()) {
++        g_gcm_put_ea = GCM_CONTROL_GUEST_ADDR + 0;
++        g_gcm_put_hook = gcm_note_ppu_put;
++        static int once = 0;
++        if (!once) { once = 1; atexit(gcm_put_snap_at_exit);
++            fprintf(stderr, "[gcm-putsnap] armed: put EA 0x%08X, mode %s\n", g_gcm_put_ea,
++                    gcm_put_snap_mode() == 1 ? "on" : "log (keep and compare, walk memory)"); }
++    }
++
+     s_gcm_initialized = 1;
+     return CELL_OK;
+ }
+@@ -1009,6 +1034,101 @@ static unsigned long long gcm_park_grace
+ #define GCM_RECYCLE_MARGIN 0x20000u
+ static u32 gcm_ea2io(u32 ea);   /* defined with the wrap callback below */
+ static u32 s_fifo_getoff  = 0;
++
++/* R&C patch 7116: the word an idle RSX fetches when put moves off it.
++ *
++ * An RSX parked at get == put polls put and fetches the word at get within microseconds of the guest moving put
++ * (RPCS3: one dedicated puller thread, put re-read on every idle poll, the word copied into its fetch cache at once
++ * [src:rpcs3-rsxfifo], read for behaviour only). The walker here runs once per frame-thread pass, ~3-4 ms apart, and
++ * reads that word only at its next pass. A title that reuses the memory behind put right after moving put loses the
++ * word. Full Frontal Assault's frame end (0x006F6138) injects a copy block at GET (JUMP at GET, the JUMP-back
++ * 0x20000000 | GET at the block's end), sets put to the JUMP-back slot, waits get == put (0x0079C2F0), then sets put
++ * back to GET with no wait for the RSX to take the JUMP-back, restores the word at GET and later resets the per-frame
++ * scratch ring the block came from (read in the lifted code). The port's walker then found scratch data at IO
++ * 0x006080B8 (0x49FC9A00 ...), decoded it, hit "FIFO JUMP to unmapped" and resynced to put about once per flip
++ * (measured: ls-ffa-newgame-luamsg-1120-124120, ~1 flip per 6 s in phoenix_ph1). The same shape (put back to GET, no
++ * wait) is read in Into the Nexus 1.01 0x005F8AF8 / 0x0063D3F4, All 4 One 0x006DC25C and A Crack in Time 1.20
++ * 0x005F46F0; whether those run is not measured.
++ *
++ * What it does: when the guest stores put while the published get equals the old put (the walker is parked there,
++ * so the next word it fetches is the one at the old put), that ONE word is kept here, as the RSX would have fetched it
++ * then. By the push-buffer protocol it is final at that moment (titles write commands before they move put). The
++ * walker's next fetch at that offset takes the kept word once, so a later guest store to that memory does not change
++ * what the RSX already fetched (RPCS3 executes from its fetch cache the same way). Only the first word is kept, not the
++ * span [old put, new put): the rest is read from memory when the walker gets there, as before. That covers FFA's single
++ * JUMP-back word; a title that reuses later words of the span before the walker's next pass is not covered.
++ * When the walker is NOT parked at the old put nothing is kept, so a walker that is behind reads memory exactly as
++ * before (a busy RSX does too). One slot; a newer keep replaces an unused one (counted as dropped). The slot is
++ * dropped on a resync, when a pass starts at another offset, and by the runtime's own put stores (the ring recycle,
++ * cellGcm_syscall_set_fifo), which move the walker without the hook.
++ * GCM_PUT_SNAP=0 / off / false / no: off (hook not armed). GCM_PUT_SNAP=log: keep and compare, but walk the word in
++ * memory (the old behaviour), to show the race without changing it. Default: on. GCM_PUT_SNAP_LOG=<n>: log the first
++ * n kept words. GCM_PUT_SNAP_STATS=<s>: the counter line every s seconds of walker passes (default 30; 0 = at exit
++ * only). Do not combine with GCM_GET_EQ_PUT=1: it publishes get = put, so the parked test always passes.
++ * Counters ([gcm-putsnap] hook=... line): hook = guest put stores seen, kept = words kept, used = kept words taken by
++ * the walker's fetch, changed = of those, words memory no longer held, dropped = kept words never used. */
++static volatile uint64_t s_put_snap;   /* (io | 1) << 32 | word; 0 = empty. io is 4-aligned, so io|1 != 0 */
++static volatile long s_put_snap_hook, s_put_snap_taken, s_put_snap_used, s_put_snap_diff, s_put_snap_drop;
++static int gcm_put_snap_mode(void)
++{
++    static int m = -1;
++    if (m < 0) { const char* e = getenv("GCM_PUT_SNAP");
++                 if (!e || !*e) m = 1;
++                 else if (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false") || !strcmp(e, "no")) m = 0;
++                 else if (!strcmp(e, "log")) m = 2;
++                 else m = 1; }
++    return m;
++}
++static void gcm_put_snap_summary(const char* when)
++{
++    fprintf(stderr, "[gcm-putsnap] %s: hook=%ld kept=%ld used=%ld changed=%ld dropped=%ld (mode %s)\n", when,
++            __atomic_load_n(&s_put_snap_hook, __ATOMIC_RELAXED), __atomic_load_n(&s_put_snap_taken, __ATOMIC_RELAXED),
++            __atomic_load_n(&s_put_snap_used, __ATOMIC_RELAXED), __atomic_load_n(&s_put_snap_diff, __ATOMIC_RELAXED),
++            __atomic_load_n(&s_put_snap_drop, __ATOMIC_RELAXED),
++            gcm_put_snap_mode() == 1 ? "on" : gcm_put_snap_mode() == 2 ? "log" : "off");
++}
++static void gcm_put_snap_at_exit(void) { gcm_put_snap_summary("exit"); fflush(stderr); }
++void gcm_note_ppu_put(u32 new_put)   /* guest thread, from vm_write32 / vm_write64 before the store lands */
++{
++    __atomic_add_fetch(&s_put_snap_hook, 1, __ATOMIC_RELAXED);
++    const u32 old_put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0) & ~3u;
++    if (!gcm_put_snap_mode()) return;
++    if ((new_put & ~3u) == old_put) return;
++    if (vm_read32(GCM_CONTROL_GUEST_ADDR + 4) != old_put) return;   /* walker not parked at the old put */
++    const u32 ea = gcm_io2ea(old_put);
++    if (!ea) return;
++    const u32 w = vm_read32(ea);
++    /* seq_cst, and before the guest's put store: a walker that reads the new put (acquire) sees the slot. */
++    if (__atomic_exchange_n(&s_put_snap, ((uint64_t)(old_put | 1u) << 32) | w, __ATOMIC_SEQ_CST))
++        __atomic_add_fetch(&s_put_snap_drop, 1, __ATOMIC_RELAXED);
++    const long n = __atomic_add_fetch(&s_put_snap_taken, 1, __ATOMIC_RELAXED);
++    static int lg = -1;
++    if (lg < 0) { const char* e = getenv("GCM_PUT_SNAP_LOG"); lg = e ? atoi(e) : 0; }
++    if (n <= lg)
++        fprintf(stderr, "[gcm-putsnap] kept io=0x%08X w=0x%08X (put 0x%08X -> 0x%08X)\n", old_put, w, old_put, new_put);
++}
++/* Walker thread: the fetch at `io` read *w from memory; take the kept word if the slot is for this offset. */
++static void gcm_put_snap_fetch(u32 io, u32* w)
++{
++    uint64_t s = __atomic_load_n(&s_put_snap, __ATOMIC_ACQUIRE);
++    if (!s || (u32)(s >> 32) != (io | 1u)) return;
++    if (!__atomic_compare_exchange_n(&s_put_snap, &s, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return;
++    __atomic_add_fetch(&s_put_snap_used, 1, __ATOMIC_RELAXED);
++    const u32 kept = (u32)s;
++    if (kept == *w) return;
++    const long n = __atomic_add_fetch(&s_put_snap_diff, 1, __ATOMIC_RELAXED);
++    if (n <= 16 || (n & (n - 1)) == 0)   /* first 16, then every power of two: the count stays exact */
++        fprintf(stderr, "[gcm-putsnap] io=0x%08X now 0x%08X, was 0x%08X when put moved off it: %s "
++                "(changed #%ld; kept %ld used %ld dropped %ld)\n", io, *w, kept,
++                gcm_put_snap_mode() == 1 ? "walking the kept word" : "log only, walking memory",
++                n, s_put_snap_taken, s_put_snap_used, s_put_snap_drop);
++    if (gcm_put_snap_mode() == 1) *w = kept;
++}
++static void gcm_put_snap_forget(void)
++{
++    if (__atomic_exchange_n(&s_put_snap, 0, __ATOMIC_ACQ_REL))
++        __atomic_add_fetch(&s_put_snap_drop, 1, __ATOMIC_RELAXED);
++}
+ /* Backward JUMPs the walker has taken. The ring recycle waits for this to move:
+  * it is the walker following the JUMP-to-begin the recycle wrote, i.e. having
+  * consumed the whole tail. g_gcm_fifo_drained_ea == begin cannot say that on its
+@@ -1978,6 +2098,7 @@ static u32 gcm_spu_block_for_put(u32 put
+ static void gcm_fifo_resync_why(const char* why, u32* getoff, u32 put)
+ {
+     static int n = 0;
++    gcm_put_snap_forget();   /* R&C patch 7116: the walker leaves the parked offset */
+     if (PS3_LOG_FIRST(n, 8))
+         fprintf(stderr, "[cellGcmSys] FIFO resync (%s) 0x%08X -> put 0x%08X\n",
+                 why, *getoff, put);
+@@ -2984,6 +3105,16 @@ static void gcm_rsx_process_fifo_unlocke
+      * then runs off the end of the previous frame's bytes until it meets a
+      * word that is not a command, and parks there forever. */
+     atomic_thread_fence(memory_order_acquire);
++    /* R&C patch 7116: a kept word for an offset this pass does not start at is stale (the walker moved on); and the
++     * counter line every GCM_PUT_SNAP_STATS seconds while the hook is armed. */
++    { const uint64_t s = __atomic_load_n(&s_put_snap, __ATOMIC_ACQUIRE);
++      if (s && (u32)(s >> 32) != (s_fifo_getoff | 1u)) gcm_put_snap_forget();
++      static long every = -1; static unsigned long long t0 = 0;
++      if (every < 0) { const char* e = getenv("GCM_PUT_SNAP_STATS"); every = e ? atol(e) : 30; }
++      if (g_gcm_put_hook && every > 0) {
++          const unsigned long long now = ps3_ms_now();
++          if (!t0) t0 = now;
++          else if (now - t0 >= (unsigned long long)every * 1000u) { t0 = now; gcm_put_snap_summary("stats"); } } }
+     /* KZ3 patch 1009 diagnostic: both KZ3 contexts every 2 s. */
+     if (kz3_pt_on()) { static u32 last_tick = 0; u32 now = kz3_pt_ms();
+         if (now - last_tick >= 2000u) { last_tick = now; kz3_pt_ctx("tick"); } }
+@@ -3107,6 +3238,7 @@ static void gcm_rsx_process_fifo_unlocke
+             break;
+         }
+         u32 w = vm_read32(ea);
++        if (s_put_snap) gcm_put_snap_fetch(s_fifo_getoff, &w);   /* R&C patch 7116 */
+         /* Only remember offsets BELOW put -- those are positions in the
+          * ring the title is writing. A park in another region is where the
+          * walker gave up, not how far it got through the ring. */
+@@ -3900,6 +4032,7 @@ static void gcm_rsx_process_fifo_unlocke
+                 vm_write32(jmp_at, 0x20000000u | io_begin);   /* JUMP -> begin */
+                 vm_write32(ctx + 0x8, begin);                 /* current = begin */
+                 vm_write32(GCM_CONTROL_GUEST_ADDR + 0, io_begin);  /* put */
++                gcm_put_snap_forget();                             /* R&C patch 7116: put moved without the hook */
+                 s_fifo_getoff = io_begin;                          /* get */
+                 put = io_begin;
+                 /* Count it as the walker taking the JUMP to begin. The title's
+@@ -3984,6 +4117,7 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+          * word at `current` before the jump lands there. */
+         atomic_thread_fence(memory_order_release);
+         vm_write32(GCM_CONTROL_GUEST_ADDR + 0, io_begin);        /* put = begin */
++        gcm_put_snap_forget();                                   /* R&C patch 7116: put moved without the hook */
+     }
+ 
+     /* Wait (bounded ~2s) for the walker to consume the tail + take the jump so
+@@ -5737,6 +5871,7 @@ void cellGcm_syscall_iounmap(u32 io, u32
+  * from a stale offset through whatever the driver has since overwritten. */
+ void cellGcm_syscall_set_fifo(u32 put, u32 get)
+ {
++    gcm_put_snap_forget();   /* R&C patch 7116: the walker is moved; a kept word is for the old FIFO */
+     vm_write32(GCM_CONTROL_GUEST_ADDR + 0, put);
+     vm_write32(GCM_CONTROL_GUEST_ADDR + 4, get);
+     s_fifo_getoff  = get;
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2087,6 +2087,13 @@ extern "C" uint32_t g_barrier_sync_watch
+  * zeros when the watch is off. */
+ extern "C" uint32_t g_ww_lo = 0, g_ww_hi = 0;
+ 
++/* R&C patch 7116: the guest's store to the gcm control register's put. Defined and armed by libgcm
++ * (libs/video/cellGcmSys.c, cellGcmInit); g_gcm_put_hook NULL = not armed. The lifted inline store path sends a store
++ * to that word here (ppu_mm.put, tools/ppu_lifter.py), and vm_write32 / vm_write64 call the hook BEFORE the store
++ * lands, so the hook still reads the old put. Cost: one compare per out-of-line 32/64-bit store. */
++extern "C" uint32_t g_gcm_put_ea;
++extern "C" void (*g_gcm_put_hook)(uint32_t new_put);
++
+ extern "C" void ps3_ww_report_inline(uint32_t addr, uint64_t val, int width)
+ {
+     static int n = 0;
+@@ -2294,6 +2301,7 @@ void vm_write16(uint64_t a, uint16_t v)
+     v = __builtin_bswap16(v); VM_WRITE_COH(a, &v, 2); }
+ void vm_write32(uint64_t a, uint32_t v) { VM_WW((uint32_t)a, v, 4, __builtin_return_address(0));   /* patch 1080 */
+     if (vm_oob((uint32_t)a,4) || vm_null_store((uint32_t)a, v, 4, __builtin_return_address(0))) return;
++    if (__builtin_expect((uint32_t)a == g_gcm_put_ea, 0) && g_gcm_put_hook) g_gcm_put_hook(v);   /* R&C patch 7116 */
+ #ifdef _WIN32
+     /* PT restore: a full-word store of a valid pointer (high byte set) to a
+      * previously-truncated slot clears the record (that truncation was transient). */
+@@ -2314,6 +2322,11 @@ void vm_write64(uint64_t a, uint64_t v)
+     VM_WW((uint32_t)a,     (uint32_t)(v >> 32), 4, __builtin_return_address(0));   /* patch 1080 */
+     VM_WW((uint32_t)a + 4, (uint32_t)v,         4, __builtin_return_address(0));
+     if (vm_oob((uint32_t)a,8) || vm_null_store((uint32_t)a, (uint32_t)(v >> 32), 8, __builtin_return_address(0))) return;
++    /* R&C patch 7116: a std whose high (a == put) or low (a == put - 4) word is put. An unaligned overlap is not
++     * hooked (ASSUMPTION: no title moves put that way). */
++    if (__builtin_expect((uint32_t)a == g_gcm_put_ea, 0) && g_gcm_put_hook) g_gcm_put_hook((uint32_t)(v >> 32));
++    else if (__builtin_expect((uint32_t)a + 4u == g_gcm_put_ea, 0) && g_gcm_put_ea && g_gcm_put_hook)
++        g_gcm_put_hook((uint32_t)v);
+     v = __builtin_bswap64(v); VM_WRITE_COH(a, &v, 8); }
+ }
+ 
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -199,8 +199,17 @@ extern const unsigned char* g_spu_coh_bi
+  * mapping, and a span of 0 while a diagnostic is armed. An access then takes
+  * one compare. The range is the old checks' or narrower. The one address
+  * they also turned away, the gcm ref-poll word, is only special to vm_read32,
+- * so only the 32-bit load still tests it. */
+-typedef struct ppu_mm { uint8_t* vb; int64_t ld_span, st_span; uint32_t poll; } ppu_mm;
++ * so only the 32-bit load still tests it.
++ *
++ * R&C patch 7116: the store side has one such word too, the gcm control
++ * register's put (inject base + 0x2000). libgcm hooks the guest's put store in
++ * the out-of-line vm_write32 to see put move before the store lands
++ * (gcm_note_ppu_put, libs/video/cellGcmSys.c), so a 32-bit store there, and a
++ * 64-bit one whose 8 bytes overlap it, still go out of line. Every other store
++ * keeps the inline path; the guest's put stores are a few per frame. 8- and
++ * 16-bit stores and the raw (vector, byte-reversed, dcbz) forms are not turned
++ * away: ASSUMPTION, no title moves put with them (the stores read are stw). */
++typedef struct ppu_mm { uint8_t* vb; int64_t ld_span, st_span; uint32_t poll, put; } ppu_mm;
+ static inline ppu_mm ppu_mm_take(void)
+ {
+     const uint32_t hi = (ppu_vm_size != 0 && ppu_vm_size < 0xE0000000u) ? ppu_vm_size : 0xE0000000u;
+@@ -210,6 +219,7 @@ static inline ppu_mm ppu_mm_take(void)
+     m.ld_span = vm_inline_ok ? span : 0;
+     m.st_span = (vm_inline_ok && vm_inline_st_ok) ? span : 0;
+     m.poll = ppu_hle_inject_base + 0x2008u;   /* the gcm ref-poll word: vm_read32 */
++    m.put  = ppu_hle_inject_base + 0x2000u;   /* the gcm put word: vm_write32 / vm_write64 (R&C patch 7116) */
+     return m;
+ }
+ /* [ea, ea + n) inside [0x10000, 0x10000 + span). Below 0x10000 the 32-bit
+@@ -287,7 +297,7 @@ static inline void vm_write16_mm(const p
+ static inline void vm_write32_mm(const ppu_mm* m, uint64_t a, uint32_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (__builtin_expect(vm_mm_st_ok(m, ea, 4), 1)) {
++    if (__builtin_expect(vm_mm_st_ok(m, ea, 4), 1) && __builtin_expect(ea != m->put, 1)) {   /* put: R&C patch 7116 */
+         const uint32_t be = __builtin_bswap32(v);
+         if (!(ea & 3u)) __atomic_store_n((uint32_t*)(m->vb + ea), be, __ATOMIC_RELAXED);
+         else memcpy(m->vb + ea, &be, 4);
+@@ -297,7 +307,8 @@ static inline void vm_write32_mm(const p
+ static inline void vm_write64_mm(const ppu_mm* m, uint64_t a, uint64_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (__builtin_expect(vm_mm_st_ok(m, ea, 8), 1)) {
++    /* [ea, ea + 8) overlaps the put word [put, put + 4) iff put - 7 <= ea <= put + 3 (R&C patch 7116). */
++    if (__builtin_expect(vm_mm_st_ok(m, ea, 8), 1) && __builtin_expect((uint32_t)(ea - m->put + 7u) > 10u, 1)) {
+         const uint64_t be = __builtin_bswap64(v);
+         if (!(ea & 7u)) __atomic_store_n((uint64_t*)(m->vb + ea), be, __ATOMIC_RELAXED);
+         else memcpy(m->vb + ea, &be, 8);

@@ -6,6 +6,7 @@ shared / per-game display and control settings files (get-settings, set-setting)
 """
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -53,8 +54,10 @@ def wr(path, data=b""):
         f.write(data)
 
 
-def disc(root, name, tid, ver="01.00", art=True):
+def disc(root, name, tid, ver="01.00", art=True, complete=True):
     d = os.path.join(root, name)
+    if complete:                # a real disc folder: PS3_GAME/USRDIR/EBOOT.BIN (a PARAM.SFO alone is incomplete)
+        wr(os.path.join(d, "PS3_GAME", "USRDIR", "EBOOT.BIN"), b"SCE")
     wr(os.path.join(d, "PS3_GAME", "PARAM.SFO"), sfo(TITLE_ID=tid, APP_VER=ver, VERSION="01.00", CATEGORY="DG", TITLE="x"))
     if art:
         wr(os.path.join(d, "PS3_GAME", "ICON0.PNG"), b"p")
@@ -62,9 +65,20 @@ def disc(root, name, tid, ver="01.00", art=True):
     return d
 
 
-def psn(root, name, tid, ver="01.00"):
+def psn(root, name, tid, ver="01.00", complete=True):
     d = os.path.join(root, name)
+    if complete:
+        wr(os.path.join(d, "USRDIR", "EBOOT.BIN"), b"SCE")
     wr(os.path.join(d, "PARAM.SFO"), sfo(TITLE_ID=tid, APP_VER=ver, VERSION="01.00", CATEGORY="HG", TITLE="x"))
+    return d
+
+
+def upd_folder(root, name, tid, ver="01.00", complete=True):
+    """An installed title update the way RPCS3 keeps it: <...>/game/<TITLE_ID> (the only layout the port layers)."""
+    d = os.path.join(root, name, "game", tid)
+    wr(os.path.join(d, "PARAM.SFO"), sfo(TITLE_ID=tid, APP_VER=ver, VERSION=ver, CATEGORY="GD", TITLE="x"))
+    if complete:
+        wr(os.path.join(d, "USRDIR", "EBOOT.BIN"), b"SCE")
     return d
 
 
@@ -274,9 +288,9 @@ def run(tmp):
     disc(lib, "acit_disc", "BCUS98124", "01.00")
     elf(os.path.join(lib, "acit_disc", "EBOOT.elf"))
     disc(lib, "nexus_disc", "BCUS99245", "01.00")
-    psn(lib, "ffa_psn", "NPUA80642", "01.00")
+    disc(lib, "ffa_disc", "BCUS98380", "01.00")
     disc(lib, "col_disc", "BCUS98282", "01.00")
-    psn(lib, "qfb_psn", "NPUA80145")
+    disc(lib, "qfb_disc", "BCES00301")          # QfB's digital NPUA80145 is "not yet supported" (run_digital)
     res = catalog.scan([lib])
     t = by_id(res, "tods")
     check(t["state"] == "ready_to_build" and t["title_id"] == "BCUS98127" and t["files"]["eboot"].endswith("EBOOT.elf"), "state: ToD ready_to_build")
@@ -287,32 +301,84 @@ def run(tmp):
     check(by_id(res, "nexus")["state"] == "wrong_version" and by_id(res, "ffa")["state"] == "wrong_version", "state: Nexus and FFA wrong_version (unsupported but update missing)")
     # 2026-11-10: catalogue "builds" (QfB, the Collection's games) offers Build although not "supported"; without an EBOOT
     # they need attention like a supported game
-    check(by_id(res, "qfb")["state"] == "needs_attention" and by_id(res, "qfb")["reason"] == "EBOOT.elf missing", "state: QfB (PSN folder, builds) needs its EBOOT")
+    check(by_id(res, "qfb")["state"] == "needs_attention" and by_id(res, "qfb")["reason"] == "EBOOT.elf missing", "state: QfB (disc folder, builds) needs its EBOOT")
     col = by_id(res, "collection")
     check(col["state"] == "needs_attention" and [c["state"] for c in col["children"]] == ["needs_attention"] * 3, "Collection: disc found, no EBOOTs -> parent and children needs_attention")
-    elf(os.path.join(lib, "qfb_psn", "USRDIR", "EBOOT.elf"))
+    elf(os.path.join(lib, "qfb_disc", "EBOOT.elf"))
     check(by_id(catalog.scan([lib]), "qfb")["state"] == "ready_to_build", "state: QfB with its EBOOT ready_to_build (builds, not supported)")
-    os.remove(os.path.join(lib, "qfb_psn", "USRDIR", "EBOOT.elf"))
+    os.remove(os.path.join(lib, "qfb_disc", "EBOOT.elf"))
     nb = [g["id"] for e in catalog.load()["games"] for g in [e] + e.get("children", []) if not g.get("builds")]
     check(nb == ["collection"], "catalogue: builds = every game but the Collection launcher")
     check(by_id(res, "a4o")["state"] == "not_added" and by_id(res, "dlhd")["state"] == "not_added", "partial set: others not_added")
 
+    # recognised but untested releases (catalogue "untested_title_ids"): known, never offered for Build
+    check(catalog.validate_untested_ids(catalog.load()) == [], "untested ids: the catalogue's field is valid")
+    bad = {"games": [{"id": "x", "title_ids": {"disc": {"US": ["BCUS00001"]}, "digital": {}},
+                      "untested_title_ids": {"disc": {"US": ["BCUS00001", "nope"]}, "digital": {}, "x": {}}},
+                     {"id": "y", "title_ids": {"disc": {}, "digital": {}},
+                      "untested_title_ids": {"disc": {"US": ["BCUS00002", "BCUS00002", "BCUS00001"]}, "digital": {}}}]}
+    pr = " | ".join(catalog.validate_untested_ids(bad))
+    check("must map disc/digital" in pr and "listed twice" in pr and "tested ID of x" in pr, "untested ids: bad shape, bad id, duplicate, tested elsewhere are refused")
+    ut = os.path.join(tmp, "untested")
+    disc(ut, "tods_asia", "BCAS20023", "01.00")
+    elf(os.path.join(ut, "tods_asia", "EBOOT.elf"))
+    disc(ut, "col_eu", "BCES01503", "01.00")
+    psn(ut, "rc2_psn", "NPUA80644")
+    psn(ut, "dl_eu", "NPEA00423")
+    ures = catalog.scan([ut])
+    t = by_id(ures, "tods")
+    check(t["state"] == "not_ported" and t["title_id"] == "BCAS20023" and t["untested"] and t["reason"].startswith("Recognised, not tested")
+          and "BCAS20023" in t["reason"], "untested: a recognised ToD release is known, not ported, with a plain reason")
+    check(by_id(ures, "dlhd")["state"] == "not_ported" and by_id(ures, "dlhd")["untested"], "untested: Deadlocked HD digital EU recognised")
+    col = by_id(ures, "collection")
+    check(col["state"] == "not_ported" and col.get("untested") and col["reason"].startswith("Recognised, not tested")
+          and [c["state"] for c in col["children"]] == ["not_ported"] * 3, "untested: Collection EU disc recognised for all three games")
+    disc(ut, "rc2_only", "NPUA80644", "01.00")
+    check(catalog.untested_reason(by_id(catalog.load()["games"], "collection")["children"][1], "NPUA80644")
+          and not catalog.untested_reason(by_id(catalog.load()["games"], "collection")["children"][0], "NPUA80644")
+          and not catalog.untested_reason(by_id(catalog.load()["games"], "tods"), "BCUS98127"),
+          "untested: RC2's standalone digital ID belongs to RC2 only; a tested ID has no untested reason")
+    check(by_id(res, "tods")["state"] == "ready_to_build" and not by_id(res, "tods").get("untested"),
+          "untested: a tested release is unaffected")
+
+    # the player text never offers a PKG as the update (it is refused)
+    cat = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "titles", "catalog.json")))
+    whats = []
+    def walk(o):
+        if isinstance(o, dict):
+            if "what" in o:
+                whats.append(o["what"])
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(cat)
+    upd_whats = [w for w in whats if "update" in w]
+    check(upd_whats and not any("PKG" in w for w in upd_whats), "catalog.json: no update 'what' names a PKG as usable")
     # update PKG fixes ACiT; installed update folder too
     pkg(os.path.join(lib, "upd", "UP9000-BCUS98124_00-ACRACKINTIME0000-A0120-V0101-PE.pkg"), "UP9000-BCUS98124_00-ACRACKINTIME0000")
     a = by_id(catalog.scan([lib]), "acit")
-    check(a["state"] == "ready_to_build" and a["files"]["update"].endswith(".pkg"), "state: update PKG satisfies ACiT")
+    check(a["state"] == "needs_attention" and a["files"]["update"].endswith(".pkg") and "PKG" in a["reason"]
+          and "installed update folder" in a["reason"], "state: an update PKG cannot be layered -> needs_attention with a reason")
     os.remove(os.path.join(lib, "upd", os.listdir(os.path.join(lib, "upd"))[0]))
-    psn(lib, "acit_patch", "BCUS98124", "01.20")
+    upd_folder(lib, "acit_patch", "BCUS98124", "01.20")
     a = by_id(catalog.scan([lib]), "acit")
-    check(a["state"] == "ready_to_build" and a["files"]["update"].endswith("acit_patch"), "state: installed update folder satisfies ACiT")
+    check(a["state"] == "ready_to_build" and a["files"]["update"].endswith(os.path.join("game", "BCUS98124")), "state: installed update folder satisfies ACiT")
+    # a complete older update beats an incomplete newer one
+    upd_folder(lib, "acit_new", "BCUS98124", "01.30", complete=False)
+    a = by_id(catalog.scan([lib]), "acit")
+    check(a["files"]["update"].endswith(os.path.join("acit_patch", "game", "BCUS98124")), "pick: a complete update beats an incomplete newer one")
+    shutil.rmtree(os.path.join(lib, "acit_new"))
     pkg(os.path.join(lib, "upd", "mystery.pkg"), "UP9000-BCUS98124_00-ACRACKINTIME0000")
     shutil.rmtree(os.path.join(lib, "acit_patch"))
-    check(by_id(catalog.scan([lib]), "acit")["state"] == "wrong_version", "state: PKG of unknown version does not satisfy")
+    a = by_id(catalog.scan([lib]), "acit")
+    check(a["state"] == "needs_attention" and "PKG" in a["reason"], "state: a PKG of unknown version is refused as a PKG")
     os.remove(os.path.join(lib, "upd", "mystery.pkg"))
 
     # EBOOT missing -> needs_attention
     os.remove(os.path.join(lib, "acit_disc", "EBOOT.elf"))
-    psn(lib, "acit_patch", "BCUS98124", "01.20")
+    upd_folder(lib, "acit_patch", "BCUS98124", "01.20")
     a = by_id(catalog.scan([lib]), "acit")
     check(a["state"] == "needs_attention" and a["reason"] == "EBOOT.elf missing", "state: EBOOT.elf missing -> needs_attention")
     # wrong machine / not an elf are ignored
@@ -427,9 +493,11 @@ def run(tmp):
     run_rpcs3(tmp)
     run_locations(tmp)
     run_eboot(tmp)
+    run_digital(tmp)
     run_settings(tmp)
     run_online(tmp)
     run_phase4_scan(tmp)
+    run_unofficial(tmp)
 
 
 # ------------------------------------------------------------------------------------------------- RPCS3 source
@@ -637,8 +705,7 @@ def run_locations(tmp):
     tc = disc(chosen, "tods_mine", "BCUS98127", "01.00", art=False)
     ac = disc(found, "acit_found", "BCUS98124", "01.00")
     elf(os.path.join(ac, "EBOOT.elf"))
-    upd = pkg(os.path.join(found, "upd", "UP9000-BCUS98124_00-ACRACKINTIME0000-A0120-V0101-PE.pkg"),
-              "UP9000-BCUS98124_00-ACRACKINTIME0000")
+    upd = upd_folder(found, "upd", "BCUS98124", "01.20")
     base = catalog.scan([found])
     check(by_id(base, "tods")["state"] == "ready_to_build" and by_id(base, "acit")["state"] == "ready_to_build",
           "locations: fixture library is ready without overrides")
@@ -675,10 +742,10 @@ def run_locations(tmp):
     r = guard(lambda: by_id(catalog.scan([found], with_ov(base, "acit", update=old_upd)), "acit"))
     check(r and r["state"] == "needs_attention" and r["reason"] == "The update you chose is 01.10; 01.20 is needed"
           and r["suggested"] == {"update": upd}, "override: update of the wrong version refused, found update suggested")
-    new_upd = psn(root, "upd_mine", "BCUS98124", "01.20")
+    new_upd = upd_folder(root, "upd_mine", "BCUS98124", "01.20")
     r = guard(lambda: by_id(catalog.scan([found], with_ov(base, "acit", update=new_upd)), "acit"))
     check(r and r["state"] == "ready_to_build" and r["files"]["update"] == new_upd and r["sources"]["update"] == "override",
-          "override: a good update folder wins over the found PKG")
+          "override: a good update folder wins over the found one")
     r = guard(lambda: by_id(catalog.scan([found], with_ov(base, "acit", update=ac)), "acit"))
     check(r and r["state"] == "needs_attention" and "update" in r["reason"], "override: a disc given as the update is refused")
     other_upd = pkg(os.path.join(root, "o", "UP9000-BCUS98127_00-X-A0100-V0101-PE.pkg"), "UP9000-BCUS98127_00-X")
@@ -1011,7 +1078,7 @@ def run_eboot(tmp):
     # --- scan: the check runs before the first build and sets the state
     lib = os.path.join(root, "scan")
     disc(lib, "A disc", "BCUS00001")
-    psn(lib, "A upd", "BCUS00001", "01.20")
+    upd_folder(lib, "A upd", "BCUS00001", "01.20")
     eb = os.path.join(lib, "aaa", "EBOOT.elf")
 
     def place(src):
@@ -1054,6 +1121,117 @@ def run_eboot(tmp):
     check(rc == 1 and json.loads(o)["tag"] == "Encrypted", "CLI: check-eboot on an encrypted file (Collection child) -> exit 1, JSON")
     rc, _, e = cli("check-eboot", "--game", "nosuch", unk)
     check(rc == 2 and "nosuch" in e, "CLI: check-eboot with an unknown game -> exit 2")
+
+
+def run_digital(tmp):
+    """disc + update and digital records side by side in check_eboot; a digital game with its update installed
+    over it in the same dev_hdd0/game/<NP ID> folder (HG or GD PARAM.SFO); stage 0 labels. Synthetic files only."""
+    sha = catalog._sha256
+    root = os.path.join(tmp, "dig")
+
+    def mk(name, n):
+        return elf64(os.path.join(root, "lib", name), [(0x10000, bytes([n]) * 512, 512)])
+    d_disc, d_upd, d_np_old, wrong = mk("disc.elf", 11), mk("upd.elf", 12), mk("np100.elf", 13), mk("other.elf", 14)
+
+    def rec(tid, reg, ver, media, f, status="tested"):
+        return {"title_id": tid, "region": reg, "app_ver": ver, "size": os.path.getsize(f), "sha256": sha(f),
+                "status": status, "self_sha256": "", "segment_sha256": catalog.segment_sha256(f), "media": media,
+                "file": "EBOOT.BIN", "disc_version": None}
+    # game D: disc BCUS00009 + update 01.03, digital NPUA00009 (update 01.03 installs over it in the same folder);
+    # the digital patched program is the update's program (same bytes), as Stage 1 expects for an alias record
+    D = {"id": "ddd", "title": "Game D", "year": 2000, "order": 1, "readme_state": "x", "supported": True,
+         "title_ids": {"disc": {"US": ["BCUS00009"]}, "digital": {"US": ["NPUA00009"], "EU": ["NPEA00009"]}},
+         "update": {"version": "01.03", "title_ids": ["BCUS00009", "NPUA00009", "NPEA00009"]}, "exe": "ddd.exe",
+         "estimate": None, "igdb": {"game": None, "cover": None, "artwork": None}, "children": [], "build_title": "ddd",
+         "eboots": [rec("BCUS00009", "US", "01.00", "disc", d_disc), rec("BCUS00009", "US", "01.03", "update", d_upd),
+                    rec("NPUA00009", "US", "01.03", "digital-patched", d_upd),
+                    rec("NPUA00009", "US", "01.00", "digital", d_np_old, status="untested")]}
+    cat = {"schema": 1, "port_version": "0.0.1", "games": [D]}
+    known = catalog.eboot_index(cat)
+
+    # 1. check_eboot: both routes pass with the same program, each named by its own record
+    r = catalog.check_eboot(D, d_upd, known, "NPUA00009")
+    check(r["level"] == "ok" and r["tag"] == "Known build" and r["match"]["media"] == "digital-patched"
+          and "PSN game NPUA00009 with update 01.03" in r["message"],
+          "digital: the patched digital EBOOT passes, matched on the record of the player's title ID")
+    r = catalog.check_eboot(D, d_upd, known, "BCUS00009")
+    check(r["level"] == "ok" and r["match"]["media"] == "update" and "update 01.03 (BCUS00009)" in r["message"],
+          "digital: the same program with disc files still matches the disc + update record")
+    r = catalog.check_eboot(D, d_np_old, known, "NPUA00009")
+    check(r["level"] == "fail" and r["tag"] == "Wrong version" and "from the PSN game" in r["message"]
+          and "update 01.03" in r["message"], "digital: the unpatched digital EBOOT (01.00) -> wrong version")
+    r = catalog.check_eboot(D, d_disc, known, "NPUA00009")
+    check(r["level"] == "fail" and r["tag"] == "Wrong version" and "from the disc" in r["message"],
+          "digital: the disc EBOOT with digital files -> still wrong version")
+    r = catalog.check_eboot(D, wrong, known, "NPUA00009")
+    check(r["level"] == "warn" and r["tag"] == "Unknown build", "digital: negative control, a wrong EBOOT is not accepted as known")
+    r = catalog.check_eboot(D, wr_ret(os.path.join(root, "lib", "t.elf"), b"text"), known, "NPUA00009")
+    check(r["level"] == "fail", "digital: negative control, a non-program file is refused")
+    nover = dict(D, eboots=[dict(D["eboots"][2], app_ver=None)])
+    r = catalog.check_eboot(nover, d_upd, catalog.eboot_index({"games": [nover]}), "NPUA00009")
+    check(r["level"] == "fail" and r["tag"] == "Wrong version", "digital: a digital record without a version cannot pass the update rule")
+
+    # 2. RPCS3 layout: the update installed over the digital game in dev_hdd0/game/<NP ID>; PARAM.SFO HG or GD
+    for cat_ in ("HG", "GD"):
+        r3 = os.path.join(root, "rpcs3_" + cat_)
+        g = hdd_game(r3, "NPUA00009", cat_, "01.03")
+        wr(os.path.join(g, "USRDIR", "EBOOT.elf"), open(d_upd, "rb").read())
+        wr(os.path.join(r3, "config", "games.yml"), b"")
+        items = catalog.scan_rpcs3(r3, cat)["items"]
+        kinds = sorted((i["kind"], i["title_id"], i["version"]) for i in items if i["kind"] != "eboot")
+        check(kinds == [("psn", "NPUA00009", "01.03")], f"digital: {cat_} game+update folder is one PSN game at 01.03 {kinds}")
+        x = by_id(catalog.scan([], rpcs3=[r3], catalog=cat), "ddd")
+        check(x["state"] == "ready_to_build" and x["title_id"] == "NPUA00009" and x["files"]["disc"] == g
+              and x["files"]["update"] is None and x["eboot_check"]["match"]["media"] == "digital-patched",
+              f"digital: {cat_} updated digital game -> ready to build with its record ({x['state']}: {x['reason']})")
+        # the same layout in a plain library folder (a copy of RPCS3's game/<ID>)
+        x = by_id(catalog.scan([os.path.join(r3, "dev_hdd0")], catalog=cat), "ddd")
+        check(x["state"] == "ready_to_build" and x["title_id"] == "NPUA00009",
+              f"digital: {cat_} updated digital game in a library folder -> ready to build ({x['reason']})")
+    r3 = os.path.join(root, "rpcs3_old")
+    hdd_game(r3, "NPUA00009", "HG", "01.00")
+    x = by_id(catalog.scan([], rpcs3=[r3], catalog=cat), "ddd")
+    check(x["state"] == "wrong_version" and x["reason"].startswith("Needs update 01.03"),
+          "digital: digital game without its update -> Needs update")
+    r3 = os.path.join(root, "rpcs3_bc")                 # a disc game's GD folder stays its update, never a base
+    hdd_game(r3, "BCUS00009", "GD", "01.03")
+    kinds = [(i["kind"], i["title_id"]) for i in catalog.scan_rpcs3(r3, cat)["items"] if i["kind"] != "eboot"]
+    check(kinds == [("update_folder", "BCUS00009")], "digital: a disc game's GD folder is still only its update")
+
+    # 3. stage 0: a digital copy without a record is found and labelled, no Build; the disc wins when both are there
+    r3 = os.path.join(root, "rpcs3_eu")
+    hdd_game(r3, "NPEA00009", "HG", "01.03", elf_too=True)
+    x = by_id(catalog.scan([], rpcs3=[r3], catalog=cat), "ddd")
+    check(x["state"] == "not_ported" and x.get("digital") and x["title_id"] == "NPEA00009"
+          and x["reason"].startswith("Digital copy (NPEA00009): not yet supported.") and "disc with update 01.03" in x["reason"],
+          "digital: a digital copy without a record -> not yet supported, with the reason (%s)" % x["reason"])
+    lib = os.path.join(root, "both")
+    disc(lib, "d disc", "BCUS00009")
+    upd_folder(lib, "d upd", "BCUS00009", "01.03")
+    wr(os.path.join(lib, "d disc", "EBOOT.elf"), open(d_upd, "rb").read())
+    x = by_id(catalog.scan([lib], rpcs3=[r3], catalog=cat), "ddd")
+    check(x["state"] == "ready_to_build" and x["title_id"] == "BCUS00009", "digital: disc + update preferred over an unsupported digital copy")
+    real = catalog.load()
+    rl = os.path.join(root, "real")
+    psn(rl, "ffa", "NPUA80642", "01.05")
+    psn(rl, "qfb", "NPUA80145")
+    psn(rl, "dlhd", "NPUA80646")
+    res = catalog.scan([rl], catalog=real)
+    f, q, d = by_id(res, "ffa"), by_id(res, "qfb"), by_id(res, "dlhd")
+    check(f["state"] == "not_ported" and f["reason"].startswith("Digital copy (NPUA80642): not yet supported. Use the disc "
+                                                              "with update 01.05 for now"),
+          "stage 0: FFA digital found and labelled not yet supported")
+    check(q["state"] == "not_ported" and "Use the disc for now" in q["reason"], "stage 0: QfB digital (no update) says the disc")
+    check(d["state"] != "not_ported" or not d.get("digital"), "stage 0: Deadlocked HD (a digital record exists) is not relabelled")
+    check(catalog.digital_reason(by_id(real["games"], "a4o"), "BCUS98175") is None
+          and catalog.digital_reason(by_id(real["games"], "dlhd"), "NPUA80646") is None
+          and catalog.digital_reason(by_id(real["games"], "nexus"), "NPUA80908"),
+          "stage 0: digital_reason only for an NP ID without a record")
+    pk = pkg(os.path.join(root, "pkgs", "UP0001-NPUA80642_00-FFA0000000000000-A0100-V0100-PE.pkg"),
+             "UP0001-NPUA80642_00-FFA0000000000000", 5)
+    x = by_id(catalog.scan([os.path.dirname(pk)], catalog=real), "ffa")
+    check(x["state"] == "needs_attention" and "Install your digital copy in RPCS3 first" in x["reason"]
+          and "decrypt" not in x["reason"].lower(), "stage 0: a game package found -> install it in RPCS3 first")
 
 
 def run_settings(tmp):
@@ -1339,6 +1517,116 @@ def run_phase4_scan(tmp):
     check((a.get("update_check") or {}).get("tag") == "Newer than tested" and "01.04" in a["update_check"]["message"]
           and a["files"].get("update", "").endswith("BCUS98175"),
           "an installed update newer than the tested one is used, with a warning")
+
+
+def run_unofficial(tmp):
+    """ENHANCEMENT: the opt-in "Unofficial (other projects)" entries: off = library.json as before; on = the two known
+    entries; pick / clear an exe; the play command line (Windows form; the Linux form is in test_proton)."""
+    import io
+    import contextlib
+    root = os.path.join(tmp, "unoff")
+    os.makedirs(root)
+    lf = os.path.join(root, "library.json")
+
+    def cli(*args):
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = catalog.main(list(args))
+        except SystemExit as e:
+            rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    known = catalog.unofficial_known()
+    check([k["id"] for k in known] == ["unofficial-tods", "unofficial-nexus", "unofficial-acit"]
+          and [k["exe_name"] for k in known] == ["tod.exe", "NexusRecomp.exe", "RaCACiT Launcher.exe"]
+          and all(k["url"].startswith("https://github.com/") and k["licence"] and k["project"] for k in known),
+          "unofficial: data file lists the three known entries with project, url, licence and exe name")
+    check(all(re.fullmatch(r"[a-z0-9_-]{1,31}", k["id"]) for k in known), "unofficial: ids are valid game ids for proton.py")
+    rc, _, _ = cli("scan", "--library", lf, "--find-rpcs3")
+    base = open(lf, "rb").read()
+    lib = catalog.read_library(lf)
+    check(rc == 0 and "unofficial" not in lib and "unofficial_exes" not in lib, "unofficial: option off -> no entries in library.json")
+    cli("set-pref", "--library", lf, "theme", "dark")
+    cli("set-pref", "--library", lf, "theme", "--reset")
+    check(catalog.read_library(lf).get("games") == lib["games"] and "unofficial" not in catalog.read_library(lf),
+          "unofficial: other prefs do not add entries")
+    rc, _, e = cli("set-pref", "--library", lf, "unofficial", "maybe")
+    check(rc == 2 and "off, on" in e, "unofficial: set-pref accepts only on / off")
+    rc, o, _ = cli("set-pref", "--library", lf, "unofficial", "on")
+    lib = catalog.read_library(lf)
+    u = {x["id"]: x for x in lib.get("unofficial", [])}
+    check(rc == 0 and list(u) == ["unofficial-tods", "unofficial-nexus", "unofficial-acit"] and all(x["state"] == "not_set_up" and x["exe"] is None
+          and x["reason"] == "Not set up: choose the game's .exe" and x["unofficial"] for x in u.values())
+          and [g["id"] for g in lib["games"]] == [g["id"] for g in catalog.read_library(lf)["games"]],
+          "unofficial: option on -> the three entries, 'not set up: choose the game's .exe', our games untouched")
+    rc, _, _ = cli("scan", "--library", lf, "--find-rpcs3")
+    check(rc == 0 and len(catalog.read_library(lf).get("unofficial", [])) == 3 and catalog.read_library(lf)["prefs"] == {"unofficial": "on"},
+          "unofficial: a rescan keeps the pref and the entries")
+    # pick
+    tod = wr_ret(os.path.join(root, "theirs", "tod-recomp-1.3.0", "tod.exe"), b"MZ")
+    other = wr_ret(os.path.join(root, "theirs", "nexus", "Other.exe"), b"MZ")
+    txt = wr_ret(os.path.join(root, "theirs", "readme.txt"), b"x")
+    before = open(lf, "rb").read()
+    r1 = cli("unofficial-set", "--library", lf, "--game", "nosuch", tod)
+    r2 = cli("unofficial-set", "--library", lf, "--game", "unofficial-tods", os.path.join(root, "nope.exe"))
+    r3 = cli("unofficial-set", "--library", lf, "--game", "unofficial-tods", txt)
+    r4 = cli("unofficial-set", "--library", lf, "--game", "unofficial-tods", os.path.join(root, "theirs"))
+    check(r1[0] == 2 and r2[0] == 2 and r3[0] == 2 and r4[0] == 2 and ".exe" in r3[2] and open(lf, "rb").read() == before,
+          "unofficial: unknown id, missing file, non-.exe and a folder are refused, library.json untouched")
+    rc, o, _ = cli("unofficial-set", "--library", lf, "--game", "unofficial-tods", tod)
+    lib = catalog.read_library(lf)
+    t = [x for x in lib["unofficial"] if x["id"] == "unofficial-tods"][0]
+    check(rc == 0 and "WARN" not in o and t["state"] == "ready" and t["exe"] == tod and not t["warning"]
+          and lib["unofficial_exes"] == {"unofficial-tods": tod}, "unofficial: picking tod.exe makes the card ready, no name warning")
+    rc, o, _ = cli("unofficial-set", "--library", lf, "--game", "unofficial-nexus", other)
+    n = [x for x in catalog.read_library(lf)["unofficial"] if x["id"] == "unofficial-nexus"][0]
+    check(rc == 0 and o.startswith("WARN") and "NexusRecomp.exe" in n["warning"] and n["state"] == "ready",
+          "unofficial: a name that differs from the README's is a warning, still allowed")
+    cli("scan", "--library", lf, "--find-rpcs3")
+    check(catalog.read_library(lf)["unofficial_exes"].get("unofficial-tods") == tod, "unofficial: a rescan keeps the chosen exe")
+    # play (Windows form)
+    argv, env, cwd = catalog.play_command(catalog.read_library(lf), "unofficial-tods")
+    check(argv == [tod] and env == {} and cwd == os.path.dirname(tod), "unofficial: play command = the exe alone, its own folder, no env")
+    out = io.StringIO()
+    rc = catalog.run_play(lf, "unofficial-tods", out=out, dry_run=True)
+    d = json.loads(out.getvalue())
+    check(rc == 0 and d == {"argv": [tod], "env": {}, "cwd": os.path.dirname(tod)}, "unofficial: play --dry-run prints that command line")
+    # the engine never writes in their folder
+    snap = sorted(os.listdir(os.path.dirname(tod)))
+    catalog.run_play(lf, "unofficial-tods", out=io.StringIO(), dry_run=True)
+    check(sorted(os.listdir(os.path.dirname(tod))) == snap, "unofficial: nothing is written into the other project's folder")
+    # missing file
+    os.remove(other)
+    cli("scan", "--library", lf, "--find-rpcs3")
+    n = [x for x in catalog.read_library(lf)["unofficial"] if x["id"] == "unofficial-nexus"][0]
+    try:
+        catalog.play_command(catalog.read_library(lf), "unofficial-nexus")
+        check(False, "unofficial: a removed exe cannot be played")
+    except ValueError as ex:
+        check(n["state"] == "missing" and ".exe" in str(ex), "unofficial: a removed exe shows as missing and cannot be played")
+    # clear
+    rc, _, _ = cli("unofficial-clear", "--library", lf, "--game", "unofficial-tods")
+    lib = catalog.read_library(lf)
+    t = [x for x in lib["unofficial"] if x["id"] == "unofficial-tods"][0]
+    check(rc == 0 and t["state"] == "not_set_up" and t["exe"] is None and "unofficial-tods" not in lib["unofficial_exes"],
+          "unofficial: clearing forgets the path (the file itself is never touched)")
+    check(os.path.isfile(tod), "unofficial: clearing leaves their file alone")
+    check(cli("unofficial-clear", "--library", lf, "--game", "nosuch")[0] == 2, "unofficial: clear of an unknown id -> exit 2")
+    # off again: entries gone, own games as before, chosen paths remembered
+    rc, _, _ = cli("set-pref", "--library", lf, "unofficial", "off")
+    lib = catalog.read_library(lf)
+    check(rc == 0 and "unofficial" not in lib and lib["prefs"] == {"unofficial": "off"}, "unofficial: switching off removes the entries again")
+    try:
+        catalog.play_command(lib, "unofficial-tods")
+        check(False, "unofficial: option off -> not playable by id")
+    except ValueError as ex:
+        check("Unknown game id" in str(ex), "unofficial: option off -> an unofficial id is unknown to play")
+    # our own cards: the same games list with the option on or off
+    cli("set-pref", "--library", lf, "unofficial", "--reset")
+    cli("unofficial-clear", "--library", lf, "--game", "unofficial-nexus")
+    check(json.loads(json.dumps(catalog.read_library(lf)["games"])) == json.loads(base)["games"]
+          and set(catalog.read_library(lf)) == set(json.loads(base)), "unofficial: after reset, library.json has the same keys and games as before")
 
 
 def wr_ret(path, data):

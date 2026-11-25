@@ -163,6 +163,10 @@ struct App {
     int sel = 0;
     bool addOpen = false, addJustOpened = false;
     char discBuf[512] = "", updBuf[512] = "", buildBuf[512] = "";
+    // Add drawer: the paths the engine holds now (what the drawer opened with, or last applied); a different path in the
+    // box is only a draft until "Use these files" has handed it to the engine (override), one slot at a time.
+    std::string addDisc0, addUpd0, addGame;
+    std::vector<std::pair<std::string, std::string>> addQueue;   // (slot, path) still to hand over
     // settings (the cover art switch is TEMP: kept in memory only; locations live in library.json)
     char buildFolder[512] = ""; bool artFetch = false;
     Toast toast; Dialog dlg; Task task; Engine eng;
@@ -221,7 +225,7 @@ static const char* StateWord(const Game& g, std::string& tmp) {
     switch (g.state) {
         case State::NotAdded: return "Not added";
         case State::WrongVersion: tmp = g.needsUpdate.empty() ? "Needs update" : "Needs update " + g.needsUpdate; return tmp.c_str();
-        case State::NotPorted: return "Not ported yet";
+        case State::NotPorted: return g.untested ? "Recognised, not tested" : g.digital ? "Digital copy: not yet supported" : "Not ported yet";
         case State::ReadyToBuild: return "Ready to build";
         case State::Building: return "Building";
         case State::Built: return "Built";
@@ -783,6 +787,7 @@ static void OpenAdd(const Game& g) {
     A.addOpen = true; A.addJustOpened = true;
     snprintf(A.discBuf, sizeof A.discBuf, "%s", g.disc.c_str());
     snprintf(A.updBuf, sizeof A.updBuf, "%s", g.update.c_str());
+    A.addDisc0 = g.disc; A.addUpd0 = g.update; A.addGame = g.id; A.addQueue.clear();
     std::string bf = std::string(A.buildFolder) + "/" + g.id;
     snprintf(A.buildBuf, sizeof A.buildBuf, "%s", bf.c_str());
 }
@@ -809,9 +814,15 @@ static void DialogDone(void* ud, const char* const* list, int) {
 }
 static void BrowseFolder(int field, const std::string& tag = "") { SDL_ShowOpenFolderDialog(DialogDone, new DlgUser{field, tag}, A.win, nullptr, false); }
 static void BrowseFile(int field, const std::string& tag = "", bool elf = false) {
-    static const SDL_DialogFileFilter disc[] = {{"Disc image or package", "iso;pkg;bin"}, {"All files", "*"}};
+    static const SDL_DialogFileFilter disc[] = {{"Disc image", "iso"}, {"All files", "*"}};   // no PKG (install a digital copy in RPCS3 first)
     static const SDL_DialogFileFilter elfs[] = {{"Decrypted EBOOT", "elf"}, {"All files", "*"}};
     SDL_ShowOpenFileDialog(DialogDone, new DlgUser{field, tag}, A.win, elf ? elfs : disc, 2, nullptr, false);
+}
+
+// ENHANCEMENT: the player's own already-built exe of another project's game (unofficial card), tag "unofficial|<id>|exe".
+static void BrowseExe(const std::string& id) {
+    static const SDL_DialogFileFilter exes[] = {{"Game program", "exe"}, {"All files", "*"}};
+    SDL_ShowOpenFileDialog(DialogDone, new DlgUser{-1, "unofficial|" + id + "|exe"}, A.win, exes, 2, nullptr, false);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -985,6 +996,13 @@ static void RunEngine(const std::string& key, const std::vector<std::string>& ar
 static void EngineOverride(const std::string& game, const std::string& slot, const std::string& path) {
     RunEngine("g|" + game + "|" + slot, {"override", "--library", A.libPath, "--game", game, "--slot", slot, path});
 }
+// The Add drawer's "Use these files": the changed disc / update path goes to the engine as an override (the same
+// command the Files page uses); PumpEngine sends the next one when the last is accepted.
+static void AddQueueNext() {
+    if (A.addQueue.empty()) return;
+    auto q = A.addQueue.front(); A.addQueue.erase(A.addQueue.begin());
+    EngineOverride(A.addGame, q.first, q.second);
+}
 static void EngineClearOverride(const std::string& game, const std::string& slot) {
     RunEngine("g|" + game + "|" + slot, {"clear-override", "--library", A.libPath, "--game", game, "--slot", slot});
 }
@@ -1105,7 +1123,18 @@ static void PumpEngine() {
         if (!(rc == 0 && ParseTools(out))) { A.lx.toolsLoaded = true; A.lx.toolsError = "The build tools' state could not be read."; }
         return;
     }
-    if (rc == 0) { ReloadLibrary(); return; }
+    bool addKey = !A.addGame.empty() && key.compare(0, 2 + A.addGame.size() + 1, "g|" + A.addGame + "|") == 0;
+    if (rc == 0) {
+        ReloadLibrary();
+        if (addKey && !A.addQueue.empty()) AddQueueNext();
+        return;
+    }
+    if (addKey) {   // a refused path stops the rest; the drawer shows the engine's message
+        A.addQueue.clear();
+        // the engine still holds its old paths: the drawer's baseline goes back to them, so Build stays off and "Use these files" returns
+        auto back = [&](const Game& g) { if (g.id == A.addGame) { A.addDisc0 = g.disc; A.addUpd0 = g.update; } };
+        for (auto& g : A.lib.games) { back(g); for (auto& c : g.children) back(c); }
+    }
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
     size_t nl = out.find_last_of('\n');
     A.errKey = key;
@@ -1123,6 +1152,7 @@ static void HandleTag(const std::string& tag, const std::string& path) {
     if (kind == "ov") EngineOverride(x, y, path);
     else if (kind == "loc") EngineLocation(x, path, y);
     else if (kind == "proton") ProtonAction("add", {"--path", path});
+    else if (kind == "unofficial") RunEngine("u|" + x, {"unofficial-set", "--library", A.libPath, "--game", x, path});
 }
 static void PumpDialog() {
     std::string tag, path; int field;
@@ -1186,7 +1216,19 @@ static void TaskThread(std::vector<std::string> argv) {
         SDL_WaitProcess(p, true, &rc);
         SDL_DestroyProcess(p);
     }
-    { std::lock_guard<std::mutex> l(A.task.m); A.task.procRc = rc; }
+    {   // The engine ended without its closing line (RESULT for a build, EXITED for a game): the player still gets a row that
+        // says so, with the exit code and the log, instead of a window that shows nothing.
+        std::lock_guard<std::mutex> l(A.task.m); A.task.procRc = rc;
+        std::string where = !A.task.logPath.empty() ? A.task.logPath : A.task.gameLogPath;
+        std::string tail = where.empty() ? std::string(" No log was reported.") : " Log: " + where;
+        if (A.task.kind != "play" && A.task.result < 0) {
+            if (A.task.stopAsked) A.task.cancelled = true;
+            else A.task.reasons.push_back("The " + std::string(A.task.kind == "build" ? "build" : "download") + " ended without a result (exit code " + std::to_string(rc) + ")." + tail);
+            A.task.result = 0;
+        } else if (A.task.kind == "play" && !A.task.exited && !A.task.cancelled && !A.task.stopAsked && A.task.reasons.empty()) {
+            A.task.reasons.push_back("The game could not be started or ended without a report (exit code " + std::to_string(rc) + ")." + tail);
+        }
+    }
     A.task.finished = true;
 }
 static bool TaskRunning() { return A.task.running.load(); }
@@ -1391,9 +1433,9 @@ static void AddDrawer(float W, float H) {
     StepHeader(1, "What this game needs", filesKnown ? 2 : 0);
     if (!filesKnown) {
         ImGui::Indent(A.S(36.f));
-        Wrapped(("The game's disc (a folder or an ISO) or its PSN package" + std::string(g.titleId.empty() ? "" : " (title ID " + g.titleId + ")") + "."  ).c_str(), T->windowFg, 16.f);
-        if (needUpd) Wrapped(("The update " + g.needsUpdate + " (a PKG file).").c_str(), T->windowFg, 16.f);
-        Wrapped("A decrypted EBOOT.elf: the build makes it from your files, you do not supply it.", T->dimFg, 15.f);
+        Wrapped(("The game's disc (a folder or an ISO)" + std::string(g.titleId.empty() ? "" : " (title ID " + g.titleId + ")") + ". For a digital copy, install it in RPCS3 first; the launcher finds games RPCS3 installed."  ).c_str(), T->windowFg, 16.f);
+        if (needUpd) Wrapped(("The update " + g.needsUpdate + " (the installed update folder, game/<title ID>).").c_str(), T->windowFg, 16.f);
+        Wrapped("The decrypted EBOOT.elf, made from your own copy of the game. The launcher looks for it itself; the Files page lets you choose it.", T->dimFg, 15.f);
         ImGui::Unindent(A.S(36.f));
     }
     ImGui::Dummy(ImVec2(0, A.S(6.f)));
@@ -1402,12 +1444,12 @@ static void AddDrawer(float W, float H) {
     StepHeader(2, "Choose your files", (building || justDone) ? 1 : 0);
     ImGui::Indent(A.S(36.f));
     Check c1 = ValidatePath(A.discBuf, g.disc, "game files"), c2{true, ""};
-    Dim("Game files (folder, ISO or PKG)");
+    Dim("Game files (folder or ISO)");
     PathRow("##disc", A.discBuf, 0, true);
     CheckLine(c1);
     if (needUpd) {
         ImGui::Dummy(ImVec2(0, A.S(4.f)));
-        Dim(("Update " + g.needsUpdate + " (PKG)").c_str());
+        Dim(("Update " + g.needsUpdate + " (installed update folder)").c_str());
         PathRow("##upd", A.updBuf, 1, false);
         c2 = ValidatePath(A.updBuf, g.update, "update file"); CheckLine(c2);
     }
@@ -1429,12 +1471,31 @@ static void AddDrawer(float W, float H) {
     // (4) build
     StepHeader(4, "Build", justDone ? 1 : 0);
     ImGui::Indent(A.S(36.f));
-    bool canBuild = c1.ok && c2.ok && !building && !TaskRunning();
+    bool draft = (*A.discBuf && A.addDisc0 != A.discBuf) || (needUpd && *A.updBuf && A.addUpd0 != A.updBuf);
+    bool handing = !A.addQueue.empty() || (EngineBusy() && A.busyKey.compare(0, 2, "g|") == 0);
+    bool attention = g.state == State::NeedsAttention && !draft;
+    bool canBuild = c1.ok && c2.ok && !building && !TaskRunning() && !draft && !handing && !attention;
     if (!building && !justDone) {
+        if (draft || handing) {   // the engine does not know these paths yet: hand them over first
+            ImGui::BeginDisabled(!c1.ok || !c2.ok || handing || EngineBusy());
+            if (Btn("Use these files##use", ImVec2(A.S(220.f), A.S(48.f)), true)) {
+                A.addQueue.clear();
+                if (*A.discBuf && A.addDisc0 != A.discBuf) A.addQueue.push_back({"disc", A.discBuf});
+                if (needUpd && *A.updBuf && A.addUpd0 != A.updBuf) A.addQueue.push_back({"update", A.updBuf});
+                A.addDisc0 = A.discBuf; if (needUpd) A.addUpd0 = A.updBuf;
+                AddQueueNext();
+            }
+            ImGui::EndDisabled();
+            Dim(handing ? "The engine is checking these files..." : "The launcher checks them and remembers them; then Build is ready.");
+            ImGui::Dummy(ImVec2(0, A.S(6.f)));
+        }
+        if (A.errKey.compare(0, 2 + g.id.size() + 1, "g|" + g.id + "|") == 0 && !A.errText.empty()) Wrapped(A.errText.c_str(), T->destructive, 15.f);
         ImGui::BeginDisabled(!canBuild);
         if (Btn(g.state == State::Built || g.state == State::PortUpdated ? "Rebuild##go" : "Build##go", ImVec2(A.S(180.f), A.S(48.f)), true)) StartBuild(g);
         ImGui::EndDisabled();
         if (!canBuild && TaskRunning()) Dim(A.task.kind == "build" ? "Another build is running; start this one when it is done." : "A game is running.");
+        else if (attention) Dim(g.reason.empty() ? "The game files need attention: choose them on the Files page." : g.reason.c_str());
+        else if (draft || handing) Dim("Use these files first; Build then starts from them.");
         else if (!canBuild) Dim("Fix the files above to enable Build.");
         else Dim("Builds on this PC from your files; the Details page shows its log.");
     } else {
@@ -1526,7 +1587,8 @@ static void SelectedPanel(float h, bool expanded, float panelW) {
     if (bld) { std::lock_guard<std::mutex> l(A.task.m); char b[96]; snprintf(b, sizeof b, "Step %d of 5: %s, %d%%", StageOf(A.task.step) + 1, kStages[StageOf(A.task.step)], (int)A.task.pct); line = b; }
     else if (g.state == State::ReadyToBuild && g.hasEstimate) { char b[96]; snprintf(b, sizeof b, "Your files are in place. About %d min, %.1f GB.", g.estMinutes, g.estGb); line = b; }
     else if (g.state == State::NotAdded) line = "Choose your own game files to begin setup.";
-    else if (g.state == State::WrongVersion) line = "Your files are version " + g.version + ". The port needs " + g.needsUpdate + ": locate the update package.";
+    else if (g.state == State::WrongVersion) line = "Your files are version " + g.version + ". The port needs " + g.needsUpdate + ": locate the installed update folder.";
+    else if (g.state == State::NotPorted && (g.untested || g.digital)) line = g.reason;
     else if (g.state == State::NotPorted) line = g.children.empty() ? "Setup is not available for this entry yet." : "Collection games are listed below with their individual setup and compatibility states.";
     else if (g.state == State::Built) line = "Executable built with port " + g.builtPortVersion + ".";
     else if (g.state == State::PortUpdated) line = ChangedWhy(g);
@@ -1614,6 +1676,108 @@ static void DrawCard(Game& g, int idx, ImVec2 size, bool& selectMe) {
     FocusRing(p, b, rr);
 }
 
+// ENHANCEMENT: the "Unofficial (other projects)" group (launch only). Cards are told apart from the
+// port's own by the warning-coloured badge and a one-line note; a card is a panel with buttons, never a game entry.
+static std::string UnofficialNote(const Unofficial& u) {
+    return "Another project's build (" + u.project + (u.licence.empty() ? "" : ", " + u.licence) + "), not supported here.";
+}
+static float UnofficialCardH(const Unofficial& u, float cw) {
+    float pad = A.S(18.f), tw = cw - pad * 2;
+    float h = pad + A.S(22.f) + A.S(8.f);
+    h += A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, tw, u.title.c_str()).y + A.S(4.f);
+    h += A.fBody->CalcTextSizeA(A.S(13.f), FLT_MAX, tw, UnofficialNote(u).c_str()).y + A.S(8.f);
+    h += A.fBody->CalcTextSizeA(A.S(14.f), FLT_MAX, tw, u.reason.c_str()).y + A.S(4.f);
+    h += A.S(2 * 15.f * 1.3f) + A.S(8.f);   // room for the exe path and a name warning (two lines)
+    h += A.S(38.f) * 2 + A.S(6.f) + pad;
+    return h;
+}
+static void DrawUnofficialCard(const Unofficial& u, ImVec2 size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos(), b(p.x + size.x, p.y + size.y);
+    float rr = A.S(theme::kRadiusCard), pad = A.S(18.f), tw = size.x - pad * 2;
+    dl->AddRectFilled(p, b, Col(T->cardBg), rr);
+    dl->AddRect(p, b, Col(T->border), rr, 0, A.S(1.f));
+    float x = p.x + pad, y = p.y + pad;
+    {   // the badge
+        const char* word = "Unofficial"; float px = A.S(13.f);
+        ImVec2 ts = A.fBodySemi->CalcTextSizeA(px, FLT_MAX, 0, word);
+        ImVec2 b0(x, y), b1(x + ts.x + A.S(20.f), y + A.S(22.f));
+        dl->AddRectFilled(b0, b1, Col(T->warningBg), A.S(11.f));
+        dl->AddRect(b0, b1, Col(T->warning), A.S(11.f), 0, 1.f);
+        dl->AddText(A.fBodySemi, px, ImVec2(b0.x + A.S(10.f), b0.y + (A.S(22.f) - ts.y) * 0.5f), Col(T->warningFg), word);
+        y += A.S(22.f) + A.S(8.f);
+    }
+    ImVec2 ts = A.fHeadBold->CalcTextSizeA(A.S(18.f), FLT_MAX, tw, u.title.c_str());
+    dl->AddText(A.fHeadBold, A.S(18.f), ImVec2(x, y), Col(T->windowFg), u.title.c_str(), nullptr, tw); y += ts.y + A.S(4.f);
+    std::string note = UnofficialNote(u);
+    ts = A.fBody->CalcTextSizeA(A.S(13.f), FLT_MAX, tw, note.c_str());
+    dl->AddText(A.fBody, A.S(13.f), ImVec2(x, y), Col(T->dimFg), note.c_str(), nullptr, tw); y += ts.y + A.S(8.f);
+    bool ready = u.state == "ready", missing = u.state == "missing", set = ready || missing;
+    std::string errKey = "u|" + u.id;
+    bool err = A.errKey == errKey;
+    std::string line = err ? A.errText : u.reason;
+    ts = A.fBody->CalcTextSizeA(A.S(14.f), FLT_MAX, tw, line.c_str());
+    dl->AddText(A.fBody, A.S(14.f), ImVec2(x, y), Col(err || missing ? T->destructive : ready ? T->success : T->windowFg), line.c_str(), nullptr, tw);
+    y += ts.y + A.S(4.f);
+    if (set) { std::string f = Fit(u.exe, tw, A.fMono, A.S(13.f)); dl->AddText(A.fMono, A.S(13.f), ImVec2(x, y), Col(T->dimFg), f.c_str()); y += A.S(15.f * 1.3f); }
+    if (!u.warning.empty()) {
+        ImVec2 ws = A.fBody->CalcTextSizeA(A.S(13.f), FLT_MAX, tw, u.warning.c_str());
+        dl->AddText(A.fBody, A.S(13.f), ImVec2(x, y), Col(T->warning), u.warning.c_str(), nullptr, tw);
+        (void)ws;
+    }
+    // buttons: the card's own bottom (two rows, so a narrow card never overflows)
+    float by = b.y - pad - A.S(38.f) * 2 - A.S(6.f);
+    bool running = TaskRunning() && A.task.kind == "play" && A.task.game == u.id;
+    ImGui::PushID(u.id.c_str());
+    ImGui::SetCursorScreenPos(ImVec2(x, by));
+    const char* primary = running ? "Stop" : ready ? "Play" : "Choose .exe";
+    if (running) {
+        if (PillButton("Stop##u", Kind::Destructive, ImVec2(BtnW("Stop"), 0))) CancelBuild();
+    } else if (ready) {
+        if (PillButton("Play##u", Kind::Suggested, ImVec2(BtnW("Play"), 0))) { Game g; g.id = u.id; g.title = u.title; StartPlay(g); }
+    } else {
+        ImGui::BeginDisabled(EngineBusy());
+        if (PillButton("Choose .exe##u", Kind::Suggested, ImVec2(BtnW("Choose .exe"), 0))) BrowseExe(u.id);
+        ImGui::EndDisabled();
+    }
+    if (set && !running) {
+        ImGui::SetCursorScreenPos(ImVec2(x + BtnW(primary) + A.S(6.f), by));
+        ImGui::BeginDisabled(EngineBusy());
+        if (PillButton("Change##u", Kind::Normal, ImVec2(BtnW("Change"), 0))) BrowseExe(u.id);
+        ImGui::EndDisabled();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(x, by + A.S(38.f) + A.S(6.f)));
+    if (set && !running) {
+        ImGui::BeginDisabled(EngineBusy());
+        if (PillButton("Forget exe##u", Kind::Flat, ImVec2(BtnW("Forget exe"), 0))) RunEngine("u|" + u.id, {"unofficial-clear", "--library", A.libPath, "--game", u.id});
+        ImGui::EndDisabled();
+        ImGui::SetCursorScreenPos(ImVec2(x + BtnW("Forget exe") + A.S(6.f), by + A.S(38.f) + A.S(6.f)));
+    }
+    if (PillButton("Project page##u", Kind::Flat, ImVec2(BtnW("Project page"), 0))) {
+        if (u.url.rfind("https://github.com/", 0) == 0) SDL_OpenURL(u.url.c_str());
+    }
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(p);
+    ImGui::Dummy(size);
+}
+static void UnofficialGroup(float availW, float pad) {
+    ImGui::Dummy(ImVec2(0, A.S(24.f))); ImGui::SetCursorPosX(pad);
+    Heading("Unofficial (other projects)", 22.f);
+    Wrapped("Games other projects recompiled. They are not part of this port and not supported here: the launcher only starts a build you already made, "
+            "from its own folder. Nothing is downloaded, built or changed.", T->dimFg, 15.f);
+    ImGui::Dummy(ImVec2(0, A.S(8.f)));
+    float gap = A.S(16.f), minW = A.S(260.f);
+    int cols = std::max(1, std::min(4, (int)((availW + gap) / (minW + gap))));
+    float cw = (availW - gap * (cols - 1)) / cols, ch = 0;
+    for (auto& u : A.lib.unofficial) ch = std::max(ch, UnofficialCardH(u, cw));
+    int n = 0;
+    for (auto& u : A.lib.unofficial) {
+        if (n % cols) ImGui::SameLine(0, gap); else ImGui::SetCursorPosX(pad);
+        DrawUnofficialCard(u, ImVec2(cw, ch));
+        n++;
+    }
+}
+
 static void RowStatus(const std::string& key);
 static void LibraryScreen(float W) {
     (void)W;
@@ -1669,6 +1833,7 @@ static void LibraryScreen(float W) {
         n++;
     }
     if (n == 0) { ImGui::SetCursorPosX(pad); StatusPage(Ico::Library, "No games here", A.filter == 1 ? "No game has its files ready yet. Add a folder to begin setup." : "Every entry has its files ready.", nullptr, availW); }
+    if (A.lib.unofficialOn && !A.lib.unofficial.empty()) UnofficialGroup(availW, pad);   // after the port's own games
     ImGui::EndGroup();
 }
 
@@ -1761,16 +1926,24 @@ static void BuildAndPlay(Game& g, float x, float w) {
             ImGui::EndDisabled();
         }, T->accent);
         else if (exited && cancelled) { char b[160]; snprintf(b, sizeof b, "Stopped after %d s.", secs); Row("Last game run", b, 0, [] {}); }
-        else if (exited) { char b[160]; snprintf(b, sizeof b, "Closed with exit code %d after %d s.", code, secs); Row("Last game run", b, 0, [] {}, code == 0 ? T->success : T->destructive); }
+        else if (exited) {
+            // An exit the player did not ask for names the log. ASSUMPTION: a clean exit within 10 s is also unexpected.
+            std::string where = !gameLogPath.empty() ? gameLogPath : logPath;
+            bool odd = code != 0 || secs < 10;
+            std::string t = "Closed with exit code " + std::to_string(code) + " after " + std::to_string(secs) + " s.";
+            if (odd) t += where.empty() ? " If that was not expected, the log on the Details page says why." : " If that was not expected, the log is here: " + where;
+            Row("Last game run", t, 0, [] {}, code == 0 ? T->success : T->destructive);
+        }
         else if (!reasons.empty()) Row("Could not start the game", reasons[0], 0, [] {}, T->destructive);
     }
     auto actions = [&](Game& e) {   // Build / Rebuild and Play for one game
         GameThemeScope gameTheme(e.id);
         bool can = !TaskRunning();
         std::string bl = (e.state == State::Built || e.state == State::PortUpdated) ? "Rebuild" : "Build";
-        bool canBuild = e.state == State::ReadyToBuild || e.state == State::Built || e.state == State::PortUpdated || e.state == State::NeedsAttention;
+        bool canBuild = e.state == State::ReadyToBuild || e.state == State::Built || e.state == State::PortUpdated;
+        bool fixFiles = e.state == State::NeedsAttention;   // a build would fail later: the button opens the Files page instead
         bool canPlay = Playable(e);
-        float cw = (canBuild ? BtnW(bl.c_str()) : 0.f) + (canPlay ? BtnW("Play", Ico::None, true) + A.S(10.f) : 0.f);
+        float cw = (fixFiles ? BtnW("Choose files") : 0.f) + (canBuild ? BtnW(bl.c_str()) : 0.f) + (canPlay ? BtnW("Play", Ico::None, true) + A.S(10.f) : 0.f);
         std::string tmp, sub = StateWord(e, tmp);
         if (e.hasBuild) sub += "  ·  built " + (e.builtAt.empty() ? std::string("?") : e.builtAt.substr(0, 16)) + " with port " + e.builtPortVersion;
         else if (!e.reason.empty() && e.state != State::ReadyToBuild) sub += ": " + e.reason;
@@ -1782,6 +1955,7 @@ static void BuildAndPlay(Game& g, float x, float w) {
         ro.tag = tw; ro.tagCol = tc;
         RowX(e.title.c_str(), sub, cw, [&] {
             ImGui::BeginDisabled(!can);
+            if (fixFiles && Btn(("Choose files##fx_" + e.id).c_str(), ImVec2(BtnW("Choose files"), A.S(38.f)), true)) GoPage(App::ScFiles);
             if (canBuild && Btn((bl + "##b_" + e.id).c_str(), ImVec2(BtnW(bl.c_str()), A.S(38.f)), !canPlay)) StartBuild(e);
             if (canBuild && canPlay) ImGui::SameLine(0, A.S(10.f));
             if (canPlay && PillButton(("Play##p_" + e.id).c_str(), Kind::Suggested, ImVec2(BtnW("Play", Ico::None, true), A.S(38.f)))) StartPlay(e);
@@ -1962,7 +2136,7 @@ static void DetailsScreen() {
         PropRow("Title ID", Esc(g.titleId), !g.titleId.empty());
         PropRow("Your version", g.version.empty() ? "not known (no files)" : g.version, !g.version.empty());
         PropRow("Update needed", g.needsUpdate.empty() ? "none" : g.needsUpdate, !g.needsUpdate.empty());
-        PropRow("EBOOT.elf", g.eboot.empty() ? "not made yet (the build decrypts it)" : "decrypted: " + g.eboot);
+        PropRow("EBOOT.elf", g.eboot.empty() ? "not found yet (the decrypted file made from your own copy)" : "decrypted: " + g.eboot);
     });
     pair("Recorded files", [&] {
         PropRow("Game files", Esc(g.disc), !g.disc.empty());
@@ -2004,7 +2178,7 @@ static void RowStatus(const std::string& key) {
     }
     ImGui::Dummy(ImVec2(0, A.S(22.f)));
 }
-static const char* kSlotLabel[4] = {"Game files (disc folder, ISO or PKG)", "Update (PKG or installed folder)", "EBOOT.elf (decrypted)", "Saves"};
+static const char* kSlotLabel[4] = {"Game files (disc folder or ISO)", "Update (installed folder)", "EBOOT.elf (decrypted)", "Saves"};
 static const char* kSlotKey[4] = {"disc", "update", "eboot", "saves"};
 static std::string SlotPath(const Game& g, int i) { return i == 0 ? g.disc : i == 1 ? g.update : i == 2 ? g.eboot : g.saves; }
 static const char* SourceWord(const Game& g, const std::string& slot, const std::string& path, unsigned& col) {
@@ -2262,7 +2436,7 @@ static void FilesScreen() {
         // EBOOT row: the engine's check (which build the file is) replaces the source word; its message goes below
         bool ebChk = i == 2 && !path.empty() && !g.ebootTag.empty();
         if (ebChk) { tag = g.ebootTag.c_str(); tc = g.ebootLevel == "ok" ? T->success : g.ebootLevel == "warn" ? T->warning : T->destructive; }
-        bool folderSlot = i == 3, fileSlot = i == 2, both = i < 2;
+        bool folderSlot = i == 1 || i == 3, fileSlot = i == 2, both = i == 0;   // an update is a folder only (no PKG)
         const char* lbF = both ? "Folder##bf" : "Browse##bf";
         const char* lbZ = both ? "File##bz" : "Browse##bz";
         float gap = A.S(6.f), wF = BtnW(lbF, Ico::Folder), wZ = BtnW(lbZ), wO = BtnW("Open##of"), wU = BtnW("Use found##uf");
@@ -2822,6 +2996,21 @@ static void SettingsScreen() {
     }
     EndBoxedList();
 
+    GroupTitle("Other projects", "Other people's recompiled games. Off by default.", w);
+    BeginBoxedList(w);
+    {
+        std::string msg; unsigned col = 0;
+        bool has = RowMsg("l|unofficial", msg, col);
+        Row("Show unofficial recomps (other projects)", has ? msg : "Adds a group below your library with other projects' recompiled games (Tools of Destruction, Into the Nexus). "
+            "You point each card at a build you already made; the launcher only starts it. Not supported here. Nothing is downloaded.", A.S(48.f), [&] {
+            bool on = A.lib.unofficialOn;
+            ImGui::BeginDisabled(EngineBusy());
+            if (Switch("##unofficial", &on)) SetPref("unofficial", on);
+            ImGui::EndDisabled();
+        }, col);
+    }
+    EndBoxedList();
+
     GroupTitle("Folders", "Where the launcher puts what it makes. Each one can go back to its default.", w);
     BeginBoxedList(w);
     struct One { const char* key; const char* title; const std::string* value; };
@@ -3127,6 +3316,16 @@ static void Frame(float dt) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// A start-up failure before the window shows: the Windows exe has no console (stderr goes nowhere), so the reason and the
+// install folder go in an SDL message box as well as on stderr.
+static int StartupFail(const std::string& what) {
+    fprintf(stderr, "launcher: %s\n", what.c_str());
+    const char* base = SDL_GetBasePath();
+    std::string msg = "The launcher could not start.\n\n" + what + "\n\nInstall folder: " + (base ? base : "(unknown)") +
+                      "\n\nCheck that the folder is complete (nothing deleted or blocked by antivirus) and unpack the download again.";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Qwark's Awakening", msg.c_str(), nullptr);
+    return 1;
+}
 static ImFont* LoadFont(const char* file) {
     std::string p = A.fontDir + "/" + file;
     ImFont* f = ImGui::GetIO().Fonts->AddFontFromFileTTF(p.c_str(), 18.f);
@@ -3190,7 +3389,7 @@ int main(int argc, char** argv) {
         A.fontDir = SDL_GetPathInfo((d + "/AdwaitaSans-Regular.ttf").c_str(), &pi) ? d : LAUNCHER_FONT_DIR;
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        std::string why = std::string("SDL could not start (") + SDL_GetError() + ").";
 #ifdef __linux__
         // SDL loads libX11/libwayland-client at run time; NixOS has them only in the store, so a plain start finds none
         // ("No available video device"). steam-run (or nix-ld with those libraries) supplies the usual folders.
@@ -3199,13 +3398,13 @@ int main(int argc, char** argv) {
             fprintf(stderr, "On NixOS, start the launcher with steam-run qwarks-awakening (or enable nix-ld with the X11 "
                             "and Wayland libraries); see docs/LINUX.md.\n");
 #endif
-        return 1;
+        return StartupFail(why);
     }
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     A.win = SDL_CreateWindow("Qwark's Awakening", W, H, SDL_WINDOW_RESIZABLE | (A.shotMode ? 0 : SDL_WINDOW_HIGH_PIXEL_DENSITY));
-    if (!A.win) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
+    if (!A.win) return StartupFail(std::string("The window could not be created (") + SDL_GetError() + ").");
     A.ren = SDL_CreateRenderer(A.win, nullptr);
-    if (!A.ren) { fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError()); return 1; }
+    if (!A.ren) return StartupFail(std::string("The graphics could not be started (") + SDL_GetError() + ").");
     SDL_SetRenderVSync(A.ren, A.shotMode ? 0 : 1);
 
     IMGUI_CHECKVERSION();
@@ -3218,7 +3417,7 @@ int main(int argc, char** argv) {
     A.fBody = LoadFont("AdwaitaSans-Regular.ttf"); A.fBodySemi = LoadFont("AdwaitaSans-SemiBold.ttf");
     A.fHeadBold = LoadFont("AdwaitaSans-Bold.ttf"); A.fHead = A.fHeadBold; A.fMono = LoadFont("AdwaitaMono-Regular.ttf");
     A.fMark = LoadFont("RussoOne-Regular.ttf");
-    if (!A.fBody || !A.fBodySemi || !A.fHeadBold || !A.fMono || !A.fMark) return 1;
+    if (!A.fBody || !A.fBodySemi || !A.fHeadBold || !A.fMono || !A.fMark) return StartupFail("A font file is missing or unreadable in " + A.fontDir + ".");
     A.scale = 0.f;
 
     A.lib = loadLibrary(A.libPath);
